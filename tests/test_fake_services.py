@@ -7,6 +7,54 @@ import aiohttp
 from voice_scenarios.fake_services import create_app
 
 
+def test_fake_embedding_and_tts_empty_chunks_preserve_protocol_boundaries():
+    async def exercise():
+        app = create_app(
+            {
+                "turns": [{"text": "hello"}],
+                "embedding_delay_ms": 0,
+                "tts_empty_chunks": 1,
+                "tts_duration_seconds": 0.06,
+                "tts_first_delay_ms": 0,
+                "tts_chunk_delay_ms": 0,
+            }
+        )
+        runner = aiohttp.web.AppRunner(app)
+        await runner.setup()
+        site = aiohttp.web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.post(
+                    url + "/v1/embeddings",
+                    json={
+                        "model": "fake-embedding",
+                        "input": ["hello", "FAKE-BLOCKED"],
+                        "dimensions": 3,
+                    },
+                ) as response:
+                    assert response.status == 200
+                    embeddings = (await response.json())["data"]
+                    assert embeddings[0]["embedding"] == [1.0, 0.0, 0.0]
+                    assert embeddings[1]["embedding"] == [0.0, 1.0, 0.0]
+                async with client.post(
+                    url + "/v1/t2a_v2", json={"text": "hello"}
+                ) as response:
+                    frames = [
+                        json.loads(line[6:])
+                        for line in (await response.text()).splitlines()
+                        if line.startswith("data: ")
+                    ]
+                    assert frames[0]["data"]["audio"] == ""
+                    assert frames[1]["data"]["audio"]
+                    assert frames[-1]["data"]["status"] == 2
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(exercise())
+
+
 def test_fake_asr_vad_requires_real_audio_then_continuous_quiet_not_commit():
     async def exercise():
         runner = aiohttp.web.AppRunner(

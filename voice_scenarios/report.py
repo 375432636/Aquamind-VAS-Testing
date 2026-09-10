@@ -102,7 +102,8 @@ def evaluate(result, vas_events):
                         "duration_ms": (end["monotonic_ns"] - start["monotonic_ns"])
                         / 1e6,
                         "status": end.get("status"),
-                        "data": start.get("data", {}),
+                        "data": {**start.get("data", {}), **end.get("data", {})},
+                        "clock_id": start.get("clock_id"),
                         "span_id": end.get("span_id"),
                         "parent_span_id": start.get("parent_span_id"),
                     }

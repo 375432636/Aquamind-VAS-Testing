@@ -69,6 +69,8 @@ def create_app(script=None, pcm_fixture=None):
                 "prompt": {
                     "enable_langfuse": False,
                     "enable_voiceid": False,
+                    "enable_safety_filter": bool(script.get("guardrail")),
+                    "guardrail": script.get("guardrail", {}),
                     "max_turns": 20,
                     "first_greeting": "",
                     "filler_words": ["请稍等。"],
@@ -288,7 +290,6 @@ def create_app(script=None, pcm_fixture=None):
             )
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
-        await asyncio.sleep(turn.get("llm_first_delay_ms", 120) / 1000)
 
         async def send(delta, finish=None):
             payload = {
@@ -303,6 +304,9 @@ def create_app(script=None, pcm_fixture=None):
             )
 
         try:
+            if turn.get("llm_metadata_first"):
+                await send({"role": "assistant"})
+            await asyncio.sleep(turn.get("llm_first_delay_ms", 120) / 1000)
             if tool_name:
                 serialized = json.dumps(args, ensure_ascii=False)
                 call_id = "call_" + uuid.uuid4().hex[:12]
@@ -317,9 +321,12 @@ def create_app(script=None, pcm_fixture=None):
                     await send({"tool_calls": [part]})
                     await asyncio.sleep(turn.get("llm_chunk_delay_ms", 15) / 1000)
             else:
-                for offset in range(0, len(content), 4):
-                    await send({"content": content[offset : offset + 4]})
-                    await asyncio.sleep(0.015)
+                chunks = turn.get("llm_text_chunks") or [
+                    content[offset : offset + 4] for offset in range(0, len(content), 4)
+                ]
+                for chunk in chunks:
+                    await send({"content": chunk})
+                    await asyncio.sleep(turn.get("llm_chunk_delay_ms", 15) / 1000)
             await send({}, "tool_calls" if tool_name else "stop")
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, RuntimeError):
@@ -333,11 +340,14 @@ def create_app(script=None, pcm_fixture=None):
             return web.json_response(
                 {"error": "expected text and 24 kHz PCM"}, status=400
             )
-        record("tts", text=text)
+        record("tts", text=text, connection_id=hex(id(request.transport)))
         error = script.get("tts_error_status")
         if error:
             return web.json_response({"error": "injected"}, status=int(error))
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        if script.get("tts_force_close"):
+            response.force_close()
+        await asyncio.sleep(script.get("tts_headers_delay_ms", 0) / 1000)
         await response.prepare(request)
         await asyncio.sleep(script.get("tts_first_delay_ms", 100) / 1000)
         duration = script.get("tts_duration_seconds", 3.6)
@@ -345,6 +355,8 @@ def create_app(script=None, pcm_fixture=None):
             : int(duration * 48000)
         ]
         try:
+            for _ in range(int(script.get("tts_empty_chunks", 0))):
+                await response.write(b'data: {"data":{"status":1,"audio":""}}\n\n')
             for offset in range(0, len(data), 2880):
                 payload = {
                     "data": {"status": 1, "audio": data[offset : offset + 2880].hex()},
@@ -360,6 +372,48 @@ def create_app(script=None, pcm_fixture=None):
             record("tts", operation="client_disconnected")
         return response
 
+    async def embeddings(request):
+        body = await request.json()
+        texts = body.get("input")
+        texts = [texts] if isinstance(texts, str) else texts
+        if (
+            not isinstance(texts, list)
+            or not texts
+            or not all(isinstance(t, str) and t for t in texts)
+        ):
+            return web.json_response(
+                {"error": "expected nonempty text input"}, status=400
+            )
+        dimensions = int(body.get("dimensions", 256))
+        if not 2 <= dimensions <= 4096:
+            return web.json_response({"error": "invalid dimensions"}, status=400)
+        record("embedding", model=body.get("model"), batch_size=len(texts))
+        await asyncio.sleep(script.get("embedding_delay_ms", 80) / 1000)
+        if script.get("embedding_error_status"):
+            return web.json_response(
+                {"error": {"message": "injected embedding failure"}},
+                status=int(script["embedding_error_status"]),
+            )
+        rows = []
+        for index, text in enumerate(texts):
+            blocked = "FAKE-BLOCKED" in text
+            vector = [0.0, 1.0] if blocked else [1.0, 0.0]
+            rows.append(
+                {
+                    "object": "embedding",
+                    "index": index,
+                    "embedding": vector + [0.0] * (dimensions - 2),
+                }
+            )
+        return web.json_response(
+            {
+                "object": "list",
+                "model": body.get("model"),
+                "data": rows,
+                "usage": {"prompt_tokens": len(texts), "total_tokens": len(texts)},
+            }
+        )
+
     app.router.add_put("/api/v1/api-key/by-key/configure", health)
     app.router.add_get("/health", health)
     app.router.add_get("/records", records)
@@ -368,6 +422,7 @@ def create_app(script=None, pcm_fixture=None):
     app.router.add_get("/asr", asr)
     app.router.add_post("/v1/chat/completions", chat)
     app.router.add_post("/v1/t2a_v2", tts)
+    app.router.add_post("/v1/embeddings", embeddings)
     return app
 
 

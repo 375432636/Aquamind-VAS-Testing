@@ -64,3 +64,79 @@ def test_unlinked_tts_uses_explicit_output_id_and_never_nearest_llm():
     assert [s["span_id"] for s in tts[0]["segments"]] == ["pre-1", "pre-2"]
     assert all(lane["llm_span_id"] is None for lane in tts)
     assert tts[0]["segments"][0]["output_kind"] == "pre_speech"
+
+
+def test_milestones_use_request_and_segment_ids_and_keep_embedding_overlap():
+    spans = [
+        span("llm_request", "llm", 0, 9_000_000_000),
+        span("llm_request", "other", 900_000_000, 8_000_000_000),
+        span("tts_request", "tts", 2_000_000_000, 5_000_000_000, "llm"),
+        span("guardrail_embedding", "guard", 0, 1_500_000_000),
+    ]
+    spans[2]["data"]["segment_id"] = "speech-1"
+
+    def event(name, sid, at, **data):
+        return dict(event=name, span_id=sid, monotonic_ns=int(at * 1e9), data=data)
+
+    events = [
+        event("llm_first_token", "llm", 1, delta_kind="tool"),
+        event("tts_segment_ready", "llm", 1.9, segment_id="speech-1", punctuation="，"),
+        event("http_connection_reused", "tts", 2.01, http_request_id="http-1"),
+        event("tts_first_pcm", "tts", 2.5),
+        event("guardrail_released", None, 1.6),
+    ]
+    lanes = group_timeline_spans(spans, events)
+    llm = next(l for l in lanes if l["label"] == "LLM #1")
+    tts = next(l for l in lanes if l["category"] == "tts_request")
+    guard = next(l for l in lanes if l["category"] == "guardrail_embedding")
+    assert [m["event"] for m in llm["markers"]] == ["llm_first_token"]
+    assert [m["event"] for m in tts["markers"]] == [
+        "tts_segment_ready",
+        "http_connection_reused",
+        "tts_first_pcm",
+    ]
+    assert tts["markers"][-1]["since_request_seconds"] == 0.5
+    assert guard["segments"][0]["end_ns"] == 1_500_000_000
+    assert guard["markers"][0]["event"] == "guardrail_released"
+
+
+def test_cross_clock_marker_is_not_given_a_false_duration():
+    request = span("llm_request", "llm", 1, 10)
+    request["clock_id"] = "vas-a"
+    events = [
+        dict(
+            event="llm_first_token",
+            span_id="llm",
+            clock_id="vas-b",
+            monotonic_ns=9,
+            data={},
+        )
+    ]
+    lane = group_timeline_spans([request], events)[0]
+    assert lane["markers"] == []
+
+
+def test_text_completion_joins_only_an_unambiguous_matching_output_lane():
+    spans = [span("tts_request", "a", 0, 10), span("tts_request", "b", 11, 20)]
+    events = [
+        dict(event="tts_request_started", span_id=sid, output_id=oid)
+        for sid, oid in (("a", "answer-1"), ("b", "answer-2"))
+    ]
+    events.append(
+        dict(
+            event="tts_text_complete",
+            span_id=None,
+            output_id="answer-1",
+            monotonic_ns=21,
+        )
+    )
+    lanes = group_timeline_spans(spans, events)
+    assert len(lanes) == 2
+    assert lanes[0]["markers"][0]["event"] == "tts_text_complete"
+    assert lanes[1]["markers"] == []
+
+
+def test_nonstream_asr_is_not_labelled_as_upload_time():
+    request = span("asr_request", "local", 0, 10)
+    request["data"]["mode"] = "NON_STREAM"
+    assert group_timeline_spans([request], [])[0]["label"] == "ASR 识别请求"

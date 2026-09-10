@@ -1,0 +1,15 @@
+schema_version: 1
+name: 护栏、模型增量与 TTS 连接时序
+turn_timeout_seconds: 40
+settle_seconds: 0.3
+turns:
+  - id: first-reply
+    audio: ../fixtures/input.wav
+    expect:
+      llm_requests: 1
+      tools: {}
+  - id: tool-reply
+    audio: ../fixtures/input.wav
+    expect:
+      llm_requests: 2
+      tools: {self_test_weather: 1}
