@@ -257,7 +257,7 @@ function renderSessionTimeline(target, session = {}) {
     audio.addEventListener('play', () => {cancelAnimationFrame(animation);animation = requestAnimationFrame(frame);});
     audio.addEventListener('pause', () => {cancelAnimationFrame(animation);positionPlayhead(audio.currentTime);});
     audio.addEventListener('error', () => {
-      detail.innerHTML = '<p class="capture-limitation">会话 WAV 无法读取，请保留完整报告文件夹后重新打开。</p>';
+      detail.innerHTML = '<p class="capture-limitation">会话音频无法读取，请保留完整报告文件夹后重新打开。</p>';
     });
     window.addEventListener('pagehide', event => {if (!event.persisted && fullAudioUrl) URL.revokeObjectURL(fullAudioUrl);});
   }
