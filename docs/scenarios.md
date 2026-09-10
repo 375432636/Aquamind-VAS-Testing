@@ -162,6 +162,9 @@ Fake 服务通过 HTTP / WebSocket 模拟 UMS、Memory、ASR、LLM、TTS 和工�
 | `fake-regression.yaml` | `regression.example.yaml` | 多轮、Memory、工具循环、打断、音乐 MCP |
 | `fake-filler.yaml` | `filler.example.yaml` | 临时回复与正式回复 |
 | `fake-vad.yaml` | `vad.example.yaml` | 连续音频、底噪、VAD 端点、多轮 |
+| `fake-milestones.yaml` | `milestones.example.yaml` | 两轮上下文、护栏向量、空 LLM 首块、文本分片、天气工具、TTS 空音频块、连接复用 |
+
+公共时序节点开发可把上面两条命令中的脚本换成 `config/fake-milestones.yaml`、场景换成 `config/milestones.example.yaml`，并使用支持新节点的 VAS。Fake `/v1/embeddings` 支持固定向量及延迟/错误；LLM 支持 `llm_metadata_first`、每轮 `text_chunks`；TTS 支持 `headers_delay_seconds`、`empty_audio_chunks`、`force_close`。这些配置只影响本地 Fake 服务。新增真实 VAS 回归为 `tests/test_local_stack.py::test_real_stack_public_milestones_and_guardrail`。
 
 真实 VAS 的集成回归需要上述 checkout，公开 CI 默认不拉取私有服务端：
 

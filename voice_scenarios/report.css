@@ -7,3 +7,9 @@
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 
 .timeline-plot{position:relative;touch-action:pan-y;user-select:none}.chain-measure-tools{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px;flex-wrap:wrap}.timeline-plot .axis,.timeline-plot .track{cursor:crosshair}.chain-selection-layer{position:absolute;left:176px;right:0;top:20px;bottom:0;pointer-events:none;z-index:1}.chain-selection{position:absolute;top:0;bottom:0;background:#557bce1c;border-top:2px solid #3664c4;border-bottom:1px solid #3664c455;pointer-events:none}.chain-selection>span{position:absolute;top:0;left:50%;transform:translateX(-50%);background:#e8efff;color:#2753a9;border:1px solid #aec3ee;border-radius:4px;padding:2px 7px;font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}.chain-selection .measure-handle{width:20px;margin-left:-10px}.chain-measure-tools .measurement-controls button{min-height:36px}.chain-measure-tools .measurement-controls input{height:36px}
+
+/* Request milestones share their parent lane and preserve the ruler's hit area. */
+.milestone-track{position:relative;height:32px;margin-top:2px}
+.timeline-marker{position:absolute;top:1px;transform:translateX(-50%);display:flex;align-items:center;justify-content:center;gap:1px;min-width:28px;height:28px;padding:3px;border:1px solid transparent;border-radius:5px;background:#fff;color:#405ca3;cursor:pointer;z-index:2}
+.timeline-marker:hover,.timeline-marker:focus-visible{background:#edf2ff;border-color:#a9bce4;outline-offset:2px}
+.timeline-marker span{font-size:10px;font-weight:650}.lane-model{display:block;margin-top:5px;font-size:11px;color:#738096;line-height:1.5}.span-detail{white-space:pre-line;line-height:1.9}

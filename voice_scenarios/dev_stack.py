@@ -45,6 +45,13 @@ async def serve_stack(vas_root, script, base_port=19080):
     config = json.loads(json.dumps(config).replace(old, new))
     config["server"]["port"] = base_port
     profile = yaml.safe_load(Path(script).read_text())
+    config["safety_filter"] = {
+        "api": {
+            "base_url": f"http://127.0.0.1:{base_port+1}/v1",
+            "api_key": "fake-embedding-key",
+        },
+        "vector_similarity": {"model": "fake-embedding", "semantic_cache_file": ""},
+    }
     config["Intent"]["intent_llm"]["type"] = profile.get("intent_type", "function_call")
     config["VAD"]["SileroVAD"]["model_dir"] = str(
         vas_root / "models/snakers4_silero-vad"
