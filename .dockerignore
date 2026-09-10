@@ -1,0 +1,25 @@
+# Keep real DEV recordings, local credentials and virtual environments out of
+# the build context, image layers and GitHub's shared build cache.
+**
+!Dockerfile
+!pyproject.toml
+!main.py
+!.coveragerc
+!.coveragerc-client
+!voice_scenarios/
+!voice_scenarios/**
+!tests/
+!tests/**
+!config/
+!config/**
+!fixtures/
+!fixtures/**
+!scenarios/
+!scenarios/**
+**/__pycache__/
+**/*.pyc
+**/*.local.*
+**/.env
+**/.env.*
+**/.DS_Store
+scenarios/test-batch-*/

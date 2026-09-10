@@ -96,6 +96,7 @@ def test_real_websocket_opus_round_trip_and_timed_abort(tmp_path):
                         )
                     )
                 elif message["type"] == "listen" and message["state"] == "stop":
+                    await ws.send(json.dumps({"type": "stt", "text": "测试问题"}))
                     await ws.send(json.dumps({"type": "tts", "state": "start"}))
                     for _ in range(8):
                         await ws.send(encoder.encode(b"\x00\x10" * 960, 960))
@@ -118,6 +119,275 @@ def test_real_websocket_opus_round_trip_and_timed_abort(tmp_path):
     assert observed.count(("abort", None)) == 1
     assert observed.count(("input_audio", 1920)) == 4
     assert all(t["received_frames"] == 8 for t in result["turns"])
+
+
+@pytest.mark.parametrize("diagnostics", ["off", "stage", "frame"])
+@pytest.mark.parametrize("greeting_timing", ["before_input", "after_input"])
+def test_startup_greeting_does_not_complete_question_or_shift_later_replies(
+    tmp_path, diagnostics, greeting_timing
+):
+    """Exercise real Opus/WebSocket ordering, including delayed diagnostic batches."""
+    import time
+
+    from voice_scenarios.reply_audio import prepare_reply_audio
+    from voice_scenarios.report import _timing_values, evaluate
+    from voice_scenarios.session_timing import prepare_session_playback
+
+    source = tmp_path / "question.wav"
+    with wave.open(str(source), "wb") as audio:
+        audio.setparams((1, 2, 16000, 0, "NONE", ""))
+        audio.writeframes(b"\x00\x10" * 1920)
+    scenario = Scenario.from_dict(
+        {
+            "settle_seconds": 0.01,
+            "turn_timeout_seconds": 3,
+            "turns": [
+                {"id": "first", "audio": str(source)},
+                {"id": "followup", "audio": str(source)},
+            ],
+        }
+    )
+    input_starts, diagnostic_rows = [], []
+
+    async def exercise():
+        async def peer(ws):
+            encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
+            audio_sequence = 0
+            turn = 0
+            tasks = []
+
+            async def output(text, owner, frame_count):
+                nonlocal audio_sequence
+                # Production VAS may label the greeting as answer/None. The
+                # client must retain its independent wire classification.
+                diagnostic_rows.append(
+                    {
+                        "server_session_id": "greeting-session",
+                        "seq": len(diagnostic_rows) + 1,
+                        "event": "audio_output_started",
+                        "clock_id": "vas-process",
+                        "monotonic_ns": time.monotonic_ns(),
+                        "listen_turn_id": owner,
+                        "output_kind": "answer",
+                        "data": {"audio_seq": audio_sequence + 1},
+                    }
+                )
+                await ws.send(json.dumps({"type": "tts", "state": "start"}))
+                await ws.send(
+                    json.dumps({"type": "tts", "state": "sentence_start", "text": text})
+                )
+                for _ in range(frame_count):
+                    await ws.send(encoder.encode(b"\x00\x10" * 960, 960))
+                    audio_sequence += 1
+                await ws.send(json.dumps({"type": "tts", "state": "stop"}))
+
+            async def reply(owner):
+                await asyncio.sleep(0.30)
+                await ws.send(json.dumps({"type": "stt", "text": f"问题 {owner}"}))
+                # send_stt_message emits start, and the first TTS emits it
+                # again. Duplicate starts are part of the actual VAS wire.
+                await ws.send(json.dumps({"type": "tts", "state": "start"}))
+                await output(f"回答 {owner}", owner, 4)
+
+            try:
+                async for raw in ws:
+                    if isinstance(raw, bytes):
+                        continue
+                    message = json.loads(raw)
+                    if message["type"] == "diagnostics":
+                        if message["state"] == "start":
+                            await ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "diagnostics",
+                                        "state": "started",
+                                        "schema_version": 1,
+                                        "server_session_id": "greeting-session",
+                                        "level": diagnostics,
+                                    }
+                                )
+                            )
+                        else:
+                            await ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "diagnostics",
+                                        "state": "events",
+                                        "schema_version": 1,
+                                        "server_session_id": "greeting-session",
+                                        "events": diagnostic_rows,
+                                        "next_seq": len(diagnostic_rows),
+                                        "end_seq": len(diagnostic_rows),
+                                        "gap": False,
+                                        "complete": True,
+                                        "finished": True,
+                                    }
+                                )
+                            )
+                    elif message["type"] == "hello":
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "type": "hello",
+                                    "session_id": "greeting-session",
+                                    "audio_params": {
+                                        "format": "opus",
+                                        "sample_rate": 16000,
+                                        "channels": 1,
+                                    },
+                                }
+                            )
+                        )
+                        if greeting_timing == "before_input":
+                            await output("欢迎来到门店", None, 3)
+                    elif message["type"] == "listen":
+                        if message["state"] == "start":
+                            input_starts.append(time.monotonic_ns())
+                            turn += 1
+                        else:
+                            if turn == 1 and greeting_timing == "after_input":
+                                await output("欢迎来到门店", None, 3)
+                            tasks.append(asyncio.create_task(reply(turn)))
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        async with serve(peer, "127.0.0.1", 0) as server:
+            transport = WebSocketTransport(
+                f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/xiaozhi/v1/",
+                device_id="test-device",
+                diagnostics=diagnostics,
+            )
+            return await run_scenario(scenario, transport, tmp_path / "output")
+
+    result = asyncio.run(exercise())
+    assert result["status"] == "passed", result
+    report = evaluate(result, diagnostic_rows if diagnostics != "off" else [])
+    assert report["status"] == "passed", report["failures"]
+    assert [turn["metrics"]["asr_text"] for turn in report["turns"]] == [
+        "问题 1",
+        "问题 2",
+    ]
+    assert all(turn["metrics"]["first_playback_ms"] >= 250 for turn in report["turns"])
+    first_events = result["turns"][0]["events"]
+    drained = next(e["at_ns"] for e in first_events if e["event"] == "playback_drained")
+    assert input_starts[1] >= drained
+    first_frames = [e for e in first_events if e["event"] == "playback_frame_started"]
+    assert len(first_frames) == 7
+    assert all(e["data"].get("is_session_output") for e in first_frames[:3])
+    assert all(not e["data"].get("is_session_output") for e in first_frames[3:])
+    with wave.open(result["turns"][0]["audio"]["played"]) as audio:
+        assert audio.getnframes() == 7 * 960
+    prepare_reply_audio(report, tmp_path / "output")
+    greeting = report["turns"][0]["reply_timing"]["sentences"][0]
+    assert (greeting["kind"], greeting["text"]) == ("greeting", "欢迎来到门店")
+    assert greeting["audio"]["played"]["status"] == "ready"
+    assert greeting["audio"]["played"]["samples"] == 3 * 960
+    for turn in report["turns"]:
+        assert _timing_values(turn)[0] == pytest.approx(
+            turn["metrics"]["first_playback_ms"] / 1000
+        )
+    session = prepare_session_playback(report, tmp_path / "output")
+    assert session["status"] == "ready", session["limitations"]
+    assert [
+        (s["kind"], s["text"]) for s in session["segments"] if s["kind"] == "greeting"
+    ] == [("greeting", "欢迎来到门店")]
+    waits = [wait for wait in session["waits"] if wait["kind"] == "first_reply"]
+    assert len(waits) == 2
+    assert all(wait["duration_seconds"] >= 0.25 for wait in waits)
+
+
+def test_first_question_interrupt_waits_for_real_reply_after_long_greeting(tmp_path):
+    import time
+
+    source = tmp_path / "question.wav"
+    with wave.open(str(source), "wb") as audio:
+        audio.setparams((1, 2, 16000, 0, "NONE", ""))
+        audio.writeframes(b"\x00\x10" * 1920)
+    scenario = Scenario.from_dict(
+        {
+            "settle_seconds": 0.01,
+            "turn_timeout_seconds": 3,
+            "turns": [
+                {
+                    "audio": str(source),
+                    "interrupt": {"after_playback_seconds": 0.10},
+                },
+                {"audio": str(source)},
+            ],
+        }
+    )
+    aborts = []
+
+    async def exercise():
+        async def peer(ws):
+            encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
+            turn = 0
+
+            async def output(text, count):
+                await ws.send(json.dumps({"type": "tts", "state": "start"}))
+                await ws.send(
+                    json.dumps({"type": "tts", "state": "sentence_start", "text": text})
+                )
+                for _ in range(count):
+                    await ws.send(encoder.encode(b"\x00\x10" * 960, 960))
+                await ws.send(json.dumps({"type": "tts", "state": "stop"}))
+
+            async for raw in ws:
+                if isinstance(raw, bytes):
+                    continue
+                message = json.loads(raw)
+                if message["type"] == "hello":
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "hello",
+                                "session_id": "greeting-interrupt",
+                                "audio_params": {
+                                    "format": "opus",
+                                    "sample_rate": 16000,
+                                    "channels": 1,
+                                },
+                            }
+                        )
+                    )
+                    await output("欢迎来到门店，给你介绍一下这里", 12)
+                elif message["type"] == "listen" and message["state"] == "stop":
+                    turn += 1
+                    await ws.send(json.dumps({"type": "stt", "text": f"问题 {turn}"}))
+                    await output(f"回答 {turn}", 8 if turn == 1 else 2)
+                elif message["type"] == "abort":
+                    aborts.append(time.monotonic_ns())
+                    await ws.send(json.dumps({"type": "tts", "state": "stop"}))
+
+        async with serve(peer, "127.0.0.1", 0) as server:
+            transport = WebSocketTransport(
+                f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/xiaozhi/v1/",
+                device_id="test-device",
+            )
+            return await run_scenario(scenario, transport, tmp_path / "output")
+
+    result = asyncio.run(exercise())
+    assert result["status"] == "passed", result
+    assert [turn["status"] for turn in result["turns"]] == ["interrupted", "completed"]
+    first = result["turns"][0]
+    greeting_frames = [
+        event
+        for event in first["events"]
+        if event["event"] == "playback_frame_started"
+        and event["data"].get("is_session_output")
+    ]
+    assert len(greeting_frames) == 12
+    reply_start = next(
+        event["at_ns"]
+        for event in first["events"]
+        if event["event"] == "playback_started"
+    )
+    assert reply_start >= greeting_frames[-1]["at_ns"] + 55_000_000
+    assert len(aborts) == 1
+    assert 0.08 <= (aborts[0] - reply_start) / 1e9 <= 0.3
+    assert first["interruption"]["server_stop_observed"]
 
 
 def test_diagnostics_share_websocket_without_token_headers_or_http(

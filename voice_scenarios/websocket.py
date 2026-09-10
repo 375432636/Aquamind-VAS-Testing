@@ -42,6 +42,9 @@ class WebSocketTransport:
         self.turn_sequence = 0
         self.audio_sequence = 0
         self.microphone_task = None
+        self.pending_response_turn = None
+        self.output_response_turn = None
+        self.output_active = False
 
     async def connect(self, emit):
         self.emit = emit
@@ -97,10 +100,18 @@ class WebSocketTransport:
                     if decoder is None:
                         raise ValueError("binary_audio_before_hello")
                     self.audio_sequence += 1
+                    ownership = {
+                        "response_listen_turn_id": self.output_response_turn,
+                        "is_session_output": self.output_response_turn is None,
+                    }
                     self.emit(
                         Event(
                             "audio_packet_received",
-                            {"audio_seq": self.audio_sequence, "bytes": len(raw)},
+                            {
+                                "audio_seq": self.audio_sequence,
+                                "bytes": len(raw),
+                                **ownership,
+                            },
                             at_ns,
                         )
                     )
@@ -113,6 +124,7 @@ class WebSocketTransport:
                                 "sample_rate": self.output_rate,
                                 "audio_seq": self.audio_sequence,
                                 "received_at_ns": at_ns,
+                                **ownership,
                             },
                         )
                     )
@@ -166,7 +178,29 @@ class WebSocketTransport:
                         self.hello.set_result(session)
                     self.emit(Event("hello_received", session, at_ns))
                 elif kind == "tts":
-                    self.emit(Event("tts_" + str(message.get("state")), message, at_ns))
+                    state = message.get("state")
+                    if state == "start" and not self.output_active:
+                        # VAS sends STT before a question's reply. Hello's greeting
+                        # has no STT. Latch the stream until stop: STT and duplicate
+                        # starts can arrive while the greeting is still playing.
+                        self.output_response_turn = self.pending_response_turn
+                        self.output_active = True
+                    self.emit(
+                        Event(
+                            "tts_" + str(state),
+                            {
+                                **message,
+                                "response_listen_turn_id": self.output_response_turn,
+                                "is_session_output": self.output_response_turn is None,
+                            },
+                            at_ns,
+                        )
+                    )
+                    if state == "stop":
+                        self.output_active = False
+                elif kind == "stt":
+                    self.pending_response_turn = self.turn_sequence
+                    self.emit(Event("stt", message, at_ns))
                 elif kind == "mcp":
                     await self._mcp(message)
                 else:

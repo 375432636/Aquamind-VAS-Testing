@@ -13,7 +13,7 @@ function renderSessionTimeline(target, session = {}) {
   const extent = Math.max(.01, duration);
   const percent = value => Math.max(0, Math.min(100, Number(value) / extent * 100));
   const clamp = value => Math.max(0, Math.min(duration, Number(value) || 0));
-  const kindLabels = {answer:'正式回复',pre_speech:'过渡语',filler:'临时回复',unknown:'类型未关联',mixed:'混合回复'};
+  const kindLabels = {greeting:'欢迎语',answer:'正式回复',pre_speech:'过渡语',filler:'临时回复',unknown:'类型未关联',mixed:'混合回复'};
   const waitLabels = {first_reply:'等待首句',transition:'等待正式回复',sentence:'句间等待'};
   const markerLabels = {input_end:'输入结束',first_received:'首包到达',first_playback:'开始播放',abort:'打断'};
   const items = [];

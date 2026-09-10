@@ -60,7 +60,7 @@ class ClockedPlayer:
                         started_at,
                     )
                 )
-            if not self.started:
+            if not self.started and not metadata.get("is_session_output"):
                 self.started = True
                 self.emit(
                     Event("playback_started", {"source": self.source}, started_at)

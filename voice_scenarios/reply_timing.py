@@ -24,7 +24,12 @@ def analyze_reply_timing(turn):
         if name == "tts_sentence_start":
             if active is not None:
                 active["closed"] = True
-            active = dict(text=data.get("text", ""), seqs=[], closed=False)
+            active = dict(
+                text=data.get("text", ""),
+                seqs=[],
+                closed=False,
+                is_session_output=data.get("is_session_output", False),
+            )
             sentences.append(active)
         elif name in {"tts_sentence_end", "tts_stop"}:
             if active is not None:
@@ -89,9 +94,13 @@ def analyze_reply_timing(turn):
                 text=sentence["text"],
                 audio_seqs=sentence["seqs"],
                 kind=(
-                    next(iter(kinds))
-                    if len(kinds) == 1
-                    else "mixed" if kinds else "unknown"
+                    "greeting"
+                    if sentence["is_session_output"]
+                    else (
+                        next(iter(kinds))
+                        if len(kinds) == 1
+                        else "mixed" if kinds else "unknown"
+                    )
                 ),
                 start_seconds=relative(start),
                 end_seconds=relative(end),
@@ -110,7 +119,8 @@ def analyze_reply_timing(turn):
                 status=status,
             )
         )
-        previous_start, previous_end = start, end
+        if not sentence["is_session_output"]:
+            previous_start, previous_end = start, end
     limitations = [
         (
             "0 秒取客户端语音 WAV 播送完毕的时刻，之后仍发送底噪，没有发送 listen/stop；WAV 内部静音也计入素材时长，不等于人工标注的最后发声点。"

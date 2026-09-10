@@ -12,6 +12,8 @@
 
 两个测试 Action 均由用户手动运行，没有启用定时任务。批量测试只需维护 [`scenarios/`](scenarios/) 中的文件，运行时无需重复粘贴对话。
 
+三个 Action（含 CI）共用 Docker 测试环境。首次构建安装系统与 Python 依赖，之后通过 GitHub BuildKit 缓存复用镜像层；修改场景或业务代码不会重新安装依赖，修改 `pyproject.toml` 或基础环境时才重建对应层。缓存受 GitHub 分支可见性和回收规则限制，缓存失效时会正常重建。设备认证只在运行容器时传入，报告和生成音频不进入构建缓存。
+
 | 场景目录 | 内容 |
 | --- | --- |
 | [`scenarios/smoke`](scenarios/smoke/) | 多轮上下文、正式回答播放后 2 秒打断、打断后继续对话 |
@@ -61,6 +63,8 @@ turns:
 
 Actions 使用 **eSpeak NG 中文语音**把文本转为 WAV，再实时发送音频。这是离线合成，声音较机械，适合跑通链路和比较时序；识别准确率回归建议使用固定的真人录音。客户端按音频时长模拟播放，不依赖 runner 的扬声器。
 
+镜像使用 Debian Trixie 的 eSpeak NG 1.52。Ubuntu 24.04 自带的 1.51 在这些中文输入上会读出拼音字母和声调数字，不能用于本测试的中文合成。连接后的欢迎语保留在 session 回放中，但不计作第一问的回答，不触发第一问的播放计时或定时打断。
+
 ## 环境设置
 
 默认连接地址：
@@ -90,10 +94,24 @@ VAS 需要支持现有 WebSocket 诊断协议。测试程序连接已有服务�
 
 ## 本地运行
 
+有 Docker 时可以直接复用 Actions 的环境，无需在主机安装 Python、FFmpeg 或语音库：
+
+```bash
+docker build -t aquamind-vas-testing:local .
+export VAS_ENVIRONMENT=dev
+export VAS_DEVICE_ID='你的测试设备 MAC ID'
+bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run \
+  --scenarios scenarios/smoke --output artifacts/docker-batch
+```
+
+在仓库目录运行上述命令，结果保存在主机的 `artifacts/docker-batch/`。临时对话可设置 `VAS_TURNS_JSON`，将入口换成 `python -m voice_scenarios.ci_run --output artifacts/docker-inline`。本地重复构建使用 Docker 本地层缓存，GitHub 缓存由 Actions 自动配置。
+
+也可以直接从源码运行：
+
 要求 Python 3.11+。先安装系统依赖：
 
 ```bash
-# Ubuntu / Debian
+# Debian Trixie；其他发行版须确认 espeak-ng --version >= 1.52
 sudo apt-get install -y espeak-ng ffmpeg libopus0
 
 # macOS

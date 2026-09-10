@@ -69,6 +69,9 @@ def test_vad_continues_nonzero_noise_without_stop_on_same_session(tmp_path):
                         if quiet >= 3:
                             active = False
                             endpoints.append(len(packets))
+                            await ws.send(
+                                json.dumps({"type": "stt", "text": "测试语音"})
+                            )
                             await ws.send(json.dumps({"type": "tts", "state": "start"}))
                             for _ in range(6):
                                 await ws.send(encoder.encode(b"\x00\x10" * 960, 960))

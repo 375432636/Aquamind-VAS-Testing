@@ -115,6 +115,7 @@ def test_actions_entry_point_reuses_session_after_interrupt_and_exports_report(
                         )
                     )
                 elif message["type"] == "listen" and message["state"] == "stop":
+                    await ws.send(json.dumps({"type": "stt", "text": "测试提问"}))
                     await ws.send(json.dumps({"type": "tts", "state": "start"}))
                     await ws.send(
                         json.dumps(
@@ -213,3 +214,112 @@ def test_invalid_regression_threshold_is_rejected_before_audio_is_generated(tmp_
     )
     assert outcome.returncode == 2
     assert not list((tmp_path / "invalid").glob("inputs/*.wav"))
+
+
+def test_failed_summary_groups_frames_keeps_turn_error_and_omits_asserted_text(
+    tmp_path,
+):
+    from voice_scenarios.ci_run import summarize
+
+    report = {
+        "name": "回归",
+        "status": "failed",
+        "turns": [
+            {
+                "id": "second",
+                "status": "failed",
+                "error": "interrupt_not_reached: response finished before the configured delay",
+                "metrics": {},
+                "checks": [
+                    {
+                        "name": "asr_text",
+                        "expected": "private expected",
+                        "actual": "private actual",
+                        "passed": False,
+                    }
+                ],
+            }
+        ],
+        "failures": [
+            f"second: 播放了属于其他轮次的迟到音频 seq={number}"
+            for number in range(100, 300)
+        ]
+        + [
+            "second: asr_text 期望 private expected，实际 private actual",
+            "second: interrupt_not_reached: response finished before the configured delay",
+        ],
+    }
+    (tmp_path / "report.json").write_text(json.dumps(report))
+    summary = summarize(tmp_path)
+    assert "200 条" in summary
+    assert summary.count("迟到音频") == 1
+    assert summary.count("interrupt\\_not\\_reached") == 1
+    assert "private expected" not in summary and "private actual" not in summary
+    assert "report.html" in summary
+
+
+def test_cross_turn_failure_has_actual_reason_in_junit(tmp_path):
+    from xml.etree import ElementTree as ET
+
+    result = {
+        "name": "cross-turn",
+        "status": "passed",
+        "turns": [
+            {
+                "id": "second",
+                "status": "completed",
+                "events": [
+                    {
+                        "event": "playback_frame_started",
+                        "at_ns": 1_000_000_000,
+                        "data": {"audio_seq": 100},
+                    },
+                    {
+                        "event": "playback_frame_started",
+                        "at_ns": 1_060_000_000,
+                        "data": {"audio_seq": 101},
+                    },
+                ],
+            }
+        ],
+    }
+    (tmp_path / "result.json").write_text(json.dumps(result))
+    (tmp_path / "vas-events.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "audio_output_started",
+                "listen_turn_id": 2,
+                "monotonic_ns": 1_000_000_000,
+                "clock_id": "vas",
+                "data": {"audio_seq": 100},
+            }
+        )
+        + "\n"
+    )
+    report = create_report(tmp_path)
+    assert report["status"] == "failed"
+    failure = ET.parse(tmp_path / "junit.xml").find(".//failure")
+    assert "迟到音频" in failure.get("message")
+    assert "2 条" in failure.get("message")
+    assert "report.html" in failure.text
+
+
+def test_failure_reasons_cap_categories_and_redact_credentials(monkeypatch):
+    from voice_scenarios.failure_summary import failure_reasons
+
+    monkeypatch.setenv("VAS_TOKEN", "private-token")
+    reasons = failure_reasons(
+        {
+            "status": "failed",
+            "error": "ConnectionError: private-token\n\x1b[31m disconnected",
+            "failures": [
+                "category " + str(number) + ": " + "x" * 800 for number in range(20)
+            ],
+        }
+    )
+    assert len(reasons) == 6
+    assert "[redacted]" in reasons[0]
+    assert "private-token" not in " ".join(reasons)
+    assert "\n" not in " ".join(reasons) and "\x1b" not in " ".join(reasons)
+    assert max(map(len, reasons)) <= 401
+    assert reasons[-1] == "另有 16 类错误，见详细报告"

@@ -423,10 +423,15 @@ def prepare_session_playback(report, directory):
             events, "first_audio_sent"
         )
         input_end = _time(events, input_end_event(turn))
-        first_received = _time(events, "audio_packet_received") or _time(
-            events, "audio_received"
+        reply_events = [
+            event
+            for event in events
+            if not event.get("data", {}).get("is_session_output")
+        ]
+        first_received = _time(reply_events, "audio_packet_received") or _time(
+            reply_events, "audio_received"
         )
-        first_playback = _time(events, "playback_frame_started")
+        first_playback = _time(reply_events, "playback_frame_started")
         row = {
             "index": index,
             "id": turn.get("id", str(index)),
@@ -530,7 +535,7 @@ def prepare_session_playback(report, directory):
                 ],
             }
             result["segments"].append(segment)
-            if frames:
+            if frames and sentence["kind"] != "greeting":
                 spoken.append(segment)
         spoken.sort(key=lambda segment: segment["start_seconds"])
         waits = []

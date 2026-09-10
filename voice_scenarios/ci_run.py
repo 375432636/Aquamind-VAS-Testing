@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from .__main__ import create_report
+from .failure_summary import failure_reasons
 from .model import Scenario
 from .runner import run_scenario, save_result
 from .websocket import WebSocketTransport
@@ -335,6 +336,10 @@ async def execute_prepared(output, env, settings, scenario):
     result["run_metadata"] = settings
     save_result(result, Path(output))
     report = create_report(output)
+    if report["status"] == "failed":
+        for reason in failure_reasons(report, token=env.get("VAS_TOKEN", "")):
+            logging.error("失败原因 | %s", reason)
+        logging.error("详细报告 | %s", Path(output) / "report.html")
     return 0 if report["status"] == "passed" else 1
 
 
@@ -371,12 +376,10 @@ def summarize(directory):
         lines.append(
             f"| {index} | {_markdown((turn.get('input_text') or metrics.get('asr_text') or turn['id'])[:100])} | {_markdown(status)} | {_seconds(metrics.get('first_playback_ms'))} | {_seconds(metrics.get('first_answer_playback_ms'))} | {_seconds(None if gap is None else gap * 1000)} |"
         )
-    for error in report.get("failures", []) + (
-        [report["error"]] if report.get("error") else []
-    ):
+    for error in failure_reasons(report):
         lines.append(f"\n- {_markdown(error)}")
     lines.append(
-        "\n下载完整报告，解压后打开 `index.html`；点击每轮查看时序和逐段音频。\n"
+        "\n下载完整报告，解压后打开 `report.html`；点击每轮查看时序和逐段音频。\n"
     )
     return "\n".join(lines)
 
