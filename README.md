@@ -4,13 +4,13 @@
 
 ## 在 GitHub Actions 中运行
 
-1. 打开 **Actions → VAS 语音测试 → Run workflow**。
+1. 打开 **Actions → VAS 批量语音测试 → Run workflow**。
 2. 选择 `dev` 或 `main`。设备 MAC 可以留空，复用仓库变量 `VAS_DEVICE_ID`；也可以临时填写覆盖。
-3. 保持 `source: saved_files`，在 `scenario_path` 选择文件夹（如 `scenarios/smoke`）或一个 YAML/JSON 文件。
+3. 在 `scenario_path` 填写文件夹（如 `scenarios/smoke`）或一个 YAML/JSON 文件路径。
 4. 点击 **Run workflow**。所有场景按文件名顺序运行；一个 session 失败后仍继续下一场景。
 5. 在 **Summary** 查看结果并下载完整 artifact，解压后打开 `index.html`，选择 session 回放。
 
-当前只支持**手动批量运行**，没有启用定时任务。平时只需维护 [`scenarios/`](scenarios/) 中的文件，运行时无需重复粘贴对话。
+两个测试 Action 均由用户手动运行，没有启用定时任务。批量测试只需维护 [`scenarios/`](scenarios/) 中的文件，运行时无需重复粘贴对话。
 
 | 场景目录 | 内容 |
 | --- | --- |
@@ -31,7 +31,7 @@ turns:
   - text: 它和第二款有什么区别？
 ```
 
-需要临时输入时，把 `source` 改成 `inline_json`，在 `turns_json` 粘贴：
+需要临时输入时，打开另一个 Action：**Actions → VAS 临时对话测试 → Run workflow**，选择环境和设备，在 `turns_json` 粘贴：
 
 ```json
 [
@@ -43,16 +43,17 @@ turns:
 
 上例第二轮从**正式回答开始播放**计时，2 秒后发送打断，结束本轮后接着发送第三句话。其他轮次等待回答播放结束再继续。历史上下文由同一 VAS 连接维护，不需要把之前的回答重新塞进输入。
 
-| 参数 | 用途 |
-| --- | --- |
-| `environment` | `dev` 或 `main`；切换连接地址 |
-| `device_id` | 可留空，默认使用仓库变量 `VAS_DEVICE_ID` |
-| `source` | `saved_files` 批量运行已保存场景；`inline_json` 临时运行一个 session |
-| `scenario_path` | `scenarios/` 内的文件或文件夹；文件夹会递归读取 YAML/JSON |
-| `turns_json` | 仅 `inline_json` 使用，支持逐轮打断 |
-| `input_mode` | 仅 `inline_json` 使用；保存场景分别使用文件中的 `manual` 或 `vad` |
-| `diagnostics` | `stage`：环节计时；`frame`：额外记录逐帧信息 |
-| `turn_timeout_seconds` | 仅 `inline_json` 使用；保存场景分别读取各文件的配置，默认 90 秒 |
+| 参数 | 使用入口 | 用途 |
+| --- | --- | --- |
+| `environment` | 两个 Action | `dev` 或 `main`；切换连接地址 |
+| `device_id` | 两个 Action | 可留空，默认使用仓库变量 `VAS_DEVICE_ID` |
+| `diagnostics` | 两个 Action | 默认 `frame`，记录环节计时和逐帧信息；可选 `stage`，只记录环节计时 |
+| `scenario_path` | VAS 批量语音测试 | `scenarios/` 内的文件或文件夹；文件夹会递归读取 YAML/JSON |
+| `turns_json` | VAS 临时对话测试 | 一个 session 的对话 JSON，支持逐轮打断 |
+| `input_mode` | VAS 临时对话测试 | `manual` 或 `vad`，默认 `manual` |
+| `turn_timeout_seconds` | VAS 临时对话测试 | 单轮超时，默认 90 秒 |
+
+批量测试的 `input_mode` 和 `turn_timeout_seconds` 由各场景文件设置，省略时分别使用 `manual` 和 90 秒。工作流文件分别为 [`voice-test.yml`](.github/workflows/voice-test.yml) 和 [`voice-inline-test.yml`](.github/workflows/voice-inline-test.yml)。
 
 `interrupt_after_seconds` 可省略；`output_kind` 可选 `answer`（正式回答）、`filler`（临时回复）、`pre_speech`（工具过渡语）或 `any`（任意语音）。如果指定类型没有出现，或回复在打断时间前已结束，报告会记录未触发打断，而不会把它算作成功。
 
@@ -114,7 +115,7 @@ python -m pip install -e '.[test]'
 ```bash
 export VAS_ENVIRONMENT=dev
 export VAS_DEVICE_ID='你的测试设备 MAC ID'
-export VAS_DIAGNOSTICS=stage
+export VAS_DIAGNOSTICS=frame
 python -m voice_scenarios.batch_run \
   --scenarios scenarios/smoke \
   --output artifacts/my-batch
@@ -122,17 +123,19 @@ python -m voice_scenarios.batch_run \
 
 将 `--scenarios` 换成单个文件只运行该 session。`--prepare-only` 只校验场景并生成输入 WAV，不连接 VAS。每次使用新的输出目录，避免覆盖历史结果。
 
-临时文本输入仍可使用：
+临时文本输入使用：
 
 ```bash
 export VAS_ENVIRONMENT=dev
 export VAS_DEVICE_ID='你的测试设备 MAC ID'
 export VAS_TURNS_JSON='[{"text":"推荐一款会议耳机"},{"text":"第一个有什么特点？"}]'
 export VAS_INPUT_MODE=manual
-export VAS_DIAGNOSTICS=stage
+export VAS_DIAGNOSTICS=frame
 export VAS_TURN_TIMEOUT_SECONDS=90
 python -m voice_scenarios.ci_run --output artifacts/my-run
 ```
+
+`batch_run` 和 `ci_run` 在未设置 `VAS_DIAGNOSTICS` 时均默认使用 `frame`；需要只记录环节计时时，可改为 `stage`。
 
 已有 WAV 也可以直接发送：
 
@@ -141,7 +144,7 @@ python main.py run \
   --url wss://lumin-vas-aquamind-dev.deep-edge.cn/looomyn/v1/ \
   --device-id '你的测试设备 MAC ID' \
   --audio /absolute/path/question.wav \
-  --diagnostics stage \
+  --diagnostics frame \
   --output artifacts/wav-run
 ```
 

@@ -122,7 +122,7 @@ def settings_from_env(env):
     mode = env.get("VAS_INPUT_MODE", "manual")
     if mode not in {"manual", "vad"}:
         raise ValueError("VAS_INPUT_MODE must be manual or vad")
-    diagnostics = env.get("VAS_DIAGNOSTICS", "stage")
+    diagnostics = env.get("VAS_DIAGNOSTICS", "frame")
     if diagnostics not in {"off", "stage", "frame"}:
         raise ValueError("VAS_DIAGNOSTICS must be off, stage or frame")
     timeout = _number(env.get("VAS_TURN_TIMEOUT_SECONDS", "90"), "turn timeout", 5, 120)
