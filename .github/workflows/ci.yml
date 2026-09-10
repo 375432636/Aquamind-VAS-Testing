@@ -21,25 +21,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: 安装依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y espeak-ng ffmpeg libopus0
-          python -m pip install -e '.[test]'
+      - name: 准备缓存的 Docker 测试环境
+        id: image
+        uses: ./.github/actions/test-image
       - name: 检查格式
         run: |
-          python -m black --check main.py voice_scenarios tests
-          python -m isort --check-only main.py voice_scenarios tests
+          bash .github/actions/test-image/run.sh python -m black --check main.py voice_scenarios tests
+          bash .github/actions/test-image/run.sh python -m isort --check-only main.py voice_scenarios tests
       - name: 运行测试
         env:
           CI_REPORT_DIR: artifacts/ci-example
           CI_BATCH_REPORT_DIR: artifacts/batch-example
-        run: python -m pytest --cov-config=.coveragerc-client --cov=voice_scenarios --cov-fail-under=80 --cov-report=term-missing --cov-report=xml:artifacts/coverage.xml --junitxml=artifacts/junit.xml
+        run: bash .github/actions/test-image/run.sh python -m pytest --cov-config=.coveragerc-client --cov=voice_scenarios --cov-fail-under=80 --cov-report=term-missing --cov-report=xml:artifacts/coverage.xml --junitxml=artifacts/junit.xml
       - name: 保存测试结果
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

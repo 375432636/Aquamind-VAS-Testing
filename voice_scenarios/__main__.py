@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 import yaml
 
 from .dev_stack import ROOT, serve_stack
+from .failure_summary import failure_reasons
 from .model import Scenario, Turn
 from .reply_audio import prepare_reply_audio
 from .report import build_report, evaluate
@@ -58,7 +59,10 @@ def create_report(directory):
     if report.get("diagnostics") and not report["diagnostics"].get("complete"):
         ET.SubElement(trace_case, "failure", message="Incomplete diagnostic capture")
     if report["status"] == "failed" and not suite.findall(".//failure"):
-        ET.SubElement(trace_case, "failure", message=report.get("error", "Run failed"))
+        reasons = failure_reasons(report)
+        ET.SubElement(trace_case, "failure", message="; ".join(reasons)).text = (
+            "\n".join(reasons) + "\n详细报告：report.html"
+        )
     suite.set("failures", str(len(suite.findall(".//failure"))))
     ET.ElementTree(suite).write(
         directory / "junit.xml", encoding="utf-8", xml_declaration=True

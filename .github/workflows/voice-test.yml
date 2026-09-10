@@ -48,18 +48,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 设置 Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      - name: 安装语音与测试依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y espeak-ng ffmpeg libopus0
-          python -m pip install -e '.[test]'
+      - name: 准备缓存的 Docker 测试环境
+        id: image
+        uses: ./.github/actions/test-image
 
       - name: 执行会话测试
         env:
@@ -71,7 +62,7 @@ jobs:
           VAS_DEV_URL: ${{ vars.VAS_DEV_URL }}
           VAS_MAIN_URL: ${{ vars.VAS_MAIN_URL }}
         run: |
-          python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --output artifacts/run
+          bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --output artifacts/run
 
       - name: 保存完整报告与音频
         id: report
@@ -88,8 +79,10 @@ jobs:
         env:
           REPORT_ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
         run: |
-          python -m voice_scenarios.batch_run --summarize artifacts/run
-          python - <<'PY'
+          if docker image inspect aquamind-vas-testing:local >/dev/null 2>&1; then
+            bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --summarize artifacts/run
+          fi
+          python3 - <<'PY'
           import os
           from pathlib import Path
 

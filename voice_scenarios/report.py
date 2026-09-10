@@ -61,7 +61,11 @@ def evaluate(result, vas_events):
                 if edge:
                     event["data"].update(
                         server_listen_turn_id=edge.get("listen_turn_id"),
-                        output_kind=edge.get("output_kind"),
+                        output_kind=(
+                            "greeting"
+                            if event["data"].get("is_session_output")
+                            else edge.get("output_kind")
+                        ),
                         output_id=edge.get("output_id"),
                     )
                     if (
@@ -280,7 +284,7 @@ def _turn_badges(turn):
 
 def _timing_values(turn):
     timing = turn["reply_timing"]
-    rows = timing.get("sentences", [])
+    rows = [r for r in timing.get("sentences", []) if r.get("kind") != "greeting"]
     heard = next((r for r in rows if r.get("start_seconds") is not None), {})
     answer = next(
         (

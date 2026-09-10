@@ -150,6 +150,7 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
                     if first_fails and session_id == "session-1":
                         await ws.close()
                         return
+                    await ws.send(json.dumps({"type": "stt", "text": "测试提问"}))
                     await ws.send(json.dumps({"type": "tts", "state": "start"}))
                     await ws.send(
                         json.dumps(
@@ -175,6 +176,9 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
 
     outcome = asyncio.run(exercise())
     assert outcome.returncode == (1 if first_fails else 0), outcome.stderr
+    if first_fails:
+        assert "失败原因 |" in outcome.stderr
+        assert "report.html" in outcome.stderr
     batch = json.loads((output / "batch.json").read_text())
     assert [item["status"] for item in batch["sessions"]] == (
         ["failed", "passed"] if first_fails else ["passed", "passed"]
@@ -192,6 +196,9 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
         "session-2",
     ]
     assert len(reports[1]["turns"]) == 2
+    if first_fails:
+        assert reports[0]["turns"][0]["error"] in outcome.stderr
+        assert batch["sessions"][0]["failure_reasons"]
     assert all(
         item["report"] in (output / "index.html").read_text()
         for item in batch["sessions"]
@@ -325,3 +332,42 @@ def test_aggregate_junit_records_session_failure_when_individual_report_is_missi
         suites.find(".//failure").get("message")
         == "OSError: cannot write session report"
     )
+
+
+def test_batch_summary_reads_session_failure_reasons_from_existing_artifacts(tmp_path):
+    from voice_scenarios.batch_run import summarize
+
+    directory = tmp_path / "sessions/broken"
+    directory.mkdir(parents=True)
+    (directory / "report.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "turns": [],
+                "failures": [
+                    f"second: 播放了属于其他轮次的迟到音频 seq={number}"
+                    for number in range(100, 300)
+                ],
+            }
+        )
+    )
+    write_batch(
+        tmp_path,
+        {
+            "status": "failed",
+            "sessions": [
+                {
+                    "id": "broken",
+                    "source": "scenarios/broken.yaml",
+                    "name": "Failed session",
+                    "status": "failed",
+                    "directory": "sessions/broken",
+                    "report": "sessions/broken/report.html",
+                }
+            ],
+        },
+    )
+    summary = summarize(tmp_path)
+    assert "迟到音频" in summary
+    assert "200 条" in summary
+    assert "sessions/broken/report.html" in summary

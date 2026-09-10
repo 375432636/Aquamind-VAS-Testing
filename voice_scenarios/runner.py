@@ -211,7 +211,14 @@ async def _run_turn(
                 sample_rate = event.data["sample_rate"]
                 if abort_requested_ns is None:
                     player.feed(
-                        pcm, sample_rate, {"audio_seq": event.data.get("audio_seq")}
+                        pcm,
+                        sample_rate,
+                        {
+                            "audio_seq": event.data.get("audio_seq"),
+                            "is_session_output": event.data.get(
+                                "is_session_output", False
+                            ),
+                        },
                     )
                 else:
                     result["interruption"]["audio_frames_after_abort"] += 1
@@ -226,6 +233,10 @@ async def _run_turn(
                 )
                 data["discarded_after_abort"] = abort_requested_ns is not None
             elif event.kind == "tts_stop":
+                if event.data.get("is_session_output"):
+                    # Keep hello audio in the session FIFO/WAV, but only the
+                    # question's own reply may finish this turn or its player.
+                    continue
                 if abort_requested_ns is None:
                     server_done = True
                     player.finish()

@@ -22,6 +22,7 @@ from .ci_run import (
     validate_audio,
     validate_turns,
 )
+from .failure_summary import failure_reasons, read_failure_reasons
 from .runner import save_result
 
 
@@ -206,6 +207,8 @@ async def execute(source, output, env, *, prepare_only=False):
             item["status"] = "passed" if code == 0 else "failed"
         except Exception as exc:
             item.update(status="failed", error=_safe_error(exc, session_env))
+            for reason in failure_reasons(item, token=session_env.get("VAS_TOKEN", "")):
+                logging.error("失败原因 | %s", reason)
             if not (directory / "result.json").exists():
                 save_result(
                     {
@@ -222,6 +225,10 @@ async def execute(source, output, env, *, prepare_only=False):
                 logging.error("Unable to generate report for %s", item["id"])
         if (directory / "report.html").exists():
             item["report"] = f'{item["directory"]}/report.html'
+        if item["status"] == "failed":
+            item["failure_reasons"] = read_failure_reasons(
+                directory, token=session_env.get("VAS_TOKEN", "")
+            ) or failure_reasons(item, token=session_env.get("VAS_TOKEN", ""))
         write_batch(output, batch)
         logging.info("%s | %s", item["status"].upper(), item["source"])
     batch["status"] = (
@@ -252,6 +259,18 @@ def summarize(directory):
         lines.append(
             f'| {_markdown(item["name"])} | {_markdown(item["status"])} | {item.get("turn_count", "—")} |'
         )
+    for item in batch["sessions"]:
+        if item["status"] != "failed":
+            continue
+        reasons = (
+            read_failure_reasons(Path(directory) / item["directory"])
+            or item.get("failure_reasons", [])
+            or failure_reasons(item)
+        )
+        lines.append(f'\n**{_markdown(item["name"])}**\n')
+        lines.extend(f"- {_markdown(reason)}" for reason in reasons)
+        if item.get("report"):
+            lines.append(f'\n报告文件：<code>{html.escape(item["report"])}</code>')
     if batch.get("error"):
         lines.append(f'\n{_markdown(batch["error"])}')
     lines.append("\n下载完整报告并解压，打开 `index.html` 选择 session。\n")
