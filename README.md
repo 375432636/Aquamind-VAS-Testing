@@ -7,8 +7,8 @@
 1. 打开 **Actions → VAS 批量语音测试 → Run workflow**。
 2. 选择 `dev` 或 `main`。设备 MAC 可以留空，复用仓库变量 `VAS_DEVICE_ID`；也可以临时填写覆盖。
 3. 在 `scenario_path` 填写文件夹（如 `scenarios/smoke`）或一个 YAML/JSON 文件路径。
-4. 点击 **Run workflow**。所有场景按文件名顺序运行；一个 session 失败后仍继续下一场景。
-5. 在 **Summary** 查看结果并下载完整 artifact，解压后打开 `index.html`，选择 session 回放。
+4. 点击 **Run workflow**。各 session 逐个运行；一个 session 失败后仍继续后面的场景。
+5. 在 **Summary** 选择需要的 session，点击该会话的下载链接。每个 artifact 只包含一个 session，解压后直接打开 `report.html`。
 
 两个测试 Action 均由用户手动运行，没有启用定时任务。批量测试只需维护 [`scenarios/`](scenarios/) 中的文件，运行时无需重复粘贴对话。
 
@@ -59,7 +59,7 @@ turns:
 
 `interrupt_after_seconds` 可省略；`output_kind` 可选 `answer`（正式回答）、`filler`（临时回复）、`pre_speech`（工具过渡语）或 `any`（任意语音）。如果指定类型没有出现，或回复在打断时间前已结束，报告会记录未触发打断，而不会把它算作成功。
 
-每个 session 支持 1–30 个 turn，单轮超时范围为 5–120 秒。批量入口支持 1–100 个文件；Actions 整个 job 最长 120 分钟。程序先校验所有文件、准备音频，全部成功后才连接 VAS，避免部分错误场景执行到一半才被发现。
+每个 session 支持 1–30 个 turn，单轮超时范围为 5–120 秒。批量入口支持 1–100 个文件；Actions 每个 session job 最长 120 分钟。Actions 先统一校验全部场景，再用 `max-parallel: 1` 逐会话准备音频、连接 VAS，失败时继续下一会话；本地批量入口仍先准备全部音频再依次连接。
 
 Actions 使用 **eSpeak NG 中文语音**把文本转为 WAV，再实时发送音频。这是离线合成，声音较机械，适合跑通链路和比较时序；识别准确率回归建议使用固定的真人录音。客户端按音频时长模拟播放，不依赖 runner 的扬声器。
 
@@ -85,7 +85,7 @@ VAS 需要支持现有 WebSocket 诊断协议。测试程序连接已有服务�
 
 ## 报告怎么读
 
-- **批量首页**：每个 session 的结果与报告入口。
+- **会话入口**：Actions 中每个 session 一个下载链接；本地批量运行仍提供 `index.html` 选择会话。
 - **会话回放**：在同一个时间轴播放全部 turn，保留用户输入、首音等待、过渡语与正式回答之间的空档，以及打断位置。
 - **区间测量**：在时间轴拖动选择起点和终点，读取选中区间的秒数。
 - **轮次详情**：保留各轮问题、回复文字、关键等待时间和 VAS 内部时序。
@@ -93,6 +93,21 @@ VAS 需要支持现有 WebSocket 诊断协议。测试程序连接已有服务�
 会话回放以客户端实际记录的音频发送与模拟播放时钟为准，跨 turn 保留真实间隔，统一用秒显示。它重现客户端按音频时长播放的节奏，不代表扬声器硬件实测。VAS 的单独时钟不能直接与客户端时间相减计算网络延迟。
 
 默认播放及下载的 `session.mixed.wav` 同时包含用户语音与 VAS 回复，单声道设备也能完整回听。原始左右分轨文件 `session.played.wav` 保留用于诊断，可在“播放与计时口径”中下载。两个文件使用相同时间轴；旧报告执行 `python main.py report <结果目录>` 即可生成混音版，无需重跑 VAS。
+
+## 下载与音频压缩
+
+Actions 为每个 session 单独上传一个 artifact，不再要求下载整批音频。同一文件中的多轮对话仍在同一个连接中执行，回听也是完整 session。
+
+下载包把 WAV 转为 **FLAC 无损音频**，相同内容只存一份。采样率、声道、PCM 采样、静音间隔和客户端时间轴不变，默认播放器仍同时播放用户和 VAS 声音。原始诊断 JSON/JSONL、每轮指标、失败信息和分轨音频均保留。压缩失败时 Action 会标为失败并上传原始诊断包。
+
+本地运行仍保存 WAV。压缩某个已有 session：
+
+```bash
+python -m voice_scenarios.report_archive artifacts/my-run --output artifacts/my-download
+# 批量结果则逐个指定 artifacts/my-batch/sessions/<session-id>
+```
+
+导出不会改动原结果目录。`audio-manifest.json` 保存原音频名称与 FLAC 文件的映射；解压即能用浏览器回听，不需要 Python。需要重新分析时，`python main.py report artifacts/my-download` 会通过 FFmpeg 还原 WAV 后重新生成报告，无需重跑 VAS（还原后目录会变大）。
 
 ## 本地运行
 
@@ -190,6 +205,6 @@ python -m black --check main.py voice_scenarios tests
 python -m isort --check-only main.py voice_scenarios tests
 ```
 
-提交和 PR 自动运行独立 CI：场景解析、WebSocket 协议、Fake 服务、计时、打断、会话回放、报告和 Actions 输入处理。批量测试通过本地 WebSocket 验证每个文件建立独立连接、同文件各轮共享连接、失败后继续，以及全部场景在联网前校验。CI artifact 包含单会话和批量示例报告。客户端覆盖率门槛为 80%，只排除需要 VAS checkout 的两个启动模块。真实 VAS 的本地集成测试通过 `VAS_TEST_ROOT` 显式开启，使用包含全部模块的覆盖率配置，见[开发文档](docs/scenarios.md#本地-vas--fake-服务)。
+提交和 PR 自动运行独立 CI：场景解析、WebSocket 协议、Fake 服务、计时、打断、会话回放、报告和 Actions 输入处理。批量测试通过本地 WebSocket 验证每个文件建立独立连接、同文件各轮共享连接、失败后继续，以及全部场景在联网前校验。CI artifact 包含单会话和批量示例报告；新增回归检查压缩前后 PCM 一致、音频去重、会话隔离、失败报告保留、还原后重新分析和 Actions 会话列表校验。客户端覆盖率门槛为 80%，只排除需要 VAS checkout 的两个启动模块。真实 VAS 的本地集成测试通过 `VAS_TEST_ROOT` 显式开启，使用包含全部模块的覆盖率配置，见[开发文档](docs/scenarios.md#本地-vas--fake-服务)。
 
 GitHub 官方参考：[手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[下载运行 artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)。

@@ -38,10 +38,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    name: 校验会话列表
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      sessions: ${{ steps.sessions.outputs.matrix }}
+    steps:
+      - name: 获取测试工具
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 准备缓存的 Docker 测试环境
+        uses: ./.github/actions/test-image
+      - name: 校验全部场景并分配独立 session
+        id: sessions
+        env:
+          SCENARIO_PATH: ${{ inputs.scenario_path }}
+          VAS_ENVIRONMENT: ${{ inputs.environment }}
+          VAS_DEVICE_ID: ${{ inputs.device_id || vars.VAS_DEVICE_ID }}
+        run: |
+          bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --matrix-output artifacts/session-matrix.json
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          matrix = json.loads(Path("artifacts/session-matrix.json").read_text())
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as target:
+              target.write("matrix=" + json.dumps(matrix, ensure_ascii=False) + "\n")
+          PYTHON
+
   test:
-    name: 对话测试与报告
+    name: 会话 · ${{ matrix.name }}
+    needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      # One physical device: sessions must not overlap; a failure must not cancel later sessions.
+      max-parallel: 1
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.sessions) }}
     steps:
       - name: 获取测试工具
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,42 +89,56 @@ jobs:
 
       - name: 执行会话测试
         env:
-          SCENARIO_PATH: ${{ inputs.scenario_path }}
+          SCENARIO_PATH: ${{ matrix.source }}
           VAS_ENVIRONMENT: ${{ inputs.environment }}
           VAS_DEVICE_ID: ${{ inputs.device_id || vars.VAS_DEVICE_ID }}
           VAS_DIAGNOSTICS: ${{ inputs.diagnostics }}
           VAS_TOKEN: ${{ secrets.VAS_TOKEN }}
           VAS_DEV_URL: ${{ vars.VAS_DEV_URL }}
           VAS_MAIN_URL: ${{ vars.VAS_MAIN_URL }}
-        run: |
-          bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --output artifacts/run
+        run: bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --scenarios "$SCENARIO_PATH" --output artifacts/run
 
-      - name: 保存完整报告与音频
+      - name: 无损压缩本会话音频
+        id: package
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        run: bash .github/actions/test-image/run.sh python -m voice_scenarios.report_archive artifacts/run --single-batch --output artifacts/download
+
+      - name: 保存本 session 报告与压缩音频
         id: report
-        if: always()
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vas-batch-${{ inputs.environment }}-${{ github.run_number }}-${{ github.run_attempt }}
-          path: artifacts/run/
-          if-no-files-found: warn
+          name: vas-${{ inputs.environment }}-${{ matrix.id }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/download/
+          if-no-files-found: error
+          compression-level: 9
           retention-days: 14
 
-      - name: 在运行结果中展示报告摘要
+      - name: 压缩失败时保留原始诊断
+        if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vas-${{ inputs.environment }}-${{ matrix.id }}-${{ github.run_number }}-${{ github.run_attempt }}-raw-fallback
+          path: artifacts/run/
+          retention-days: 14
+
+      - name: 在运行结果中展示本 session 报告
         if: always()
         env:
           REPORT_ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
         run: |
-          if docker image inspect aquamind-vas-testing:local >/dev/null 2>&1; then
+          if test -f artifacts/download/report.json; then
+            bash .github/actions/test-image/run.sh python -m voice_scenarios.ci_run --summarize artifacts/download
+          elif docker image inspect aquamind-vas-testing:local >/dev/null 2>&1; then
             bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --summarize artifacts/run
           fi
-          python3 - <<'PY'
+          python3 - <<'PYTHON'
           import os
           from pathlib import Path
-
           url = os.environ.get("REPORT_ARTIFACT_URL", "")
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
               if url:
-                  summary.write(f"\n[下载完整报告与音频]({url})\n\n解压后打开 `index.html`，选择 session 查看完整会话播放与时间轴。\n")
+                  summary.write(f"\n[下载本 session 报告与音频]({url})\n\n解压后打开 `report.html`。音频为无损 FLAC，包含全部轮次。\n")
               else:
-                  summary.write("\n本次未生成可下载的报告，请查看失败步骤的日志。\n")
-          PY
+                  summary.write("\n本会话未生成压缩报告，请查看失败日志及原始诊断 artifact。\n")
+          PYTHON

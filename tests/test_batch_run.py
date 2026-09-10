@@ -371,3 +371,40 @@ def test_batch_summary_reads_session_failure_reasons_from_existing_artifacts(tmp
     assert "迟到音频" in summary
     assert "200 条" in summary
     assert "sessions/broken/report.html" in summary
+
+
+def test_actions_matrix_contains_only_validated_session_identity(
+    scenario_folder, tmp_path
+):
+    write_scenario(
+        scenario_folder,
+        "one.yaml",
+        name="First unique session",
+        turns=[{"audio": "fixtures/input.wav"}, {"audio": "fixtures/input.wav"}],
+    )
+    write_scenario(scenario_folder, "two.yaml", name="Second unique session")
+    matrix_path = tmp_path / "matrix.json"
+    outcome = invoke(
+        scenario_folder,
+        tmp_path / "unused",
+        "--matrix-output",
+        str(matrix_path),
+        VAS_TOKEN="must-not-be-exported",
+    )
+    assert outcome.returncode == 0, outcome.stderr
+    matrix = json.loads(matrix_path.read_text())
+    assert len(matrix["include"]) == 2
+    assert [item["name"] for item in matrix["include"]] == [
+        "First unique session",
+        "Second unique session",
+    ]
+    assert all(set(item) == {"id", "name", "source"} for item in matrix["include"])
+    assert "must-not-be-exported" not in matrix_path.read_text()
+    assert not (tmp_path / "unused").exists()
+    write_scenario(scenario_folder, "bad.yaml", turns=[])
+    rejected = tmp_path / "rejected.json"
+    outcome = invoke(
+        scenario_folder, tmp_path / "unused", "--matrix-output", str(rejected)
+    )
+    assert outcome.returncode == 2
+    assert not rejected.exists()

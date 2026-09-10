@@ -16,6 +16,7 @@ from .failure_summary import failure_reasons
 from .model import Scenario, Turn
 from .reply_audio import prepare_reply_audio
 from .report import build_report, evaluate
+from .report_archive import restore_audio
 from .runner import run_scenario
 from .session_timing import prepare_session_playback
 from .websocket import WebSocketTransport
@@ -23,6 +24,7 @@ from .websocket import WebSocketTransport
 
 def create_report(directory):
     directory = Path(directory)
+    restore_audio(directory)
     result = json.loads((directory / "result.json").read_text())
     path = directory / "vas-events.jsonl"
     events = (
