@@ -13,9 +13,9 @@ on:
         default: dev
         required: true
       device_id:
-        description: 测试设备 MAC；留空使用仓库变量 VAS_DEVICE_ID
+        description: 测试设备 MAC（必填）
         type: string
-        required: false
+        required: true
       turns_json:
         description: 按顺序填写问题，如 ["推荐两款耳机","详细介绍第一款"]；在同一会话中执行
         type: string
@@ -47,7 +47,7 @@ permissions:
 
 # Both workflows share the same device lock, preventing overlapping conversations.
 concurrency:
-  group: voice-test-${{ inputs.environment }}-${{ inputs.device_id || vars.VAS_DEVICE_ID || 'missing-device' }}
+  group: voice-tests
   cancel-in-progress: false
 
 jobs:
@@ -68,7 +68,7 @@ jobs:
       - name: 执行会话测试
         env:
           VAS_ENVIRONMENT: ${{ inputs.environment }}
-          VAS_DEVICE_ID: ${{ inputs.device_id || vars.VAS_DEVICE_ID }}
+          VAS_DEVICE_ID: ${{ inputs.device_id }}
           VAS_TURNS_JSON: ${{ inputs.turns_json }}
           VAS_INPUT_MODE: ${{ inputs.input_mode }}
           VAS_DIAGNOSTICS: ${{ inputs.diagnostics }}

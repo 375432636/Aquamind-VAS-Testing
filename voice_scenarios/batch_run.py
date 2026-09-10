@@ -54,25 +54,37 @@ def load_sessions(source, env):
             )
             if not isinstance(data, dict) or set(data) - {
                 "name",
+                "device_id",
+                "environment",
                 "input_mode",
                 "turn_timeout_seconds",
                 "turns",
             }:
                 raise ValueError(
-                    "session supports only name, input_mode, turn_timeout_seconds and turns"
+                    "session supports only name, device_id, environment, input_mode, turn_timeout_seconds and turns"
                 )
             name = data.get("name", path.stem)
             if not isinstance(name, str) or not 1 <= len(name.strip()) <= 160:
                 raise ValueError("name must contain 1–160 characters")
+            device_id = data.get("device_id")
+            if not isinstance(device_id, str) or not re.fullmatch(
+                r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", device_id
+            ):
+                raise ValueError(
+                    "device_id is required and must be a MAC address such as FF:FF:FF:FF:FF:11"
+                )
+            environment = data.get("environment")
+            if environment not in ("dev", "main"):
+                raise ValueError("environment is required and must be dev or main")
             session_env = dict(env)
+            session_env["VAS_DEVICE_ID"] = device_id.upper()
+            session_env["VAS_ENVIRONMENT"] = environment
             session_env["VAS_TURNS_JSON"] = json.dumps(
                 data.get("turns"), ensure_ascii=False
             )
-            session_env["VAS_INPUT_MODE"] = data.get(
-                "input_mode", env.get("VAS_INPUT_MODE", "manual")
-            )
+            session_env["VAS_INPUT_MODE"] = data.get("input_mode", "manual")
             session_env["VAS_TURN_TIMEOUT_SECONDS"] = data.get(
-                "turn_timeout_seconds", env.get("VAS_TURN_TIMEOUT_SECONDS", "90")
+                "turn_timeout_seconds", "90"
             )
             settings = settings_from_env(session_env)
             turns = validate_turns(session_env["VAS_TURNS_JSON"], settings)
@@ -95,6 +107,8 @@ def load_sessions(source, env):
                 "id": identifier,
                 "source": f"scenarios/{relative}",
                 "name": name.strip(),
+                "environment": environment,
+                "device_id": device_id.upper(),
                 "env": session_env,
             }
         )
@@ -175,15 +189,22 @@ async def execute(source, output, env, *, prepare_only=False):
     batch = {
         "schema_version": 1,
         "status": "preparing",
-        "environment": env.get("VAS_ENVIRONMENT", "dev"),
+        "environment": "",
         "sessions": [],
     }
     prepared = []
     try:
         sessions = load_sessions(Path(source), env)
+        environments = {item["environment"] for item in sessions}
+        batch["environment"] = (
+            next(iter(environments)) if len(environments) == 1 else "mixed"
+        )
         for session in sessions:
             directory = f'sessions/{session["id"]}'
-            item = {key: session[key] for key in ("id", "source", "name")}
+            item = {
+                key: session[key]
+                for key in ("id", "source", "name", "environment", "device_id")
+            }
             item.update(directory=directory, status="prepared")
             settings, scenario = prepare(
                 output / directory, session["env"], name=session["name"]
@@ -305,7 +326,10 @@ def main():
             sessions = load_sessions(args.scenarios, os.environ)
             matrix = {
                 "include": [
-                    {key: item[key] for key in ("id", "name", "source")}
+                    {
+                        key: item[key]
+                        for key in ("id", "name", "source", "environment", "device_id")
+                    }
                     for item in sessions
                 ]
             }

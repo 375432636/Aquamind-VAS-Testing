@@ -1,40 +1,21 @@
 name: VAS 批量语音测试
-run-name: VAS ${{ inputs.environment }} · 批量场景 · ${{ github.run_number }}
+run-name: VAS · 批量场景 · ${{ github.run_number }}
 
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: VAS 环境
-        type: choice
-        options:
-          - dev
-          - main
-        default: dev
-        required: true
-      device_id:
-        description: 测试设备 MAC；留空使用仓库变量 VAS_DEVICE_ID
-        type: string
-        required: false
       scenario_path:
         description: scenarios/ 内的文件或文件夹；每个文件是独立会话
         type: string
         default: scenarios/smoke
         required: false
-      diagnostics:
-        description: frame 记录环节与逐帧事件；stage 只记录环节计时
-        type: choice
-        options:
-          - frame
-          - stage
-        default: frame
-        required: true
 
 permissions:
   contents: read
 
+# Saved sessions can target different devices; serialize both manual workflows.
 concurrency:
-  group: voice-test-${{ inputs.environment }}-${{ inputs.device_id || vars.VAS_DEVICE_ID || 'missing-device' }}
+  group: voice-tests
   cancel-in-progress: false
 
 jobs:
@@ -55,8 +36,6 @@ jobs:
         id: sessions
         env:
           SCENARIO_PATH: ${{ inputs.scenario_path }}
-          VAS_ENVIRONMENT: ${{ inputs.environment }}
-          VAS_DEVICE_ID: ${{ inputs.device_id || vars.VAS_DEVICE_ID }}
         run: |
           bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --matrix-output artifacts/session-matrix.json
           python3 - <<'PYTHON'
@@ -68,7 +47,7 @@ jobs:
           PYTHON
 
   test:
-    name: 会话 · ${{ matrix.name }}
+    name: ${{ matrix.environment }} · ${{ matrix.device_id }} · ${{ matrix.name }}
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -90,9 +69,7 @@ jobs:
       - name: 执行会话测试
         env:
           SCENARIO_PATH: ${{ matrix.source }}
-          VAS_ENVIRONMENT: ${{ inputs.environment }}
-          VAS_DEVICE_ID: ${{ inputs.device_id || vars.VAS_DEVICE_ID }}
-          VAS_DIAGNOSTICS: ${{ inputs.diagnostics }}
+          VAS_DIAGNOSTICS: frame
           VAS_TOKEN: ${{ secrets.VAS_TOKEN }}
           VAS_DEV_URL: ${{ vars.VAS_DEV_URL }}
           VAS_MAIN_URL: ${{ vars.VAS_MAIN_URL }}
@@ -108,7 +85,7 @@ jobs:
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vas-${{ inputs.environment }}-${{ matrix.id }}-${{ github.run_number }}-${{ github.run_attempt }}
+          name: vas-${{ matrix.environment }}-${{ matrix.id }}-${{ github.run_number }}-${{ github.run_attempt }}
           path: artifacts/download/
           if-no-files-found: error
           compression-level: 9
@@ -118,7 +95,7 @@ jobs:
         if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vas-${{ inputs.environment }}-${{ matrix.id }}-${{ github.run_number }}-${{ github.run_attempt }}-raw-fallback
+          name: vas-${{ matrix.environment }}-${{ matrix.id }}-${{ github.run_number }}-${{ github.run_attempt }}-raw-fallback
           path: artifacts/run/
           retention-days: 14
 

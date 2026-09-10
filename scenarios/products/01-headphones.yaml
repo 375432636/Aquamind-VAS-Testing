@@ -1,0 +1,9 @@
+name: 会议耳机上下文与打断
+device_id: "FF:FF:FF:FF:FF:11"
+environment: dev
+turns:
+  - text: 推荐两款适合会议录音转文字的耳机
+  - text: 详细介绍第一款
+    interrupt_after_seconds: 2
+    output_kind: answer
+  - text: 它和第二款有什么区别？
