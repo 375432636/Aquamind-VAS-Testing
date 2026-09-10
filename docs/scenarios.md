@@ -1,8 +1,58 @@
 # 场景与回归测试
 
+## 手动批量运行保存的 session
+
+将用于 Actions 的对话保存在 `scenarios/` 中。一个 YAML 或 JSON 文件对应一个独立 session，文件夹中按路径排序逐个运行；一个文件中的所有 turn 使用同一连接和上下文。
+
+```yaml
+# scenarios/custom/context.yaml
+name: 产品上下文与打断
+input_mode: manual
+turn_timeout_seconds: 90
+turns:
+  - id: recommend
+    text: 推荐两款适合会议录音转文字的耳机
+    expect:
+      max_first_playback_ms: 6000
+  - id: interrupt-details
+    text: 详细介绍第一款的各项功能
+    interrupt_after_seconds: 2
+    output_kind: answer
+  - id: follow-up
+    text: 它和第二款有什么区别？
+```
+
+`text` 会离线合成为中文 WAV。也可把某轮换成 `audio: fixtures/my-question.wav`；这里的 WAV 路径相对于**仓库根目录**，必须留在仓库内。每轮恰好填写 `text`、`audio` 之一。固定真人录音可以保存在 `scenarios/audio/`；文件夹递归加载只读取 YAML/JSON，不会把 WAV 当成场景。
+
+文件可设置 `name`、`input_mode`、`turn_timeout_seconds`、`turns`；每轮可设置 `id`、`text` 或 `audio`、`interrupt_after_seconds`、`output_kind`、`expect`。未知字段、重复 turn ID 和非法阈值都会在连接 VAS 之前被拒绝。
+
+```bash
+export VAS_ENVIRONMENT=dev
+export VAS_DEVICE_ID='你的测试设备 MAC ID'
+export VAS_DIAGNOSTICS=stage
+python -m voice_scenarios.batch_run \
+  --scenarios scenarios/custom \
+  --output artifacts/custom-001
+```
+
+`--scenarios scenarios/custom/context.yaml` 只运行一个文件；`--prepare-only` 只校验全部场景并准备音频。`input_mode` 和超时设置按各文件保留，省略时分别使用 `manual` 和 90 秒；Actions 中的同名参数仅作用于 `inline_json` 临时输入。
+
+每个 session 会重新连接 VAS，同设备顺序执行；某个 session 超时、断连或断言失败后，继续执行后面的文件。批量退出码：全部通过为 `0`，任一执行失败为 `1`，准备或参数错误为 `2`。文件之间没有共享的 WebSocket 历史；设备级长期 Memory 是否保留由 VAS 决定。
+
+输出目录结构：
+
+```text
+index.html / report.html      批量入口
+batch.json                   每个 session 的来源、结果和报告链接
+junit.xml                    汇总所有 session 的测试结果
+sessions/<场景路径标识>/       独立的报告、原始记录和音频
+```
+
+Actions 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`，或 `scenarios` 一次运行全部。当前没有定时触发，新增场景后由用户手动运行。场景文件与 runner 分开维护，后续可以在不改场景内容的情况下增加定期执行。
+
 ## 固定音频的多轮对话
 
-场景中的音频路径相对于 YAML 所在目录。所有 turn 共用一个 session，上一轮完成或打断结束后才发送下一轮。
+下面是 `main.py run --scenario` 使用的底层 WAV 场景格式，与上面的 Actions 文本文件格式不同；音频路径相对于 YAML 所在目录。所有 turn 共用一个 session，上一轮完成或打断结束后才发送下一轮。
 
 ```yaml
 name: 会议耳机上下文与打断

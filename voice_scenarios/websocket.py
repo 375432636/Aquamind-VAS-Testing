@@ -260,6 +260,20 @@ class WebSocketTransport:
                 await self.ws.send(packet)
                 count += 1
                 last_sent = time.monotonic_ns()
+                self.emit(
+                    Event(
+                        "input_audio_frame_sent",
+                        {
+                            "pcm_offset_samples": (count - 1) * 960,
+                            "samples": len(pcm) // 2,
+                            "sample_rate": 16000,
+                            "stream": "input",
+                            "is_speech": True,
+                            "listen_turn_id": self.turn_sequence,
+                        },
+                        last_sent,
+                    )
+                )
                 if count == 1:
                     self.emit(
                         Event(

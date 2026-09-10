@@ -1,0 +1,10 @@
+name: VAD 自动结束 · 连续上下文
+input_mode: vad
+turn_timeout_seconds: 90
+turns:
+  - id: choices
+    text: 推荐两个适合初学者的室内运动，简单说一下各自的好处。
+  - id: follow-up
+    text: 第一个每天练多久比较合适？
+  - id: summary
+    text: 把刚才介绍的两种运动做个简单对比。

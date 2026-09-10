@@ -1,5 +1,5 @@
 name: VAS 语音测试
-run-name: VAS ${{ inputs.environment }} · ${{ inputs.input_mode }} · ${{ github.run_number }}
+run-name: VAS ${{ inputs.environment }} · ${{ inputs.source }} · ${{ github.run_number }}
 
 on:
   workflow_dispatch:
@@ -13,16 +13,28 @@ on:
         default: dev
         required: true
       device_id:
-        description: 该环境中有效的测试设备 MAC ID
+        description: 测试设备 MAC；留空使用仓库变量 VAS_DEVICE_ID
         type: string
+        required: false
+      source:
+        description: 已保存的场景文件（默认）或临时输入 JSON
+        type: choice
+        options:
+          - saved_files
+          - inline_json
+        default: saved_files
         required: true
+      scenario_path:
+        description: saved_files：scenarios/ 内的文件或文件夹；每个文件是独立 session
+        type: string
+        default: scenarios/smoke
+        required: false
       turns_json:
-        description: 同一 session 的对话 JSON；interrupt_after_seconds 表示回复起播后几秒打断
+        description: 仅 inline_json 使用；同一 session 的临时对话数组
         type: string
-        required: true
-        default: '[{"text":"你好"},{"text":"介绍一下适合开会的耳机","interrupt_after_seconds":2,"output_kind":"answer"},{"text":"第一个支持什么功能？"}]'
+        required: false
       input_mode:
-        description: manual 主动结束上行；vad 持续发送底噪、等待后台判断结束
+        description: 仅 inline_json 使用；已保存场景使用各文件的 input_mode
         type: choice
         options:
           - manual
@@ -38,7 +50,7 @@ on:
         default: stage
         required: true
       turn_timeout_seconds:
-        description: 单个 turn 的最长等待时间（秒）
+        description: 仅 inline_json 使用；已保存场景使用各文件的超时配置
         type: number
         default: 90
         required: true
@@ -47,7 +59,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: voice-test-${{ inputs.environment }}-${{ inputs.device_id }}
+  group: voice-test-${{ inputs.environment }}-${{ inputs.device_id || vars.VAS_DEVICE_ID || 'missing-device' }}
   cancel-in-progress: false
 
 jobs:
@@ -74,10 +86,12 @@ jobs:
           sudo apt-get install --no-install-recommends -y espeak-ng ffmpeg libopus0
           python -m pip install -e '.[test]'
 
-      - name: 执行多轮对话
+      - name: 执行会话测试
         env:
+          TEST_SOURCE: ${{ inputs.source }}
+          SCENARIO_PATH: ${{ inputs.scenario_path }}
           VAS_ENVIRONMENT: ${{ inputs.environment }}
-          VAS_DEVICE_ID: ${{ inputs.device_id }}
+          VAS_DEVICE_ID: ${{ inputs.device_id || vars.VAS_DEVICE_ID }}
           VAS_TURNS_JSON: ${{ inputs.turns_json }}
           VAS_INPUT_MODE: ${{ inputs.input_mode }}
           VAS_DIAGNOSTICS: ${{ inputs.diagnostics }}
@@ -85,7 +99,13 @@ jobs:
           VAS_TOKEN: ${{ secrets.VAS_TOKEN }}
           VAS_DEV_URL: ${{ vars.VAS_DEV_URL }}
           VAS_MAIN_URL: ${{ vars.VAS_MAIN_URL }}
-        run: python -m voice_scenarios.ci_run --output artifacts/run
+        run: |
+          if [ "$TEST_SOURCE" = "saved_files" ]; then
+            unset VAS_INPUT_MODE VAS_TURN_TIMEOUT_SECONDS
+            python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --output artifacts/run
+          else
+            python -m voice_scenarios.ci_run --output artifacts/run
+          fi
 
       - name: 保存完整报告与音频
         id: report
@@ -102,7 +122,11 @@ jobs:
         env:
           REPORT_ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
         run: |
-          python -m voice_scenarios.ci_run --summarize artifacts/run
+          if [ -f artifacts/run/batch.json ]; then
+            python -m voice_scenarios.batch_run --summarize artifacts/run
+          else
+            python -m voice_scenarios.ci_run --summarize artifacts/run
+          fi
           python - <<'PY'
           import os
           from pathlib import Path
@@ -110,7 +134,7 @@ jobs:
           url = os.environ.get("REPORT_ARTIFACT_URL", "")
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
               if url:
-                  summary.write(f"\n[下载完整报告与音频]({url})\n\n解压后打开 `report.html`，点击 turn 查看时序与逐段回听。\n")
+                  summary.write(f"\n[下载完整报告与音频]({url})\n\n解压后打开 `index.html`，选择 session 查看完整会话播放与时间轴。\n")
               else:
                   summary.write("\n本次未生成可下载的报告，请查看失败步骤的日志。\n")
           PY

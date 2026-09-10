@@ -72,7 +72,22 @@ async def stream_microphone(ws, path, settings, turn_id, emit, speech_done, outp
                 ),
             )
             await ws.send(encoder.encode(pcm, 960))
+            sent_at = time.monotonic_ns()
             saved.writeframesraw(pcm)
+            emit(
+                Event(
+                    "input_audio_frame_sent",
+                    {
+                        "pcm_offset_samples": total * 960,
+                        "samples": 960,
+                        "sample_rate": 16000,
+                        "stream": "uplink",
+                        "is_speech": is_speech,
+                        "listen_turn_id": turn_id,
+                    },
+                    sent_at,
+                )
+            )
             if total == 0:
-                emit(Event("first_audio_sent", {"listen_turn_id": turn_id}))
+                emit(Event("first_audio_sent", {"listen_turn_id": turn_id}, sent_at))
             total += 1

@@ -154,6 +154,17 @@ def test_actions_entry_point_reuses_session_after_interrupt_and_exports_report(
     assert report["turns"][0]["interruption"]["client_playback_stopped"]
     assert (output / "report.html").is_file()
     assert (output / "junit.xml").is_file()
+    playback = report["session_playback"]
+    assert playback["status"] == "ready", playback.get("limitations")
+    assert len(playback["turns"]) == 2
+    assert playback["turns"][1]["start_seconds"] > playback["turns"][0]["start_seconds"]
+    assert any(marker["kind"] == "abort" for marker in playback["markers"])
+    with wave.open(str(output / playback["path"])) as session_audio:
+        assert session_audio.getnchannels() == 2
+        assert (
+            session_audio.getnframes() / session_audio.getframerate()
+            == pytest.approx(playback["duration_seconds"], abs=1 / 16000)
+        )
     assert (
         report["turns"][1]["reply_timing"]["sentences"][0]["audio"]["played"]["status"]
         == "ready"

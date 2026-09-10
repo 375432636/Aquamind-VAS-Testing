@@ -6,7 +6,6 @@ import re
 from collections import Counter
 from html import escape
 from pathlib import Path
-from urllib.parse import quote
 
 from .reply_timing import analyze_reply_timing, input_end_event
 from .timeline import group_timeline_spans
@@ -375,7 +374,7 @@ def _overview(report):
     completed = sum(not _turn_failed(turn) for turn in turns)
     content = (
         '<div class="page-heading"><div><div class="eyebrow">SESSION OVERVIEW</div>'
-        f'<h1>{_text(report.get("name", "语音测试"))}</h1><p>一段连续对话，逐轮查看响应与内部时序。</p></div>'
+        f'<h1>{_text(report.get("name", "语音测试"))}</h1><p>完整会话回放 · 用户输入、等待和回复使用同一时间轴。</p></div>'
         f'{_badge("测试通过", "success") if report.get("status") == "passed" else _badge("需要检查", "danger")}</div>'
         + _notices(report)
         + _cards(
@@ -391,8 +390,9 @@ def _overview(report):
                 ("最长过渡等待", _seconds(maximum(2)), "s", "临时结束 → 正式开始"),
             ]
         )
-        + '<section class="panel"><div class="section-heading"><div><h2>对话记录</h2>'
-        '<p>选择一轮，查看回复内容、回听和时间轴。</p></div><span class="unit-label">时间单位 · 秒</span></div>'
+        + _session_panel(report)
+        + '<section class="panel"><div class="section-heading"><div><h2>逐轮结果</h2>'
+        '<p>回听定位到整段会话；内部时序在独立页面查看。</p></div><span class="unit-label">时间单位 · 秒</span></div>'
         '<div class="table-scroll"><table class="turn-table"><thead><tr>'
         "<th>轮次 / 用户输入</th><th>首句声音</th><th>正式回复</th><th>过渡等待</th><th>结果</th><th></th>"
         "</tr></thead><tbody>"
@@ -407,7 +407,8 @@ def _overview(report):
                 for v in metrics[:3]
             )
             + f'<td><div class="badges">{_turn_badges(turn)}</div></td>'
-            f'<td><a class="open-turn" href="turn-{index:03}.html" aria-label="查看第 {index} 轮">查看 <span aria-hidden="true">→</span></a></td></tr>'
+            f'<td><div class="turn-actions"><a class="open-turn" data-session-seek="{_session_start(report, index):.3f}" href="#session-timeline" aria-label="回听第 {index} 轮">回听</a>'
+            f'<a class="open-turn" href="turn-{index:03}.html" aria-label="查看第 {index} 轮">时序 →</a></div></td></tr>'
         )
     content += "</tbody></table></div></section>"
     content += (
@@ -420,6 +421,82 @@ def _overview(report):
         "</div></details>"
     )
     return content
+
+
+def _session_start(report, index):
+    row = next(
+        (
+            row
+            for row in report.get("session_playback", {}).get("turns", [])
+            if row["index"] == index
+        ),
+        {},
+    )
+    return row.get("input_start_seconds") or row.get("start_seconds") or 0
+
+
+def _session_panel(report):
+    playback = report.get("session_playback", {})
+    path = playback.get("path")
+    duration = playback.get("duration_seconds", 0)
+    content = (
+        '<section class="panel session-panel" id="session-timeline"><div class="section-heading">'
+        '<div><div class="eyebrow">SESSION PLAYBACK</div><h2>会话播放与等待</h2>'
+        "<p>客户端实时时间 · 开始发送音频 = 0 s</p></div>"
+        f'<span class="unit-label">全程 {_seconds(duration)} s</span></div>'
+    )
+    if path:
+        content += (
+            '<div class="session-player-row"><audio id="session-player" controls preload="metadata" '
+            f'aria-label="完整会话播放" src="{_text(path)}"></audio>'
+            f'<a class="session-download" href="{_text(path)}" download>下载会话 WAV ↓</a></div>'
+        )
+    else:
+        content += '<div class="empty-state">没有可回放的完整会话音频</div>'
+    adjusted_input = any(
+        isinstance(item, dict)
+        and item.get("code") in {"approximate_input_timing", "input_packet_overlap"}
+        for item in playback.get("limitations", [])
+    )
+    if adjusted_input:
+        content += '<p class="session-capture-notice">输入回放含近似对齐；回复按客户端播放记录还原。</p>'
+    content += (
+        '<div class="session-toolbar"><div class="session-legend">'
+        '<span><i class="legend-input"></i>用户输入</span><span><i class="legend-temporary"></i>过渡 / 临时</span>'
+        '<span><i class="legend-answer"></i>正式回复</span><span><i class="legend-wait"></i>等待</span>'
+        '<span><i class="legend-abort"></i>打断</span></div>'
+        '<div class="session-zoom" role="group" aria-label="时间轴缩放">'
+        '<button type="button" data-session-zoom="out" aria-label="缩小时间轴">−</button>'
+        '<button type="button" data-session-zoom="fit">全会话</button>'
+        '<button type="button" data-session-zoom="in" aria-label="放大时间轴">+</button></div></div>'
+        '<div class="session-chart-layout"><div class="session-track-labels" aria-hidden="true">'
+        '<span>用户语音</span><span>回复播放</span></div><div class="session-viewport" id="session-viewport">'
+        '<div class="session-canvas" id="session-canvas" tabindex="0" role="group" '
+        'aria-label="会话时间轴，点击定位，拖动选择时间区间；也可在下方输入起止秒数"></div></div></div>'
+        '<div class="session-tools"><span class="measurement-hint">点击定位 · 拖动划线测量</span>'
+        '<div class="measurement-controls" role="group" aria-label="时间区间测量">'
+        '<label>起点 <input id="measure-start" type="number" min="0" step="0.01" placeholder="—" aria-label="测量起点，秒"> s</label>'
+        '<span aria-hidden="true">→</span>'
+        '<label>终点 <input id="measure-end" type="number" min="0" step="0.01" placeholder="—" aria-label="测量终点，秒"> s</label>'
+        '<output id="measure-duration" aria-live="polite">Δ — s</output>'
+        '<button type="button" id="measure-clear">清除</button></div></div>'
+        '<div id="session-detail" class="session-detail" aria-live="polite">'
+        '<span class="detail-placeholder">选择语音、回复或等待区间，查看文字与时间。</span></div>'
+        '<details class="inline-disclosure"><summary>播放与计时口径</summary><div class="detail-body">'
+        "<p>按客户端记录的发送、播放时间还原整段会话，保留句间与轮间空档。用户在左声道，回复在右声道。"
+        "播放记录来自 Python 软件播放器，不代表设备扬声器的实测出声时刻。</p>"
+        "<p>输入结束是 WAV 素材发送结束，素材内部静音也计入；VAD 模式随后继续发送底噪。VAS 内部时钟在各轮详情中独立展示。</p>"
+    )
+    for limitation in playback.get("limitations", []):
+        message = (
+            limitation.get("message", "")
+            if isinstance(limitation, dict)
+            else limitation
+        )
+        content += f'<p class="capture-limitation">{_text(message)}</p>'
+    if playback.get("status") == "incomplete":
+        content += '<p class="capture-limitation">部分音频或时间记录缺失，回放有未还原的区间。</p>'
+    return content + "</div></details></section>"
 
 
 def _turn_page(report, index):
@@ -456,7 +533,11 @@ def _turn_page(report, index):
             ("最长句间空档", _seconds(values[3]), "s", "上一段播完 → 下一段开始"),
         ]
     )
-    content += '<section class="panel" id="reply-timing"></section>'
+    content += (
+        '<section class="panel" id="reply-timing"></section>'
+        f'<a class="button session-return" href="report.html?t={_session_start(report, index + 1):.3f}#session-timeline">'
+        "在完整会话中回听本轮 →</a>"
+    )
     if turn.get("interruption") or turn.get("requested_interruption"):
         interruption = turn.get("interruption") or {}
         requested = turn.get("requested_interruption") or {}
@@ -523,15 +604,6 @@ def _turn_page(report, index):
     content += '</div><details class="inline-disclosure"><summary>查看结束事件</summary><div class="table-scroll detail-body"><table id="handoff"></table></div></details></section>'
     checks = turn.get("checks", [])
     content += f'<details class="disclosure"><summary>回归断言 <span>{sum(c["passed"] for c in checks)} / {len(checks)} 通过</span></summary><div class="detail-body table-scroll"><table id="checks"></table></div></details>'
-    content += '<details class="disclosure"><summary>本轮完整音频</summary><div class="detail-body full-audio">'
-    for kind, name in turn.get("audio", {}).items():
-        label = {
-            "input": "用户输入",
-            "received": "收到的回复",
-            "played": "实际播放",
-        }.get(kind, kind)
-        content += f'<div><span>{_text(label)}</span><audio controls preload="none" aria-label="{_text(label)}" src="{quote(Path(name).name)}"></audio></div>'
-    content += "</div></details>"
     content += '<details class="disclosure"><summary>原始诊断数据</summary><div class="detail-body"><a href="report.json" download>下载 JSON</a><pre id="raw"></pre></div></details>'
     content += f'<nav class="bottom-navigation" aria-label="轮次翻页"><a href="report.html">返回会话总览</a><div>{previous}{following}</div></nav>'
     return content
@@ -541,12 +613,14 @@ def build_report(report, path):
     """Write a session overview and independent, fully offline turn pages."""
     assets = Path(__file__).parent
     template = (assets / "report_template.html").read_text()
-    style = (assets / "report.css").read_text() + (
-        assets / "reply_timing.css"
-    ).read_text()
-    script = (assets / "reply_timing.js").read_text() + (
-        assets / "report.js"
-    ).read_text()
+    style = "\n".join(
+        (assets / name).read_text()
+        for name in ("report.css", "reply_timing.css", "session_timeline.css")
+    )
+    script = "\n".join(
+        (assets / name).read_text()
+        for name in ("reply_timing.js", "session_timeline.js", "report.js")
+    )
     display = copy.deepcopy(report)
     for turn in display["turns"]:
         if "reply_timing" not in turn:
@@ -558,8 +632,32 @@ def build_report(report, path):
 
     def page(index):
         turn = display["turns"][index] if index is not None else None
+        playback = display.get("session_playback", {})
+        if index is not None:
+            # Detail pages only link back to the master player. Avoid copying every
+            # session's packet intervals into every turn page.
+            playback = {
+                "clock": playback.get("clock"),
+                "zero_at_ns": playback.get("zero_at_ns"),
+                "segments": [
+                    {
+                        key: value
+                        for key, value in segment.items()
+                        if key not in {"intervals", "audio_seqs"}
+                    }
+                    for segment in playback.get("segments", [])
+                    if segment.get("turn_index") == index + 1
+                ],
+            }
         encoded = (
-            json.dumps({"turn": turn}, ensure_ascii=False)
+            json.dumps(
+                {
+                    "turn": turn,
+                    "turn_index": index + 1 if index is not None else None,
+                    "session_playback": playback,
+                },
+                ensure_ascii=False,
+            )
             .replace("<", "\\u003c")
             .replace("\u2028", "\\u2028")
         )
@@ -576,7 +674,7 @@ def build_report(report, path):
                 _turn_page(display, index) if turn is not None else _overview(display)
             ),
             "__REPORT_DATA__": encoded,
-            "__SCRIPT__": script if turn is not None else "",
+            "__SCRIPT__": script,
         }
         return re.sub(
             r"__[A-Z_]+__", lambda match: replacements.get(match[0], match[0]), template

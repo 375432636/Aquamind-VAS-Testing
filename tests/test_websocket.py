@@ -10,6 +10,49 @@ from voice_scenarios import Scenario, run_scenario
 from voice_scenarios.websocket import WebSocketTransport
 
 
+@pytest.mark.parametrize("diagnostics", ["off", "stage", "frame"])
+def test_input_frame_clock_records_unpadded_samples_at_send_completion(
+    tmp_path, diagnostics
+):
+    source = tmp_path / "partial.wav"
+    with wave.open(str(source), "wb") as audio:
+        audio.setparams((1, 2, 16000, 0, "NONE", ""))
+        audio.writeframes(b"\x00\x10" * 1100)
+    events, sent = [], []
+
+    class Socket:
+        async def send(self, packet):
+            sent.append(packet)
+
+    transport = WebSocketTransport(
+        "ws://unused", device_id="test", diagnostics=diagnostics
+    )
+    transport.ws = Socket()
+    transport.emit = events.append
+    asyncio.run(transport.send_audio(source))
+    frames = [event for event in events if event.kind == "input_audio_frame_sent"]
+    assert (
+        len(frames)
+        == len([packet for packet in sent if isinstance(packet, bytes)])
+        == 2
+    )
+    assert [event.data["pcm_offset_samples"] for event in frames] == [0, 960]
+    assert [event.data["samples"] for event in frames] == [960, 140]
+    assert all(event.data["stream"] == "input" for event in frames)
+    assert all(event.data["sample_rate"] == 16000 for event in frames)
+    assert all(
+        event.data["is_speech"] and event.data["listen_turn_id"] == 1
+        for event in frames
+    )
+    assert frames[1].at_ns > frames[0].at_ns
+    assert frames[0].at_ns == next(
+        event.at_ns for event in events if event.kind == "first_audio_sent"
+    )
+    assert frames[-1].at_ns <= next(
+        event.at_ns for event in events if event.kind == "listen_stop_sent"
+    )
+
+
 def test_real_websocket_opus_round_trip_and_timed_abort(tmp_path):
     source = tmp_path / "input.wav"
     with wave.open(str(source), "wb") as audio:

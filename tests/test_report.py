@@ -246,6 +246,76 @@ def test_output_milestone_does_not_replace_tts_request_span():
     ] == [("tts_request", 800)]
 
 
+def test_session_has_one_player_shared_clock_and_measurement_controls(tmp_path):
+    report = evaluate(
+        {
+            "name": "整段会话",
+            "status": "passed",
+            "turns": [
+                {
+                    "id": "one",
+                    "input_text": "你好",
+                    "status": "completed",
+                    "events": [],
+                },
+                {
+                    "id": "two",
+                    "input_text": "继续",
+                    "status": "completed",
+                    "events": [],
+                },
+            ],
+        },
+        [],
+    )
+    report["session_playback"] = {
+        "status": "ready",
+        "path": "session.played.wav",
+        "duration_seconds": 18,
+        "clock": "client_monotonic",
+        "turns": [
+            {"index": 1, "start_seconds": 0, "input_start_seconds": 0},
+            {"index": 2, "start_seconds": 12, "input_start_seconds": 12},
+        ],
+        "segments": [
+            {"turn_index": 1, "index": 1, "text": "仅属于第一轮的回复"},
+            {"turn_index": 2, "index": 1, "text": "仅属于第二轮的回复"},
+        ],
+        "waits": [],
+        "markers": [],
+    }
+    build_report(report, tmp_path / "report.html")
+    overview = (tmp_path / "report.html").read_text()
+    second = (tmp_path / "turn-002.html").read_text()
+    assert overview.count("<audio ") == 1
+    assert 'id="session-player"' in overview
+    assert 'src="session.played.wav"' in overview
+    assert 'id="session-timeline"' in overview
+    assert 'id="measure-start"' in overview and 'id="measure-end"' in overview
+    assert 'id="measure-duration"' in overview
+    assert '"clock": "client_monotonic"' in overview
+    assert "setPointerCapture" in overview and "pointerup" in overview
+    assert "<audio " not in second
+    assert 'href="report.html?t=12.000#session-timeline"' in second
+    assert "输入结束 = 0 s" not in second
+    assert "仅属于第一轮的回复" in overview
+    assert "仅属于第二轮的回复" in second
+    assert "仅属于第一轮的回复" not in second
+
+
+def test_missing_session_audio_does_not_offer_empty_player(tmp_path):
+    report = evaluate({"name": "empty", "status": "failed", "turns": []}, [])
+    report["session_playback"] = {
+        "status": "unavailable",
+        "duration_seconds": 0,
+        "limitations": [{"code": "missing_audio", "message": "未保存客户端音频"}],
+    }
+    build_report(report, tmp_path / "report.html")
+    page = (tmp_path / "report.html").read_text()
+    assert "<audio " not in page
+    assert "未保存客户端音频" in page
+
+
 def test_unadapted_tts_reports_unknown_metrics_without_false_cross_turn_failure():
     result = {
         "name": "legacy-provider",

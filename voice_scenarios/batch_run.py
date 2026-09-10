@@ -1,0 +1,292 @@
+"""Run saved conversation sessions sequentially and export one batch report."""
+
+import argparse
+import asyncio
+import hashlib
+import html
+import json
+import logging
+import os
+import re
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+import yaml
+
+from .__main__ import create_report
+from .ci_run import (
+    ROOT,
+    execute_prepared,
+    prepare,
+    settings_from_env,
+    validate_audio,
+    validate_turns,
+)
+from .runner import save_result
+
+
+def load_sessions(source, env):
+    """Validate every saved file and referenced audio before making a connection."""
+    root = (ROOT / "scenarios").resolve()
+    source = (ROOT / source).resolve()
+    if not source.is_relative_to(root):
+        raise ValueError(
+            "Scenario path must stay inside the repository scenarios/ folder"
+        )
+    files = sorted(source.rglob("*")) if source.is_dir() else [source]
+    files = [
+        path for path in files if path.suffix.lower() in {".yaml", ".yml", ".json"}
+    ]
+    if not 1 <= len(files) <= 100:
+        raise ValueError("Select 1–100 JSON/YAML session files inside scenarios/")
+    sessions = []
+    for path in files:
+        if not path.resolve().is_relative_to(root) or not path.is_file():
+            raise ValueError("Scenario file must exist inside scenarios/")
+        relative = path.relative_to(root).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+            data = (
+                json.loads(text)
+                if path.suffix.lower() == ".json"
+                else yaml.safe_load(text)
+            )
+            if not isinstance(data, dict) or set(data) - {
+                "name",
+                "input_mode",
+                "turn_timeout_seconds",
+                "turns",
+            }:
+                raise ValueError(
+                    "session supports only name, input_mode, turn_timeout_seconds and turns"
+                )
+            name = data.get("name", path.stem)
+            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 160:
+                raise ValueError("name must contain 1–160 characters")
+            session_env = dict(env)
+            session_env["VAS_TURNS_JSON"] = json.dumps(
+                data.get("turns"), ensure_ascii=False
+            )
+            session_env["VAS_INPUT_MODE"] = data.get(
+                "input_mode", env.get("VAS_INPUT_MODE", "manual")
+            )
+            session_env["VAS_TURN_TIMEOUT_SECONDS"] = data.get(
+                "turn_timeout_seconds", env.get("VAS_TURN_TIMEOUT_SECONDS", "90")
+            )
+            settings = settings_from_env(session_env)
+            turns = validate_turns(session_env["VAS_TURNS_JSON"], settings)
+            for turn in turns:
+                if "source_audio" in turn:
+                    validate_audio(
+                        turn["source_audio"], settings["turn_timeout_seconds"]
+                    )
+        except (ValueError, TypeError, OSError, yaml.YAMLError) as exc:
+            raise ValueError(f"{relative}: {exc}") from exc
+        slug = (
+            re.sub(r"[^a-zA-Z0-9_-]+", "-", str(Path(relative).with_suffix(""))).strip(
+                "-"
+            )[:80]
+            or "session"
+        )
+        identifier = f"{slug}-{hashlib.sha256(relative.encode()).hexdigest()[:8]}"
+        sessions.append(
+            {
+                "id": identifier,
+                "source": f"scenarios/{relative}",
+                "name": name.strip(),
+                "env": session_env,
+            }
+        )
+    return sessions
+
+
+def _safe_error(exc, env):
+    message = f"{type(exc).__name__}: {exc}"
+    token = env.get("VAS_TOKEN")
+    return message.replace(token, "[redacted]") if token else message
+
+
+def write_batch(output, batch):
+    """Persist machine-readable status plus a portable HTML entry point."""
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "batch.json").write_text(
+        json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    rows = []
+    for index, item in enumerate(batch["sessions"], 1):
+        name = html.escape(item["name"])
+        if item.get("report"):
+            name = f'<a href="{html.escape(item["report"], quote=True)}">{name} →</a>'
+        rows.append(
+            f'<tr><td>{index:02d}</td><td>{name}<small>{html.escape(item["source"])}</small></td><td>{html.escape(item["status"])}</td><td>{item.get("turn_count", "—")}</td></tr>'
+        )
+    error = (
+        f'<p class="error">{html.escape(batch["error"])}</p>'
+        if batch.get("error")
+        else ""
+    )
+    document = f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VAS 批量测试</title>
+<style>body{{font:16px/1.6 system-ui,sans-serif;background:#f5f7fa;color:#192637;margin:0}}main{{max-width:1000px;margin:48px auto;padding:24px}}h1{{margin-bottom:8px}}p{{color:#526477}}table{{width:100%;border-collapse:collapse;background:white;border:1px solid #dce2e9;border-radius:12px}}th,td{{text-align:left;padding:16px;border-bottom:1px solid #e6ebf0}}th{{color:#64748b;font-size:13px}}a{{color:#1963d1;text-decoration:none;font-weight:600}}a:hover{{text-decoration:underline}}small{{display:block;color:#748295;font-size:12px}}.error{{color:#a42338;background:#fff1f2;padding:16px}}@media(max-width:600px){{main{{margin:12px auto;padding:12px}}th,td{{padding:10px}}small{{overflow-wrap:anywhere}}}}</style>
+<main><small>AQUAMIND · VOICE TESTING</small><h1>批量会话测试</h1><p>{html.escape(batch["status"])} · {len(batch["sessions"])} 个 session · {html.escape(batch.get("environment", ""))}</p>{error}<table><thead><tr><th>#</th><th>会话</th><th>结果</th><th>轮数</th></tr></thead><tbody>{"".join(rows)}</tbody></table></main></html>"""
+    for name in ("index.html", "report.html"):
+        (output / name).write_text(document, encoding="utf-8")
+    suites = ET.Element("testsuites", name="VAS batch")
+    for item in batch["sessions"]:
+        source = output / item["directory"] / "junit.xml"
+        if source.exists():
+            suite = ET.parse(source).getroot()
+            suite.set("name", item["name"])
+            for case in suite.findall("testcase"):
+                case.set("classname", f'voice_scenario.{item["id"]}')
+            suites.append(suite)
+        elif item["status"] == "failed":
+            suite = ET.SubElement(
+                suites, "testsuite", name=item["name"], tests="1", failures="1"
+            )
+            ET.SubElement(
+                ET.SubElement(suite, "testcase", name="session_report"),
+                "failure",
+                message=item.get(
+                    "error", "Session failed before a report was available"
+                ),
+            )
+    if batch.get("error"):
+        setup = ET.SubElement(
+            suites, "testsuite", name="batch_setup", tests="1", failures="1"
+        )
+        ET.SubElement(
+            ET.SubElement(setup, "testcase", name="prepare"),
+            "failure",
+            message=batch["error"],
+        )
+    suites.set("tests", str(sum(int(suite.get("tests", "0")) for suite in suites)))
+    suites.set("failures", str(len(suites.findall(".//failure"))))
+    ET.ElementTree(suites).write(
+        output / "junit.xml", encoding="utf-8", xml_declaration=True
+    )
+
+
+async def execute(source, output, env, *, prepare_only=False):
+    output = Path(output).resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ValueError("Output already contains files; choose a new directory")
+    batch = {
+        "schema_version": 1,
+        "status": "preparing",
+        "environment": env.get("VAS_ENVIRONMENT", "dev"),
+        "sessions": [],
+    }
+    prepared = []
+    try:
+        sessions = load_sessions(Path(source), env)
+        for session in sessions:
+            directory = f'sessions/{session["id"]}'
+            item = {key: session[key] for key in ("id", "source", "name")}
+            item.update(directory=directory, status="prepared")
+            settings, scenario = prepare(
+                output / directory, session["env"], name=session["name"]
+            )
+            item["turn_count"] = len(scenario.turns)
+            batch["sessions"].append(item)
+            prepared.append((session["env"], settings, scenario))
+    except Exception as exc:
+        batch.update(status="failed", error=_safe_error(exc, env))
+        write_batch(output, batch)
+        logging.error("%s", batch["error"])
+        return 2
+    batch["status"] = "prepared" if prepare_only else "running"
+    write_batch(output, batch)
+    if prepare_only:
+        return 0
+    for item, (session_env, settings, scenario) in zip(batch["sessions"], prepared):
+        directory = output / item["directory"]
+        try:
+            code = await execute_prepared(directory, session_env, settings, scenario)
+            item["status"] = "passed" if code == 0 else "failed"
+        except Exception as exc:
+            item.update(status="failed", error=_safe_error(exc, session_env))
+            if not (directory / "result.json").exists():
+                save_result(
+                    {
+                        "name": item["name"],
+                        "status": "failed",
+                        "turns": [],
+                        "error": item["error"],
+                    },
+                    directory,
+                )
+            try:
+                create_report(directory)
+            except Exception:
+                logging.error("Unable to generate report for %s", item["id"])
+        if (directory / "report.html").exists():
+            item["report"] = f'{item["directory"]}/report.html'
+        write_batch(output, batch)
+        logging.info("%s | %s", item["status"].upper(), item["source"])
+    batch["status"] = (
+        "passed"
+        if all(item["status"] == "passed" for item in batch["sessions"])
+        else "failed"
+    )
+    write_batch(output, batch)
+    return 0 if batch["status"] == "passed" else 1
+
+
+def summarize(directory):
+    path = Path(directory) / "batch.json"
+    if not path.is_file():
+        return "## VAS 批量测试\n\n没有生成批量报告，请查看执行步骤日志。\n"
+    batch = json.loads(path.read_text(encoding="utf-8"))
+    from .ci_run import _markdown
+
+    lines = [
+        "## VAS 批量测试",
+        "",
+        f'**{_markdown(batch["status"])}** · {len(batch["sessions"])} 个 session',
+        "",
+        "| 会话 | 结果 | 轮数 |",
+        "| --- | --- | --- |",
+    ]
+    for item in batch["sessions"]:
+        lines.append(
+            f'| {_markdown(item["name"])} | {_markdown(item["status"])} | {item.get("turn_count", "—")} |'
+        )
+    if batch.get("error"):
+        lines.append(f'\n{_markdown(batch["error"])}')
+    lines.append("\n下载完整报告并解压，打开 `index.html` 选择 session。\n")
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scenarios", type=Path, default=Path("scenarios/smoke"))
+    parser.add_argument("--output", type=Path, default=Path("artifacts/batch"))
+    parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--summarize", type=Path)
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if args.summarize:
+        summary = summarize(args.summarize)
+        if os.getenv("GITHUB_STEP_SUMMARY"):
+            with Path(os.environ["GITHUB_STEP_SUMMARY"]).open(
+                "a", encoding="utf-8"
+            ) as target:
+                target.write(summary)
+        else:
+            logging.warning("%s", summary)
+        return
+    try:
+        code = asyncio.run(
+            execute(
+                args.scenarios, args.output, os.environ, prepare_only=args.prepare_only
+            )
+        )
+    except Exception as exc:
+        logging.error("%s", _safe_error(exc, os.environ))
+        code = 2
+    raise SystemExit(code)
+
+
+if __name__ == "__main__":
+    main()

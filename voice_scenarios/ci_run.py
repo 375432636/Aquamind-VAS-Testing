@@ -137,7 +137,7 @@ def settings_from_env(env):
     }
 
 
-def _validate_turns(raw, settings):
+def validate_turns(raw, settings):
     try:
         turns = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as exc:
@@ -268,7 +268,7 @@ def synthesize(text, target):
         )
 
 
-def _validate_audio(path, timeout):
+def validate_audio(path, timeout):
     with wave.open(str(path), "rb") as audio:
         if (
             audio.getnchannels(),
@@ -285,9 +285,9 @@ def _validate_audio(path, timeout):
             raise ValueError("Input WAV is truncated")
 
 
-def prepare(output, env):
+def prepare(output, env, *, name=None):
     settings = settings_from_env(env)
-    turns = _validate_turns(env.get("VAS_TURNS_JSON"), settings)
+    turns = validate_turns(env.get("VAS_TURNS_JSON"), settings)
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if (output / "scenario.yaml").exists() or (output / "result.json").exists():
@@ -300,10 +300,11 @@ def prepare(output, env):
             shutil.copyfile(turn.pop("source_audio"), audio)
         else:
             synthesize(turn["input_text"], audio)
-        _validate_audio(audio, settings["turn_timeout_seconds"])
+        validate_audio(audio, settings["turn_timeout_seconds"])
         turn["audio"] = audio.relative_to(output).as_posix()
     scenario = {
-        "name": f"Aquamind {settings['environment'].upper()} · {len(turns)} 轮语音测试",
+        "name": name
+        or f"Aquamind {settings['environment'].upper()} · {len(turns)} 轮语音测试",
         "turn_timeout_seconds": settings["turn_timeout_seconds"],
         "input": {"mode": settings["input_mode"]},
         "turns": turns,
@@ -319,6 +320,11 @@ def prepare(output, env):
 
 async def execute(output, env):
     settings, scenario = prepare(output, env)
+    return await execute_prepared(output, env, settings, scenario)
+
+
+async def execute_prepared(output, env, settings, scenario):
+    """Execute a validated session; callers can prepare a complete batch first."""
     transport = WebSocketTransport(
         settings["endpoint"],
         device_id=settings["device_id"],
