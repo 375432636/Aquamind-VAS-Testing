@@ -40,7 +40,9 @@ def write_scenario(directory, filename, **overrides):
 
 def invoke(scenarios, output, *flags, **settings):
     env = {
-        key: value for key, value in os.environ.items() if not key.startswith("VAS_")
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("VAS_") and key != "GITHUB_STEP_SUMMARY"
     }
     env.update(VAS_ENVIRONMENT="dev", VAS_DEVICE_ID="AA:BB:CC:DD:EE:91", **settings)
     return subprocess.run(
@@ -264,17 +266,37 @@ def test_same_slug_paths_get_distinct_stable_session_directories(
     assert ids == [item["id"] for item in two["sessions"]]
 
 
+@pytest.mark.parametrize("destination", ["stderr", "github"])
 def test_batch_summary_is_available_for_actions_even_when_validation_fails(
-    scenario_folder, tmp_path
+    scenario_folder, tmp_path, monkeypatch, destination
 ):
+    inherited = tmp_path / "inherited-actions-summary.md"
+    inherited.write_text("Existing Actions summary\n", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(inherited))
     write_scenario(scenario_folder, "bad.yaml", name="Unexpected", turns=[])
     output = tmp_path / "invalid"
     invoke(scenario_folder, output, "--prepare-only")
-    summary = invoke(scenario_folder, tmp_path / "unused", "--summarize", str(output))
+    selected = tmp_path / "selected-actions-summary.md"
+    selected.write_text("Previous test step\n", encoding="utf-8")
+    settings = {"GITHUB_STEP_SUMMARY": str(selected)} if destination == "github" else {}
+    summary = invoke(
+        scenario_folder, tmp_path / "unused", "--summarize", str(output), **settings
+    )
     assert summary.returncode == 0
-    assert "VAS 批量测试" in summary.stderr
-    assert "failed" in summary.stderr
-    assert "bad" in summary.stderr
+    content = (
+        selected.read_text(encoding="utf-8")
+        if destination == "github"
+        else summary.stderr
+    )
+    assert "VAS 批量测试" in content
+    assert "failed" in content
+    assert "bad" in content
+    assert inherited.read_text(encoding="utf-8") == "Existing Actions summary\n"
+    if destination == "github":
+        assert content.startswith("Previous test step\n")
+        assert not summary.stderr
+    else:
+        assert selected.read_text(encoding="utf-8") == "Previous test step\n"
 
 
 def test_aggregate_junit_records_session_failure_when_individual_report_is_missing(
