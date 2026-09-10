@@ -141,7 +141,7 @@ python main.py run \
 
 ## 本地 VAS + Fake 服务
 
-这个公开仓库包含测试客户端和 Fake 服务，不包含 VAS 服务端。准备一个可访问的 VAS checkout，在 `main/xiaozhi-server/.venv` 安装该版本要求的服务端依赖，并准备其 Silero VAD 模型。具体安装要求以该 VAS 版本文档为准。
+这个仓库包含测试客户端和 Fake 服务，不包含 VAS 服务端。准备一个可访问的 VAS checkout，在 `main/xiaozhi-server/.venv` 安装该版本要求的服务端依赖，并准备其 Silero VAD 模型。具体安装要求以该 VAS 版本文档为准。
 
 ```bash
 # 终端 1：启动真实 VAS + 本仓库的 Fake 外部服务

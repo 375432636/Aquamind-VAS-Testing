@@ -1,8 +1,9 @@
 """Reconstruct a whole session on the recorded client monotonic clock.
 
-Input packets occupy the left channel and consumed reply PCM the right channel.
-The WAV retains pauses instead of concatenating the per-turn recordings. This is
-an offline reconstruction of ClockedPlayer, not a recording of a loudspeaker.
+Input packets occupy the left channel and consumed reply PCM the right channel
+in the diagnostic export. A mono mix provides the default listening version so
+both speakers remain audible on single-channel devices. Both WAVs retain pauses.
+This is an offline reconstruction of ClockedPlayer, not a loudspeaker recording.
 """
 
 import json
@@ -263,9 +264,11 @@ def _read_output_samples(reader, clip, offset, count):
 
 
 def _write_session(directory, clips, zero, duration):
-    """Write in one-second blocks; never allocate the whole stereo session."""
+    """Write split and mixed versions in bounded blocks on the same clock."""
     target = directory / "session.played.wav"
     temporary = target.with_suffix(".wav.tmp")
+    mixed_target = directory / "session.mixed.wav"
+    mixed_temporary = mixed_target.with_suffix(".wav.tmp")
     count = round(duration * SAMPLE_RATE)
     positions = sorted(
         [
@@ -285,6 +288,8 @@ def _write_session(directory, clips, zero, duration):
         }
         output = stack.enter_context(wave.open(str(temporary), "wb"))
         output.setparams((2, 2, SAMPLE_RATE, 0, "NONE", ""))
+        mixed_output = stack.enter_context(wave.open(str(mixed_temporary), "wb"))
+        mixed_output.setparams((1, 2, SAMPLE_RATE, 0, "NONE", ""))
         active, cursor = [], 0
         for start in range(0, count, SAMPLE_RATE):
             end = min(count, start + SAMPLE_RATE)
@@ -304,11 +309,23 @@ def _write_session(directory, clips, zero, duration):
                 )
                 offset = (left - start) * 2 + clip.channel
                 pcm[offset : offset + len(values) * 2 : 2] = values
+            # Preserve solo speech volume. Limit only overlapping peaks; the
+            # diagnostic split export retains both original channel values.
+            mixed = array(
+                "h",
+                (
+                    max(-32768, min(32767, pcm[i] + pcm[i + 1]))
+                    for i in range(0, len(pcm), 2)
+                ),
+            )
             if sys.byteorder != "little":
                 pcm.byteswap()
+                mixed.byteswap()
             output.writeframes(pcm.tobytes())
+            mixed_output.writeframes(mixed.tobytes())
     temporary.replace(target)
-    return target.name
+    mixed_temporary.replace(mixed_target)
+    return target.name, mixed_target.name
 
 
 def prepare_session_playback(report, directory):
@@ -573,7 +590,10 @@ def prepare_session_playback(report, directory):
     if not any(clip.samples and clip.end_ns > zero for clip in clips):
         return result
     try:
-        result["path"] = _write_session(directory, clips, zero, duration)
+        result["path"], result["playback_path"] = _write_session(
+            directory, clips, zero, duration
+        )
+        result["playback_channels"] = 1
         result["status"] = "incomplete" if incomplete else "ready"
     except (OSError, EOFError, wave.Error, ValueError) as exc:
         result["limitations"].append(
