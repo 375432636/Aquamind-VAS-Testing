@@ -109,6 +109,22 @@ def test_vad_continues_nonzero_noise_without_stop_on_same_session(tmp_path):
     for turn in result["turns"]:
         assert any(e["event"] == "speech_input_finished" for e in turn["events"])
         assert not any(e["event"] == "listen_stop_sent" for e in turn["events"])
+        frames = [e for e in turn["events"] if e["event"] == "input_audio_frame_sent"]
+        assert frames
+        speech_end = next(
+            e["at_ns"] for e in turn["events"] if e["event"] == "speech_input_finished"
+        )
+        assert any(
+            e["at_ns"] > speech_end and not e["data"]["is_speech"] for e in frames
+        )
+        assert any(e["data"]["is_speech"] for e in frames)
+        assert all(
+            e["data"]["stream"] == "uplink" and e["data"]["samples"] == 960
+            for e in frames
+        )
+        assert [e["data"]["pcm_offset_samples"] for e in frames] == list(
+            range(0, len(frames) * 960, 960)
+        )
         with wave.open(turn["audio"]["uplink"]) as uplink:
             assert uplink.getnframes() > 4800 + 16000 * 0.4
 

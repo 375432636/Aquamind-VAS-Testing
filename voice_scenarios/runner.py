@@ -202,6 +202,7 @@ async def _run_turn(
             if event.kind not in {
                 "vas_event",
                 "audio_frame_sent",
+                "input_audio_frame_sent",
                 "background_noise_started",
             }:
                 quiet_deadline = None

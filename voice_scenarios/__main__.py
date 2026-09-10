@@ -16,6 +16,7 @@ from .model import Scenario, Turn
 from .reply_audio import prepare_reply_audio
 from .report import build_report, evaluate
 from .runner import run_scenario
+from .session_timing import prepare_session_playback
 from .websocket import WebSocketTransport
 
 
@@ -30,6 +31,7 @@ def create_report(directory):
     )
     report = evaluate(result, events)
     prepare_reply_audio(report, directory)
+    prepare_session_playback(report, directory)
     (directory / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2)
     )

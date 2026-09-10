@@ -1,0 +1,14 @@
+name: 多轮打断 · 调整讲解
+input_mode: manual
+turn_timeout_seconds: 90
+turns:
+  - id: context
+    text: 我想了解太阳系，先告诉我太阳系有哪些行星。
+  - id: interrupt-answer
+    text: 请按顺序详细介绍每一颗行星，各讲几个特点。
+    interrupt_after_seconds: 2
+    output_kind: answer
+    expect:
+      max_interrupt_lateness_ms: 250
+  - id: after-interrupt
+    text: 先不用讲那么多了，只简单介绍一下刚才提到的火星。

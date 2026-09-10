@@ -1,0 +1,10 @@
+name: 多轮上下文 · 周末行程
+input_mode: manual
+turn_timeout_seconds: 90
+turns:
+  - id: preferences
+    text: 我周末想在深圳玩一天，喜欢安静和自然风景，预算三百元。请先推荐两个方向。
+  - id: first-choice
+    text: 第一个适合上午去还是下午去？
+  - id: remember
+    text: 根据我刚才的喜好和预算，帮我把一天的安排简单总结一下。
