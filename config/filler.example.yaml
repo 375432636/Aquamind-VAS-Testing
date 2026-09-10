@@ -1,0 +1,9 @@
+schema_version: 1
+name: 意图模型与临时回复
+turn_timeout_seconds: 30
+turns:
+  - id: filler-and-answer
+    audio: ../fixtures/input.wav
+    expect:
+      filler_outputs_min: 1
+      llm_requests_min: 2

@@ -1,0 +1,11 @@
+[run]
+source = voice_scenarios
+parallel = true
+sigterm = true
+patch = subprocess
+omit =
+    */dev_stack.py
+    */vas_bootstrap.py
+
+[report]
+show_missing = true

@@ -1,0 +1,4 @@
+url: ws://127.0.0.1:19080
+device_id: AA:BB:CC:DD:EE:91
+diagnostics: stage
+fake_device_tools: true

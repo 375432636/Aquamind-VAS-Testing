@@ -1,0 +1,8 @@
+[run]
+source = voice_scenarios
+parallel = true
+sigterm = true
+patch = subprocess
+
+[report]
+show_missing = true

@@ -1,0 +1,30 @@
+schema_version: 1
+name: 连续底噪与 VAD 自动断句（两轮同一会话）
+input:
+  mode: vad
+  pre_roll_seconds: 0.3
+  noise_dbfs: -55
+  noise_seed: 0
+turn_timeout_seconds: 40
+settle_seconds: 0.3
+turns:
+  - id: vad-greeting
+    audio: ../fixtures/input.wav
+    expect:
+      local_vad_starts: 1
+      local_vad_ends: 1
+      asr_vad_starts: 1
+      asr_vad_ends: 1
+      llm_requests: 1
+      max_first_playback_ms: 6000
+      max_asr_endpoint_to_final_ms: 2000
+  - id: vad-tools-with-context
+    audio: ../fixtures/input.wav
+    expect:
+      local_vad_starts: 1
+      local_vad_ends: 1
+      asr_vad_starts: 1
+      asr_vad_ends: 1
+      tools: {self_test_weather: 1}
+      llm_requests: 2
+      pre_speech_outputs_min: 1

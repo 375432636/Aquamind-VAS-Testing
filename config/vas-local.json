@@ -1,0 +1,130 @@
+{
+  "server": {
+    "ip": "127.0.0.1",
+    "port": 19080,
+    "auth": {
+      "enabled": false
+    }
+  },
+  "exit_commands": [
+    "退出"
+  ],
+  "read_config_from_api": false,
+  "read_config_from_ums": true,
+  "ums_connect_timeout_seconds": 0.5,
+  "ums_read_timeout_seconds": 0.5,
+  "prompt": "本地默认提示词",
+  "selected_module": {
+    "VAD": "SileroVAD",
+    "ASR": "DashScopeStreamASR",
+    "LLM": "AliLLM",
+    "TTS": "MinimaxTTSHTTPStream",
+    "Intent": "intent_llm",
+    "VLLM": "AliyunVision"
+  },
+  "VAD": {
+    "SileroVAD": {
+      "type": "silero",
+      "min_silence_duration_ms": 500,
+      "model_dir": "models/snakers4_silero-vad"
+    }
+  },
+  "ASR": {
+    "DashScopeStreamASR": {
+      "type": "dashscope_stream",
+      "api_key": "fake-asr-key",
+      "ws_url": "ws://127.0.0.1:19081/asr",
+      "model": "fake-asr"
+    }
+  },
+  "LLM": {
+    "AliLLM": {
+      "type": "openai",
+      "base_url": "http://127.0.0.1:19081/v1",
+      "api_key": "fake-key",
+      "model_name": "fake-chat",
+      "timeout": 10
+    }
+  },
+  "VLLM": {
+    "AliyunVision": {
+      "type": "openai",
+      "base_url": "http://127.0.0.1:19081/v1",
+      "api_key": "fake-key",
+      "model_name": "fake-chat",
+      "timeout": 10
+    }
+  },
+  "vision_provider_modules": {
+    "aliyun": "AliyunVision"
+  },
+  "TTS": {
+    "MinimaxTTSHTTPStream": {
+      "type": "minimax_httpstream",
+      "group_id": "fake-minimax-group",
+      "api_key": "fake-minimax-key",
+      "model": "local-placeholder-tts",
+      "voice_id": "local-placeholder-voice",
+      "voice_setting": {
+        "speed": 1,
+        "vol": 1
+      },
+      "audio_setting": {
+        "sample_rate": 24000,
+        "bitrate": 128000,
+        "format": "pcm",
+        "channel": 1
+      },
+      "opus_bitrate": 128000,
+      "api_url": "http://127.0.0.1:19081/v1/t2a_v2"
+    }
+  },
+  "Intent": {
+    "intent_llm": {
+      "type": "function_call",
+      "allow_list": []
+    }
+  },
+  "plugins": {},
+  "xiaozhi": {
+    "type": "hello",
+    "version": 1,
+    "transport": "websocket",
+    "audio_params": {
+      "format": "opus",
+      "sample_rate": 24000,
+      "channels": 1,
+      "frame_duration": 60
+    }
+  },
+  "enable_greeting": false,
+  "enable_voiceid": false,
+  "delete_audio": true,
+  "memory_api": {
+    "enabled": true,
+    "base_url": "http://127.0.0.1:19081/v1/memory",
+    "api_key": "sk-fake-local-session",
+    "timeout": 2
+  },
+  "audio_diagnostics": {
+    "tool_categories": {
+      "self.test.rag_query": "knowledge_base",
+      "self.test.weather": "other",
+      "self.music.play": "music",
+      "self.music.stop": "music"
+    }
+  },
+  "log": {
+    "log_dir": "artifacts/stack",
+    "data_dir": "artifacts/stack/data",
+    "log_level": "INFO",
+    "log_file": "vas.log"
+  },
+  "database": {
+    "ums_db": "sqlite:///:memory:",
+    "chat_record_db": "sqlite:///:memory:"
+  },
+  "enable_wakeup_words_response_cache": false,
+  "wakeup_words": [],
+  "close_connection_no_voice_time": 120
+}

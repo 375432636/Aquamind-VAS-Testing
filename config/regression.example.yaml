@@ -1,0 +1,38 @@
+schema_version: 1
+name: 本地音频多轮回归
+turn_timeout_seconds: 45
+settle_seconds: 0.3
+turns:
+  - id: greeting
+    audio: ../fixtures/input.wav
+    expect:
+      asr_text: 你好，请介绍一下自己
+      llm_requests: 1
+      tools: {}
+      max_first_playback_ms: 6000
+  - id: memory-and-two-tools
+    audio: ../fixtures/input.wav
+    expect:
+      llm_requests: 3
+      tools: {self_test_weather: 1, self_test_rag_query: 1}
+      memory_requests_min: 3
+      pre_speech_outputs_min: 1
+  - id: interrupt-answer
+    audio: ../fixtures/input.wav
+    interrupt:
+      anchor: playback_started
+      output_kind: answer
+      after_ms: 2000
+    expect:
+      llm_requests: 1
+      max_interrupt_lateness_ms: 250
+  - id: music
+    audio: ../fixtures/input.wav
+    completion_goal: music_started
+    expect:
+      tools: {self_music_play: 1}
+  - id: stop-music
+    audio: ../fixtures/input.wav
+    completion_goal: music_stopped
+    expect:
+      tools: {self_music_stop: 1}

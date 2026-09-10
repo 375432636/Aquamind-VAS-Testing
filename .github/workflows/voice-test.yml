@@ -1,0 +1,116 @@
+name: VAS 语音测试
+run-name: VAS ${{ inputs.environment }} · ${{ inputs.input_mode }} · ${{ github.run_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: VAS 环境
+        type: choice
+        options:
+          - dev
+          - main
+        default: dev
+        required: true
+      device_id:
+        description: 该环境中有效的测试设备 MAC ID
+        type: string
+        required: true
+      turns_json:
+        description: 同一 session 的对话 JSON；interrupt_after_seconds 表示回复起播后几秒打断
+        type: string
+        required: true
+        default: '[{"text":"你好"},{"text":"介绍一下适合开会的耳机","interrupt_after_seconds":2,"output_kind":"answer"},{"text":"第一个支持什么功能？"}]'
+      input_mode:
+        description: manual 主动结束上行；vad 持续发送底噪、等待后台判断结束
+        type: choice
+        options:
+          - manual
+          - vad
+        default: manual
+        required: true
+      diagnostics:
+        description: stage 环节计时；frame 增加逐帧事件
+        type: choice
+        options:
+          - stage
+          - frame
+        default: stage
+        required: true
+      turn_timeout_seconds:
+        description: 单个 turn 的最长等待时间（秒）
+        type: number
+        default: 90
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-test-${{ inputs.environment }}-${{ inputs.device_id }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: 对话测试与报告
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: 获取测试工具
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 设置 Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: 安装语音与测试依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y espeak-ng ffmpeg libopus0
+          python -m pip install -e '.[test]'
+
+      - name: 执行多轮对话
+        env:
+          VAS_ENVIRONMENT: ${{ inputs.environment }}
+          VAS_DEVICE_ID: ${{ inputs.device_id }}
+          VAS_TURNS_JSON: ${{ inputs.turns_json }}
+          VAS_INPUT_MODE: ${{ inputs.input_mode }}
+          VAS_DIAGNOSTICS: ${{ inputs.diagnostics }}
+          VAS_TURN_TIMEOUT_SECONDS: ${{ inputs.turn_timeout_seconds }}
+          VAS_TOKEN: ${{ secrets.VAS_TOKEN }}
+          VAS_DEV_URL: ${{ vars.VAS_DEV_URL }}
+          VAS_MAIN_URL: ${{ vars.VAS_MAIN_URL }}
+        run: python -m voice_scenarios.ci_run --output artifacts/run
+
+      - name: 保存完整报告与音频
+        id: report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vas-${{ inputs.environment }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/run/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 在运行结果中展示报告摘要
+        if: always()
+        env:
+          REPORT_ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
+        run: |
+          python -m voice_scenarios.ci_run --summarize artifacts/run
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          url = os.environ.get("REPORT_ARTIFACT_URL", "")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              if url:
+                  summary.write(f"\n[下载完整报告与音频]({url})\n\n解压后打开 `report.html`，点击 turn 查看时序与逐段回听。\n")
+              else:
+                  summary.write("\n本次未生成可下载的报告，请查看失败步骤的日志。\n")
+          PY

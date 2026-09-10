@@ -1,0 +1,16 @@
+# 真实 Silero 在 VAS 内运行；Fake ASR 使用 PCM 能量阈值模拟云端 VAD 协议。
+# 不用固定计时器结束：必须收到语音，随后收到足量的安静 PCM 才返回 final。
+vad_rms_threshold: 300
+vad_silence_seconds: 0.6
+tts_duration_seconds: 1.2
+tts_chunk_delay_ms: 60
+memory_delay_ms: 80
+turns:
+  - text: 你好，请介绍一下自己。
+    reply: 我是本地语音测试助手。
+  - text: 那再帮我查一下上海天气。
+    reply: 上海晴天二十六度。
+    tool_rounds:
+      - name: self_test_weather
+        arguments: {city: 上海}
+        pre_speech: 我来查询上海天气。

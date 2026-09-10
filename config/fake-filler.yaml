@@ -1,0 +1,6 @@
+intent_type: intent_llm
+tts_duration_seconds: 3.6
+tts_chunk_delay_ms: 40
+turns:
+  - text: 介绍一下测试流程。
+    reply: 先发送语音，然后收集回复并生成时间报告。

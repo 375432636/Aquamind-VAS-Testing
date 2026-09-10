@@ -1,0 +1,30 @@
+# 固定测试脚本；不代表识别或模型质量。WAV 内容仅验证真实音频传输。
+tts_duration_seconds: 3.6
+tts_chunk_delay_ms: 60
+memory_delay_ms: 80
+turns:
+  - text: 你好，请介绍一下自己。
+    reply: 我是本地语音测试助手。
+  - text: 查询上海天气，再查知识库里的开放时间。
+    reply: 上海晴天二十六度，开放时间是九点至十七点。
+    tool_rounds:
+      - name: self_test_weather
+        arguments: {city: 上海}
+        pre_speech: 我先查询天气。
+      - name: self_test_rag_query
+        arguments: {user_query: 开放时间}
+        pre_speech: 再看看知识库。
+  - text: 请详细介绍这个展馆。
+    reply: 这是一段用于打断测试的正式介绍，播放器将在正式回复开始两秒后停止。
+  - text: 请播放测试音乐。
+    reply: 已经为你开始播放测试音乐。
+    tool_rounds:
+      - name: self_music_play
+        arguments: {track: fixture}
+        pre_speech: 我来播放音乐。
+  - text: 请停止音乐。
+    reply: 音乐已停止。
+    tool_rounds:
+      - name: self_music_stop
+        arguments: {}
+        pre_speech: 好的。
