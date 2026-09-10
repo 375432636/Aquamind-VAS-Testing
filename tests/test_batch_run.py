@@ -30,7 +30,12 @@ def scenario_folder():
 
 
 def write_scenario(directory, filename, **overrides):
-    data = {"name": filename, "turns": [{"audio": "fixtures/input.wav"}]}
+    data = {
+        "name": filename,
+        "device_id": "AA:BB:CC:DD:EE:91",
+        "environment": "dev",
+        "turns": [{"audio": "fixtures/input.wav"}],
+    }
     data.update(overrides)
     path = directory / filename
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,10 +116,11 @@ def test_saved_files_preserve_session_settings_and_prepare_before_any_connection
 def test_batch_opens_one_connection_per_session_and_continues_after_failure(
     scenario_folder, tmp_path, first_fails
 ):
-    for name in ("01-first.yaml", "02-second.yaml"):
+    for index, name in enumerate(("01-first.yaml", "02-second.yaml"), 1):
         write_scenario(
             scenario_folder,
             name,
+            device_id=f"AA:BB:CC:DD:EE:{index:02d}",
             turns=[{"audio": "fixtures/input.wav"}, {"audio": "fixtures/input.wav"}],
         )
     output = tmp_path / "batch"
@@ -122,7 +128,11 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
 
     async def exercise():
         async def peer(ws):
-            session = {"hello": 0, "stop": 0}
+            session = {
+                "hello": 0,
+                "stop": 0,
+                "device_id": ws.request.headers["Device-Id"],
+            }
             connections.append(session)
             session_id = f"session-{len(connections)}"
             encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
@@ -184,8 +194,8 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
         ["failed", "passed"] if first_fails else ["passed", "passed"]
     )
     assert connections == [
-        {"hello": 1, "stop": 1 if first_fails else 2},
-        {"hello": 1, "stop": 2},
+        {"hello": 1, "stop": 1 if first_fails else 2, "device_id": "AA:BB:CC:DD:EE:01"},
+        {"hello": 1, "stop": 2, "device_id": "AA:BB:CC:DD:EE:02"},
     ]
     reports = [
         json.loads((output / item["directory"] / "report.json").read_text())
@@ -236,7 +246,14 @@ def test_single_json_session_is_supported_and_existing_runs_are_never_overwritte
 ):
     path = scenario_folder / "one.json"
     path.write_text(
-        json.dumps({"name": "A < B", "turns": [{"audio": "fixtures/input.wav"}]})
+        json.dumps(
+            {
+                "name": "A < B",
+                "device_id": "AA:BB:CC:DD:EE:91",
+                "environment": "dev",
+                "turns": [{"audio": "fixtures/input.wav"}],
+            }
+        )
     )
     output = tmp_path / "run"
     outcome = invoke(path, output, "--prepare-only")
@@ -398,7 +415,10 @@ def test_actions_matrix_contains_only_validated_session_identity(
         "First unique session",
         "Second unique session",
     ]
-    assert all(set(item) == {"id", "name", "source"} for item in matrix["include"])
+    assert all(
+        set(item) == {"id", "name", "source", "environment", "device_id"}
+        for item in matrix["include"]
+    )
     assert "must-not-be-exported" not in matrix_path.read_text()
     assert not (tmp_path / "unused").exists()
     write_scenario(scenario_folder, "bad.yaml", turns=[])
@@ -408,3 +428,74 @@ def test_actions_matrix_contains_only_validated_session_identity(
     )
     assert outcome.returncode == 2
     assert not rejected.exists()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("device_id", None),
+        ("device_id", ""),
+        ("device_id", "not-a-mac"),
+        ("environment", None),
+        ("environment", "production"),
+    ],
+)
+def test_saved_session_requires_explicit_mac_and_environment_even_with_host_defaults(
+    scenario_folder, tmp_path, field, value
+):
+    data = {
+        "name": "required routing",
+        "device_id": "FF:FF:FF:FF:FF:11",
+        "environment": "dev",
+        "turns": [{"audio": "fixtures/input.wav"}],
+    }
+    if value is None:
+        data.pop(field)
+    else:
+        data[field] = value
+    (scenario_folder / "session.yaml").write_text(yaml.safe_dump(data))
+    outcome = invoke(scenario_folder, tmp_path / "run", "--prepare-only")
+    assert outcome.returncode == 2
+    assert field in outcome.stderr
+    assert not list((tmp_path / "run").rglob("*.wav"))
+
+
+def test_each_saved_session_routes_to_its_own_environment_and_device(scenario_folder):
+    from voice_scenarios.batch_run import load_sessions
+    from voice_scenarios.ci_run import settings_from_env
+
+    for environment, mac in [
+        ("dev", "AA:BB:CC:DD:EE:11"),
+        ("main", "AA:BB:CC:DD:EE:22"),
+    ]:
+        write_scenario(
+            scenario_folder,
+            environment + ".yaml",
+            environment=environment,
+            device_id=mac,
+        )
+    sessions = load_sessions(
+        scenario_folder,
+        {
+            "VAS_ENVIRONMENT": "dev",
+            "VAS_DEVICE_ID": "ignored",
+            "VAS_INPUT_MODE": "vad",
+            "VAS_TURN_TIMEOUT_SECONDS": "15",
+            "VAS_DEV_URL": "ws://127.0.0.1:19080",
+            "VAS_MAIN_URL": "ws://127.0.0.1:19081",
+        },
+    )
+    settings = [settings_from_env(item["env"]) for item in sessions]
+    assert [s["environment"] for s in settings] == ["dev", "main"]
+    assert [s["device_id"] for s in settings] == [
+        "AA:BB:CC:DD:EE:11",
+        "AA:BB:CC:DD:EE:22",
+    ]
+    assert [s["endpoint"] for s in settings] == [
+        "ws://127.0.0.1:19080",
+        "ws://127.0.0.1:19081",
+    ]
+    assert all(
+        s["input_mode"] == "manual" and s["turn_timeout_seconds"] == 90
+        for s in settings
+    )

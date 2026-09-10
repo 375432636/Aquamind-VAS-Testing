@@ -1,6 +1,6 @@
 name: 多轮上下文 · 周末行程
-input_mode: manual
-turn_timeout_seconds: 90
+device_id: "FF:FF:FF:FF:FF:11"
+environment: dev
 turns:
   - id: preferences
     text: 我周末想在深圳玩一天，喜欢安静和自然风景，预算三百元。请先推荐两个方向。

@@ -5,7 +5,7 @@
 ## 在 GitHub Actions 中运行
 
 1. 打开 **Actions → VAS 批量语音测试 → Run workflow**。
-2. 选择 `dev` 或 `main`。设备 MAC 可以留空，复用仓库变量 `VAS_DEVICE_ID`；也可以临时填写覆盖。
+2. 在用例文件中填写必填的 `device_id`（MAC）和 `environment`（`dev` 或 `main`）。
 3. 在 `scenario_path` 填写文件夹（如 `scenarios/smoke`）或一个 YAML/JSON 文件路径。
 4. 点击 **Run workflow**。各 session 逐个运行；一个 session 失败后仍继续后面的场景。
 5. 在 **Summary** 选择需要的 session，点击该会话的下载链接。每个 artifact 只包含一个 session，解压后直接打开 `report.html`。
@@ -18,13 +18,14 @@
 | --- | --- |
 | [`scenarios/smoke`](scenarios/smoke/) | 多轮上下文、正式回答播放后 2 秒打断、打断后继续对话 |
 | [`scenarios/vad`](scenarios/vad/) | 连续发送语音和底噪，由后台 VAD 判断结束 |
+| [`scenarios/products`](scenarios/products/) | 会议耳机上下文、正式回答后 2 秒打断 |
 
 新增一个 session，例如 `scenarios/custom/my-session.yaml`：
 
 ```yaml
 name: 会议耳机上下文与打断
-input_mode: manual
-turn_timeout_seconds: 90
+device_id: "FF:FF:FF:FF:FF:11"
+environment: dev
 turns:
   - text: 推荐两款适合会议录音转文字的耳机
   - text: 详细介绍第一款
@@ -33,7 +34,7 @@ turns:
   - text: 它和第二款有什么区别？
 ```
 
-需要临时输入时，打开另一个 Action：**Actions → VAS 临时对话测试 → Run workflow**，选择环境和设备，在 `turns_json` 粘贴：
+需要临时输入时，打开另一个 Action：**Actions → VAS 临时对话测试 → Run workflow**，选择必填的环境和设备，在 `turns_json` 粘贴：
 
 ```json
 [
@@ -47,15 +48,15 @@ turns:
 
 | 参数 | 使用入口 | 用途 |
 | --- | --- | --- |
-| `environment` | 两个 Action | `dev` 或 `main`；切换连接地址 |
-| `device_id` | 两个 Action | 可留空，默认使用仓库变量 `VAS_DEVICE_ID` |
-| `diagnostics` | 两个 Action | 默认 `frame`，记录环节计时和逐帧信息；可选 `stage`，只记录环节计时 |
+| `environment` | 用例文件必填；临时 Action 必填 | 只允许 `dev` 或 `main` |
+| `device_id` | 用例文件必填；临时 Action 必填 | MAC 地址，如 `FF:FF:FF:FF:FF:11`，不再回退仓库变量 |
+| `diagnostics` | 临时 Action | 默认 `frame`，可选 `stage`；批量 Action 固定 `frame` |
 | `scenario_path` | VAS 批量语音测试 | `scenarios/` 内的文件或文件夹；文件夹会递归读取 YAML/JSON |
 | `turns_json` | VAS 临时对话测试 | 一个 session 的对话 JSON，支持逐轮打断 |
 | `input_mode` | VAS 临时对话测试 | `manual` 或 `vad`，默认 `manual` |
 | `turn_timeout_seconds` | VAS 临时对话测试 | 单轮超时，默认 90 秒 |
 
-批量测试的 `input_mode` 和 `turn_timeout_seconds` 由各场景文件设置，省略时分别使用 `manual` 和 90 秒。工作流文件分别为 [`voice-test.yml`](.github/workflows/voice-test.yml) 和 [`voice-inline-test.yml`](.github/workflows/voice-inline-test.yml)。
+批量 Action 只保留 `scenario_path` 一个输入。每个用例必须写 `device_id` 和 `environment`，本机同名环境变量不会覆盖它们。`name` 可省略并使用文件名；`input_mode: manual`、`turn_timeout_seconds: 90` 是默认值，通常不必写。测试 VAD 或调整超时时再添加。工作流文件分别为 [`voice-test.yml`](.github/workflows/voice-test.yml) 和 [`voice-inline-test.yml`](.github/workflows/voice-inline-test.yml)。
 
 `interrupt_after_seconds` 可省略；`output_kind` 可选 `answer`（正式回答）、`filler`（临时回复）、`pre_speech`（工具过渡语）或 `any`（任意语音）。如果指定类型没有出现，或回复在打断时间前已结束，报告会记录未触发打断，而不会把它算作成功。
 
@@ -76,10 +77,10 @@ Actions 使用 **eSpeak NG 中文语音**把文本转为 WAV，再实时发送�
 
 可在 **Settings → Secrets and variables → Actions** 设置：
 
-- **Variables**：`VAS_DEVICE_ID` 保存常用测试设备；`VAS_DEV_URL`、`VAS_MAIN_URL` 覆盖对应地址。
+- **Variables**：`VAS_DEV_URL`、`VAS_MAIN_URL` 覆盖对应环境的连接地址。已有 `VAS_DEVICE_ID` 变量可删除，两个 Action 均不再读取它。
 - **Secrets**：VAS 需要设备认证时设置 `VAS_TOKEN`。不要把 token 填到工作流输入、URL 或场景文件中。
 
-VAS 需要支持现有 WebSocket 诊断协议。测试程序连接已有服务，不会部署 VAS，也不会修改服务端配置；同一环境和设备的工作流会排队执行。
+VAS 需要支持现有 WebSocket 诊断协议。测试程序连接已有服务，不会部署 VAS，也不会修改服务端配置；两个手动测试工作流使用同一个执行队列，避免批量与临时测试同时占用设备。
 
 报告与音频保留 14 天。GitHub 的运行页面显示 Markdown 摘要，完整 HTML 通过 artifact 下载查看，未启用 GitHub Pages。仓库位于 `deepedge-ai-tech` 组织，当前为私有仓库。
 
@@ -115,8 +116,6 @@ python -m voice_scenarios.report_archive artifacts/my-run --output artifacts/my-
 
 ```bash
 docker build -t aquamind-vas-testing:local .
-export VAS_ENVIRONMENT=dev
-export VAS_DEVICE_ID='你的测试设备 MAC ID'
 bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run \
   --scenarios scenarios/smoke --output artifacts/docker-batch
 ```
@@ -148,8 +147,6 @@ python -m pip install -e '.[test]'
 使用保存的场景运行与 Actions 相同的批量流程：
 
 ```bash
-export VAS_ENVIRONMENT=dev
-export VAS_DEVICE_ID='你的测试设备 MAC ID'
 export VAS_DIAGNOSTICS=frame
 python -m voice_scenarios.batch_run \
   --scenarios scenarios/smoke \

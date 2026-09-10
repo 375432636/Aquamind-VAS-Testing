@@ -2,13 +2,13 @@
 
 ## 手动批量运行保存的 session
 
-将用于 **VAS 批量语音测试** Action 的对话保存在 `scenarios/` 中。一个 YAML 或 JSON 文件对应一个独立 session，文件夹中按路径排序逐个运行；一个文件中的所有 turn 使用同一连接和上下文。
+将用于 **VAS 批量语音测试** Action 的对话保存在 `scenarios/` 中。一个 YAML 或 JSON 文件对应一个独立 session，文件夹中的会话逐个运行；一个文件中的所有 turn 使用同一连接和上下文。
 
 ```yaml
 # scenarios/custom/context.yaml
 name: 产品上下文与打断
-input_mode: manual
-turn_timeout_seconds: 90
+device_id: "FF:FF:FF:FF:FF:11"
+environment: dev
 turns:
   - id: recommend
     text: 推荐两款适合会议录音转文字的耳机
@@ -24,11 +24,9 @@ turns:
 
 `text` 会离线合成为中文 WAV。也可把某轮换成 `audio: fixtures/my-question.wav`；这里的 WAV 路径相对于**仓库根目录**，必须留在仓库内。每轮恰好填写 `text`、`audio` 之一。固定真人录音可以保存在 `scenarios/audio/`；文件夹递归加载只读取 YAML/JSON，不会把 WAV 当成场景。
 
-文件可设置 `name`、`input_mode`、`turn_timeout_seconds`、`turns`；每轮可设置 `id`、`text` 或 `audio`、`interrupt_after_seconds`、`output_kind`、`expect`。未知字段、重复 turn ID 和非法阈值都会在连接 VAS 之前被拒绝。
+文件必须设置 `device_id`（冒号分隔的 MAC）、`environment`（`dev` 或 `main`）和 `turns`；可选 `name`、`input_mode`、`turn_timeout_seconds`。省略名称使用文件名，省略输入模式和超时使用 `manual` / 90 秒。这些用例配置不会被本机默认环境或设备覆盖；每轮可设置 `id`、`text` 或 `audio`、`interrupt_after_seconds`、`output_kind`、`expect`。未知字段、重复 turn ID 和非法阈值都会在连接 VAS 之前被拒绝。
 
 ```bash
-export VAS_ENVIRONMENT=dev
-export VAS_DEVICE_ID='你的测试设备 MAC ID'
 export VAS_DIAGNOSTICS=frame
 python -m voice_scenarios.batch_run \
   --scenarios scenarios/custom \
@@ -37,9 +35,9 @@ python -m voice_scenarios.batch_run \
 
 `--scenarios scenarios/custom/context.yaml` 只运行一个文件；`--prepare-only` 只校验全部场景并准备音频。`input_mode` 和超时由各文件设置，省略时分别使用 `manual` 和 90 秒，批量 Action 不提供这两个参数。
 
-临时粘贴对话 JSON 请使用独立的 **VAS 临时对话测试** Action，其中可设置 `turns_json`、`input_mode` 和 `turn_timeout_seconds`，示例见 [README](../README.md#在-github-actions-中运行)。两个 Action 以及 `batch_run`、`ci_run` 环境变量入口均默认使用 `frame` 诊断，记录环节计时和逐帧信息；可选择 `stage`，只记录环节计时。
+临时粘贴对话 JSON 请使用独立的 **VAS 临时对话测试** Action，其中可设置 `turns_json`、`input_mode` 和 `turn_timeout_seconds`，示例见 [README](../README.md#在-github-actions-中运行)。批量 Action 只有场景路径一个输入，诊断固定 `frame`。临时 Action 的环境和 MAC 必填，默认 `frame`，可选择 `stage`；本地 `batch_run` / `ci_run` 仍可通过 `VAS_DIAGNOSTICS` 调整诊断粒度。
 
-每个 session 会重新连接 VAS，同设备顺序执行；某个 session 超时、断连或断言失败后，继续执行后面的文件。批量退出码：全部通过为 `0`，任一执行失败为 `1`，准备或参数错误为 `2`。文件之间没有共享的 WebSocket 历史；设备级长期 Memory 是否保留由 VAS 决定。
+每个 session 会重新连接 VAS，逐个执行；某个 session 超时、断连或断言失败后，继续执行后面的文件。批量退出码：全部通过为 `0`，任一执行失败为 `1`，准备或参数错误为 `2`。文件之间没有共享的 WebSocket 历史；设备级长期 Memory 是否保留由 VAS 决定。
 
 输出目录结构：
 
@@ -50,7 +48,7 @@ junit.xml                    汇总所有 session 的测试结果
 sessions/<场景路径标识>/       独立的报告、原始记录和音频
 ```
 
-批量 Action 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`，或 `scenarios` 一次运行全部。两个测试 Action 均没有定时触发，由用户手动运行。
+批量 Action 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`、`scenarios/products`，或 `scenarios` 一次运行全部。每个 session 单独上传 FLAC 压缩报告，两种手动 Action 共用执行队列。两个测试 Action 均没有定时触发，由用户手动运行。
 
 ## 固定音频的多轮对话
 
