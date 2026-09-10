@@ -629,7 +629,12 @@ def build_report(report, path):
     )
     script = "\n".join(
         (assets / name).read_text()
-        for name in ("reply_timing.js", "session_timeline.js", "report.js")
+        for name in (
+            "reply_timing.js",
+            "session_timeline.js",
+            "timeline_measurement.js",
+            "report.js",
+        )
     )
     display = copy.deepcopy(report)
     for turn in display["turns"]:
