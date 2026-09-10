@@ -441,7 +441,7 @@ def _session_start(report, index):
 
 def _session_panel(report):
     playback = report.get("session_playback", {})
-    path = playback.get("path")
+    path = playback.get("playback_path") or playback.get("path")
     duration = playback.get("duration_seconds", 0)
     content = (
         '<section class="panel session-panel" id="session-timeline"><div class="section-heading">'
@@ -487,10 +487,16 @@ def _session_panel(report):
         '<div id="session-detail" class="session-detail" aria-live="polite">'
         '<span class="detail-placeholder">选择语音、回复或等待区间，查看文字与时间。</span></div>'
         '<details class="inline-disclosure"><summary>播放与计时口径</summary><div class="detail-body">'
-        "<p>按客户端记录的发送、播放时间还原整段会话，保留句间与轮间空档。用户在左声道，回复在右声道。"
+        "<p>按客户端记录的发送、播放时间还原整段会话，保留句间与轮间空档。"
         "播放记录来自 Python 软件播放器，不代表设备扬声器的实测出声时刻。</p>"
         "<p>输入结束是 WAV 素材发送结束，素材内部静音也计入；VAD 模式随后继续发送底噪。VAS 内部时钟在各轮详情中独立展示。</p>"
     )
+    if playback.get("playback_path"):
+        content += "<p>默认回听混合用户与 VAS 的声音；分轨文件保留用户左声道、回复右声道的原始音频。</p>"
+        if playback.get("path"):
+            content += f'<p><a href="{_text(playback["path"])}" download>下载原始分轨 WAV ↓</a></p>'
+    elif path:
+        content += "<p>此历史报告使用分轨音频：用户在左声道，回复在右声道。重新生成报告可获得混音回听。</p>"
     for limitation in playback.get("limitations", []):
         message = (
             limitation.get("message", "")

@@ -81,7 +81,7 @@ Actions 使用 **eSpeak NG 中文语音**把文本转为 WAV，再实时发送�
 
 VAS 需要支持现有 WebSocket 诊断协议。测试程序连接已有服务，不会部署 VAS，也不会修改服务端配置；同一环境和设备的工作流会排队执行。
 
-报告与音频保留 14 天。GitHub 的运行页面显示 Markdown 摘要，完整 HTML 通过 artifact 下载查看，未启用 GitHub Pages。**当前仓库是公开仓库，工作流输入、日志和 artifacts 应按公开测试资料使用，请使用测试账号与非敏感对话。**
+报告与音频保留 14 天。GitHub 的运行页面显示 Markdown 摘要，完整 HTML 通过 artifact 下载查看，未启用 GitHub Pages。仓库位于 `deepedge-ai-tech` 组织，当前为私有仓库。
 
 ## 报告怎么读
 
@@ -91,6 +91,8 @@ VAS 需要支持现有 WebSocket 诊断协议。测试程序连接已有服务�
 - **轮次详情**：保留各轮问题、回复文字、关键等待时间和 VAS 内部时序。
 
 会话回放以客户端实际记录的音频发送与模拟播放时钟为准，跨 turn 保留真实间隔，统一用秒显示。它重现客户端按音频时长播放的节奏，不代表扬声器硬件实测。VAS 的单独时钟不能直接与客户端时间相减计算网络延迟。
+
+默认播放及下载的 `session.mixed.wav` 同时包含用户语音与 VAS 回复，单声道设备也能完整回听。原始左右分轨文件 `session.played.wav` 保留用于诊断，可在“播放与计时口径”中下载。两个文件使用相同时间轴；旧报告执行 `python main.py report <结果目录>` 即可生成混音版，无需重跑 VAS。
 
 ## 本地运行
 
@@ -121,7 +123,7 @@ brew install espeak-ng ffmpeg opus
 从源码安装：
 
 ```bash
-git clone https://github.com/375432636/Aquamind-VAS-Testing.git
+git clone https://github.com/deepedge-ai-tech/Aquamind-VAS-Testing.git
 cd Aquamind-VAS-Testing
 python3 -m venv .venv
 source .venv/bin/activate
