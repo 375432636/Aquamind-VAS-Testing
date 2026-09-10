@@ -1,5 +1,5 @@
-name: VAS 批量语音测试
-run-name: VAS ${{ inputs.environment }} · 批量场景 · ${{ github.run_number }}
+name: VAS 临时对话测试
+run-name: VAS ${{ inputs.environment }} · 临时对话 · ${{ github.run_number }}
 
 on:
   workflow_dispatch:
@@ -16,11 +16,18 @@ on:
         description: 测试设备 MAC；留空使用仓库变量 VAS_DEVICE_ID
         type: string
         required: false
-      scenario_path:
-        description: scenarios/ 内的文件或文件夹；每个文件是独立会话
+      turns_json:
+        description: 按顺序填写问题，如 ["推荐两款耳机","详细介绍第一款"]；在同一会话中执行
         type: string
-        default: scenarios/smoke
-        required: false
+        required: true
+      input_mode:
+        description: manual 发完后主动结束；vad 持续发送底噪，由服务端判断结束
+        type: choice
+        options:
+          - manual
+          - vad
+        default: manual
+        required: true
       diagnostics:
         description: frame 记录环节与逐帧事件；stage 只记录环节计时
         type: choice
@@ -29,10 +36,16 @@ on:
           - stage
         default: frame
         required: true
+      turn_timeout_seconds:
+        description: 每轮从开始发送到回复完成的最长时间，单位秒
+        type: number
+        default: 90
+        required: true
 
 permissions:
   contents: read
 
+# Both workflows share the same device lock, preventing overlapping conversations.
 concurrency:
   group: voice-test-${{ inputs.environment }}-${{ inputs.device_id || vars.VAS_DEVICE_ID || 'missing-device' }}
   cancel-in-progress: false
@@ -63,22 +76,23 @@ jobs:
 
       - name: 执行会话测试
         env:
-          SCENARIO_PATH: ${{ inputs.scenario_path }}
           VAS_ENVIRONMENT: ${{ inputs.environment }}
           VAS_DEVICE_ID: ${{ inputs.device_id || vars.VAS_DEVICE_ID }}
+          VAS_TURNS_JSON: ${{ inputs.turns_json }}
+          VAS_INPUT_MODE: ${{ inputs.input_mode }}
           VAS_DIAGNOSTICS: ${{ inputs.diagnostics }}
+          VAS_TURN_TIMEOUT_SECONDS: ${{ inputs.turn_timeout_seconds }}
           VAS_TOKEN: ${{ secrets.VAS_TOKEN }}
           VAS_DEV_URL: ${{ vars.VAS_DEV_URL }}
           VAS_MAIN_URL: ${{ vars.VAS_MAIN_URL }}
-        run: |
-          python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --output artifacts/run
+        run: python -m voice_scenarios.ci_run --output artifacts/run
 
       - name: 保存完整报告与音频
         id: report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vas-batch-${{ inputs.environment }}-${{ github.run_number }}-${{ github.run_attempt }}
+          name: vas-inline-${{ inputs.environment }}-${{ github.run_number }}-${{ github.run_attempt }}
           path: artifacts/run/
           if-no-files-found: warn
           retention-days: 14
@@ -88,7 +102,7 @@ jobs:
         env:
           REPORT_ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
         run: |
-          python -m voice_scenarios.batch_run --summarize artifacts/run
+          python -m voice_scenarios.ci_run --summarize artifacts/run
           python - <<'PY'
           import os
           from pathlib import Path
@@ -96,7 +110,7 @@ jobs:
           url = os.environ.get("REPORT_ARTIFACT_URL", "")
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
               if url:
-                  summary.write(f"\n[下载完整报告与音频]({url})\n\n解压后打开 `index.html`，选择 session 查看完整会话播放与时间轴。\n")
+                  summary.write(f"\n[下载完整报告与音频]({url})\n\n解压后打开 `report.html`，查看完整会话播放与时间轴。\n")
               else:
                   summary.write("\n本次未生成可下载的报告，请查看失败步骤的日志。\n")
           PY

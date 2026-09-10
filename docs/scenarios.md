@@ -2,7 +2,7 @@
 
 ## 手动批量运行保存的 session
 
-将用于 Actions 的对话保存在 `scenarios/` 中。一个 YAML 或 JSON 文件对应一个独立 session，文件夹中按路径排序逐个运行；一个文件中的所有 turn 使用同一连接和上下文。
+将用于 **VAS 批量语音测试** Action 的对话保存在 `scenarios/` 中。一个 YAML 或 JSON 文件对应一个独立 session，文件夹中按路径排序逐个运行；一个文件中的所有 turn 使用同一连接和上下文。
 
 ```yaml
 # scenarios/custom/context.yaml
@@ -29,13 +29,15 @@ turns:
 ```bash
 export VAS_ENVIRONMENT=dev
 export VAS_DEVICE_ID='你的测试设备 MAC ID'
-export VAS_DIAGNOSTICS=stage
+export VAS_DIAGNOSTICS=frame
 python -m voice_scenarios.batch_run \
   --scenarios scenarios/custom \
   --output artifacts/custom-001
 ```
 
-`--scenarios scenarios/custom/context.yaml` 只运行一个文件；`--prepare-only` 只校验全部场景并准备音频。`input_mode` 和超时设置按各文件保留，省略时分别使用 `manual` 和 90 秒；Actions 中的同名参数仅作用于 `inline_json` 临时输入。
+`--scenarios scenarios/custom/context.yaml` 只运行一个文件；`--prepare-only` 只校验全部场景并准备音频。`input_mode` 和超时由各文件设置，省略时分别使用 `manual` 和 90 秒，批量 Action 不提供这两个参数。
+
+临时粘贴对话 JSON 请使用独立的 **VAS 临时对话测试** Action，其中可设置 `turns_json`、`input_mode` 和 `turn_timeout_seconds`，示例见 [README](../README.md#在-github-actions-中运行)。两个 Action 以及 `batch_run`、`ci_run` 环境变量入口均默认使用 `frame` 诊断，记录环节计时和逐帧信息；可选择 `stage`，只记录环节计时。
 
 每个 session 会重新连接 VAS，同设备顺序执行；某个 session 超时、断连或断言失败后，继续执行后面的文件。批量退出码：全部通过为 `0`，任一执行失败为 `1`，准备或参数错误为 `2`。文件之间没有共享的 WebSocket 历史；设备级长期 Memory 是否保留由 VAS 决定。
 
@@ -48,7 +50,7 @@ junit.xml                    汇总所有 session 的测试结果
 sessions/<场景路径标识>/       独立的报告、原始记录和音频
 ```
 
-Actions 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`，或 `scenarios` 一次运行全部。当前没有定时触发，新增场景后由用户手动运行。场景文件与 runner 分开维护，后续可以在不改场景内容的情况下增加定期执行。
+批量 Action 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`，或 `scenarios` 一次运行全部。两个测试 Action 均没有定时触发，由用户手动运行。
 
 ## 固定音频的多轮对话
 
@@ -80,7 +82,7 @@ python main.py run \
   --url wss://lumin-vas-aquamind-dev.deep-edge.cn/looomyn/v1/ \
   --device-id '你的测试设备 MAC ID' \
   --scenario config/my-regression.yaml \
-  --diagnostics stage \
+  --diagnostics frame \
   --output artifacts/regression-001
 ```
 
@@ -91,7 +93,7 @@ python main.py run \
 url: wss://your-vas.example/looomyn/v1/
 device_id: YOUR-TEST-DEVICE
 token: YOUR-TOKEN
-diagnostics: stage
+diagnostics: frame
 ```
 
 `expect` 沿用原有机器格式，时间阈值单位为毫秒；报告展示为秒。除上例外，可断言 `asr_text`、`llm_requests`、`tools`、`memory_requests_min`、`pre_speech_outputs_min`、`filler_outputs_min`。完整示例在 [`config/regression.example.yaml`](../config/regression.example.yaml)；示例的 Fake 预期结果不适用于真实 DEV 的自由回答。
