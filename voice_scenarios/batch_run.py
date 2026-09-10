@@ -283,6 +283,11 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("artifacts/batch"))
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--summarize", type=Path)
+    parser.add_argument(
+        "--matrix-output",
+        type=Path,
+        help="Validate and export Actions session matrix without connecting",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if args.summarize:
@@ -296,6 +301,19 @@ def main():
             logging.warning("%s", summary)
         return
     try:
+        if args.matrix_output:
+            sessions = load_sessions(args.scenarios, os.environ)
+            matrix = {
+                "include": [
+                    {key: item[key] for key in ("id", "name", "source")}
+                    for item in sessions
+                ]
+            }
+            args.matrix_output.parent.mkdir(parents=True, exist_ok=True)
+            args.matrix_output.write_text(
+                json.dumps(matrix, ensure_ascii=False), encoding="utf-8"
+            )
+            return
         code = asyncio.run(
             execute(
                 args.scenarios, args.output, os.environ, prepare_only=args.prepare_only

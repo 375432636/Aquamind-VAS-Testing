@@ -78,14 +78,28 @@ jobs:
           VAS_MAIN_URL: ${{ vars.VAS_MAIN_URL }}
         run: bash .github/actions/test-image/run.sh python -m voice_scenarios.ci_run --output artifacts/run
 
-      - name: 保存完整报告与音频
+      - name: 无损压缩本会话音频
+        id: package
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        run: bash .github/actions/test-image/run.sh python -m voice_scenarios.report_archive artifacts/run --output artifacts/download
+
+      - name: 保存本 session 报告与压缩音频
         id: report
-        if: always()
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vas-inline-${{ inputs.environment }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/download/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 14
+
+      - name: 压缩失败时保留原始诊断
+        if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vas-inline-${{ inputs.environment }}-${{ github.run_number }}-${{ github.run_attempt }}-raw-fallback
           path: artifacts/run/
-          if-no-files-found: warn
           retention-days: 14
 
       - name: 在运行结果中展示报告摘要
@@ -103,7 +117,7 @@ jobs:
           url = os.environ.get("REPORT_ARTIFACT_URL", "")
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
               if url:
-                  summary.write(f"\n[下载完整报告与音频]({url})\n\n解压后打开 `report.html`，查看完整会话播放与时间轴。\n")
+                  summary.write(f"\n[下载本 session 报告与音频]({url})\n\n解压后打开 `report.html`，音频为无损 FLAC，包含全部轮次。\n")
               else:
                   summary.write("\n本次未生成可下载的报告，请查看失败步骤的日志。\n")
           PY

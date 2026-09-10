@@ -453,7 +453,7 @@ def _session_panel(report):
         content += (
             '<div class="session-player-row"><audio id="session-player" controls preload="metadata" '
             f'aria-label="完整会话播放" src="{_text(path)}"></audio>'
-            f'<a class="session-download" href="{_text(path)}" download>下载会话 WAV ↓</a></div>'
+            f'<a class="session-download" href="{_text(path)}" download>下载会话 {_text(Path(path).suffix[1:].upper())} ↓</a></div>'
         )
     else:
         content += '<div class="empty-state">没有可回放的完整会话音频</div>'
@@ -494,7 +494,7 @@ def _session_panel(report):
     if playback.get("playback_path"):
         content += "<p>默认回听混合用户与 VAS 的声音；分轨文件保留用户左声道、回复右声道的原始音频。</p>"
         if playback.get("path"):
-            content += f'<p><a href="{_text(playback["path"])}" download>下载原始分轨 WAV ↓</a></p>'
+            content += f'<p><a href="{_text(playback["path"])}" download>下载原始分轨 {_text(Path(playback["path"]).suffix[1:].upper())} ↓</a></p>'
     elif path:
         content += "<p>此历史报告使用分轨音频：用户在左声道，回复在右声道。重新生成报告可获得混音回听。</p>"
     for limitation in playback.get("limitations", []):
