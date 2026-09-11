@@ -32,7 +32,7 @@ def create_report(directory):
         if path.exists()
         else []
     )
-    report = evaluate(result, events)
+    report = evaluate(result, events, artifact_dir=directory)
     prepare_reply_audio(report, directory)
     prepare_session_playback(report, directory)
     (directory / "report.json").write_text(
@@ -105,7 +105,7 @@ async def run(args):
         if args.scenario
         else (
             Scenario.from_dict({"name": "sensor", "turns": [{"sensor": args.sensor}]})
-            if args.sensor
+            if getattr(args, "sensor", None)
             else Scenario("single-audio", (Turn("audio", args.audio.resolve()),))
         )
     )

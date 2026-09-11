@@ -3,6 +3,17 @@
 MILESTONE_LABELS = {
     "llm_request_started": "LLM 请求提交",
     "llm_first_token": "First Token",
+    "llm_first_sse": "首个完整 SSE 数据块",
+    "llm_first_output": "首个有效 SSE 增量",
+    "llm_usage": "Token / 缓存用量",
+    "http_request_finished": "HTTP 请求结束",
+    "http_tcp_started": "TCP 开始",
+    "http_tcp_finished": "TCP 完成",
+    "http_tls_started": "TLS 开始",
+    "http_tls_finished": "TLS 完成",
+    "http_transport_error": "HTTP 传输失败",
+    "http_transport_retry_started": "传输重试等待",
+    "http_transport_retry_finished": "传输重试继续",
     "tts_first_text": "首个播报文本",
     "tts_text_complete": "文本结束提交",
     "tts_segment_ready": "片段可合成",
@@ -30,6 +41,8 @@ MILESTONE_LABELS = {
     "asr_request_started": "ASR 请求开始",
     "asr_connection_opened": "ASR 连接建立",
     "asr_connection_closed": "ASR 连接关闭",
+    "asr_session_config_requested": "ASR VAD 请求设置",
+    "asr_session_config_confirmed": "ASR VAD 服务端确认",
     "asr_first_audio_sent": "ASR 首帧提交",
     "asr_commit_sent": "ASR 提交结束",
     "asr_partial": "ASR 首个中间结果",
@@ -54,7 +67,8 @@ def group_timeline_spans(spans, events):
     starts = {
         event["span_id"]: event
         for event in events
-        if event.get("span_id") and event["event"].endswith("_started")
+        if event.get("span_id") in nodes
+        and event["event"] == nodes[event["span_id"]]["name"] + "_started"
     }
     llm_numbers = {
         span["span_id"]: index

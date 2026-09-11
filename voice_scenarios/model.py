@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from .assertions import validate_business_assertions
+
 SENSOR_COMMANDS = {
     "touch-head": "摸头",
     "touch-hand": "摸手",
@@ -52,6 +54,10 @@ class Turn:
             raise ValueError("turn requires exactly one of audio or sensor")
         if self.sensor is not None:
             sensor_command(self.sensor)
+        if not isinstance(self.expect, dict):
+            raise ValueError("expect must be an object")
+        if "business" in self.expect:
+            validate_business_assertions(self.expect["business"])
 
 
 @dataclass(frozen=True)

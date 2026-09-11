@@ -60,6 +60,9 @@ def test_real_stack_public_milestones_and_guardrail(tmp_path):
                 names = {e["event"] for e in events}
                 assert {
                     "llm_first_token",
+                    "llm_first_sse",
+                    "llm_first_output",
+                    "llm_usage",
                     "tts_first_text",
                     "tts_segment_ready",
                     "http_request_body_sent",
@@ -69,6 +72,16 @@ def test_real_stack_public_milestones_and_guardrail(tmp_path):
                     "guardrail_released",
                     "asr_final",
                 } <= names
+                assert turn["llm_requests"]
+                for attempt in turn["llm_requests"]:
+                    assert attempt["http_request_id"]
+                    assert attempt["connection_state"] in {"new", "reused"}
+                    assert attempt["sent_to_headers_ms"] is not None
+                    assert attempt["first_sse_to_output_ms"] is not None
+                    # Fake streaming responses omit usage; zero would be fabricated.
+                    assert attempt["input_tokens"] is None
+                    assert attempt["cached_tokens"] is None
+                assert len({s["span_id"] for s in turn["spans"]}) == len(turn["spans"])
                 for request in (
                     e for e in events if e["event"] == "tts_request_started"
                 ):

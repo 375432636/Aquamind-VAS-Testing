@@ -23,9 +23,14 @@ def failure_reasons(report, *, token=None, limit=5):
             # Text assertions may include private conversation contents. The full
             # values already live in the downloadable report, not CI error logs.
             replacements[full] = (
-                f'{turn["id"]}: asr_text 断言失败（文本见详细报告）'
-                if check["name"] == "asr_text"
-                else full
+                f'{turn["id"]}: {check["name"]} [{check.get("failure_kind") or "functional"}] '
+                + str(check.get("reason") or "业务断言失败，详见报告")
+                if check["name"].startswith("business.")
+                else (
+                    f'{turn["id"]}: asr_text 断言失败（文本见详细报告）'
+                    if check["name"] == "asr_text"
+                    else full
+                )
             )
             reasons.append(replacements[full])
     reasons.extend(

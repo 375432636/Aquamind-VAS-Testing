@@ -7,6 +7,8 @@ from collections import Counter
 from html import escape
 from pathlib import Path
 
+from .assertions import evaluate_business_assertions
+from .llm_evidence import summarize_llm_requests
 from .reply_timing import analyze_reply_timing, input_end_event
 from .timeline import group_timeline_spans
 from .turn_attribution import attribute_mixed_turns
@@ -18,9 +20,20 @@ def delta(events, start, end, key):
     return (b - a) / 1e6 if a is not None and b is not None and b >= a else None
 
 
-def evaluate(result, vas_events):
+def evaluate(result, vas_events, *, artifact_dir=None):
     report = copy.deepcopy(result)
     vas_events, failures = attribute_mixed_turns(report, vas_events)
+    attribution_complete = not failures
+    failure_groups = {
+        key: []
+        for key in (
+            "functional",
+            "diagnostic_missing",
+            "latency",
+            "configuration_unverified",
+        )
+    }
+    failure_groups["diagnostic_missing"].extend(failures)
     mixed = any(t.get("sensor") for t in report["turns"])
     tts_capabilities = next(
         (
@@ -38,6 +51,7 @@ def evaluate(result, vas_events):
         )
     if report.get("diagnostics") and not report["diagnostics"].get("complete"):
         failures.append("诊断数据不完整")
+        failure_groups["diagnostic_missing"].append("诊断数据不完整")
     output_edges = sorted(
         (e for e in vas_events if e["event"] == "audio_output_started"),
         key=lambda e: e["data"]["audio_seq"],
@@ -53,6 +67,13 @@ def evaluate(result, vas_events):
             )
         ]
         turn["vas_events"] = rows
+        turn["llm_requests"] = summarize_llm_requests(rows)
+        turn["asr_settings"] = [
+            e
+            for e in rows
+            if e["event"]
+            in {"asr_session_config_requested", "asr_session_config_confirmed"}
+        ]
         for event in turn["events"]:
             audio_seq = event.get("data", {}).get("audio_seq")
             if audio_seq is not None and output_edges:
@@ -83,6 +104,7 @@ def evaluate(result, vas_events):
                         failures.append(
                             f"{turn['id']}: 播放了属于其他轮次的迟到音频 seq={audio_seq}"
                         )
+                        failure_groups["functional"].append(failures[-1])
         starts = {
             (e.get("span_id"), e["event"].removesuffix("_started")): e
             for e in rows
@@ -90,6 +112,10 @@ def evaluate(result, vas_events):
         }
         spans = []
         for end in rows:
+            # HTTP phases are markers within the logical operation's span.
+            # Retries share that span but must not replace it with HTTP spans.
+            if end["event"].startswith("http_"):
+                continue
             start = starts.get(
                 (end.get("span_id"), end["event"].removesuffix("_finished"))
             )
@@ -100,6 +126,7 @@ def evaluate(result, vas_events):
             ):
                 if start["clock_id"] != end["clock_id"]:
                     failures.append("span 的时钟来源不一致")
+                    failure_groups["diagnostic_missing"].append(failures[-1])
                     continue
                 spans.append(
                     {
@@ -149,6 +176,10 @@ def evaluate(result, vas_events):
             ),
             "asr_endpoint_to_final_ms": delta(
                 rows, "asr_endpoint_detected", "asr_final", "monotonic_ns"
+            ),
+            "input_finish_to_asr_endpoint_ms": None,
+            "input_finish_to_asr_endpoint_observed_ms": _endpoint_arrival_delay(
+                turn, rows
             ),
             "local_vad_starts": counts["local_vad_speech_started"],
             "local_vad_ends": counts["local_vad_endpoint_detected"],
@@ -225,6 +256,8 @@ def evaluate(result, vas_events):
         turn["metrics"] = metrics
         checks = []
         for name, expected in turn.get("expected", {}).items():
+            if name == "business":
+                continue
             if name == "tools":
                 actual = dict(tools)
                 passed = actual == expected
@@ -237,14 +270,53 @@ def evaluate(result, vas_events):
             else:
                 actual = metrics.get(name)
                 passed = actual is not None and actual == expected
+            kind = (
+                "diagnostic_missing"
+                if actual is None
+                else "latency" if name.startswith("max_") else "functional"
+            )
+            reason = "" if passed else f"{name} 期望 {expected}，实际 {actual}"
             checks.append(
-                {"name": name, "expected": expected, "actual": actual, "passed": passed}
+                {
+                    "name": name,
+                    "expected": expected,
+                    "actual": actual,
+                    "passed": passed,
+                    "status": (
+                        "passed"
+                        if passed
+                        else "unknown" if actual is None else "failed"
+                    ),
+                    "failure_kind": None if passed else kind,
+                    "reason": reason,
+                }
             )
             if not passed:
-                failures.append(f"{turn['id']}: {name} 期望 {expected}，实际 {actual}")
+                failure = f"{turn['id']}: {reason}"
+                failures.append(failure)
+                failure_groups[kind].append(failure)
+        business_checks = evaluate_business_assertions(
+            turn,
+            rows,
+            diagnostics_complete=(
+                report.get("diagnostics", {}).get("complete")
+                if attribution_complete
+                else False
+            ),
+            artifact_dir=artifact_dir,
+        )
+        checks.extend(business_checks)
+        for check in business_checks:
+            if not check["passed"]:
+                failure = f"{turn['id']}: {check['name']} {check['reason']}"
+                failures.append(failure)
+                failure_groups[check.get("failure_kind") or "functional"].append(
+                    failure
+                )
         turn["checks"] = checks
         if turn["status"] == "failed":
             failures.append(f"{turn['id']}: {turn.get('error','运行失败')}")
+            failure_groups["functional"].append(failures[-1])
     report["session_events"] = [
         e
         for e in vas_events
@@ -253,9 +325,45 @@ def evaluate(result, vas_events):
         )
     ]
     report["failures"] = failures
+    report["failure_groups"] = failure_groups
     if failures:
         report["status"] = "failed"
     return report
+
+
+def _endpoint_arrival_delay(turn, rows):
+    """Client-clock observation only; includes diagnostic delivery latency."""
+    zero = next(
+        (
+            e["at_ns"]
+            for e in turn.get("events", [])
+            if e["event"] == "speech_input_finished"
+        ),
+        None,
+    )
+    endpoints = {
+        (e.get("clock_id"), e.get("monotonic_ns"), e.get("span_id"))
+        for e in rows
+        if e["event"] == "asr_endpoint_detected"
+    }
+    received = next(
+        (
+            e["at_ns"]
+            for e in turn.get("events", [])
+            if e["event"] == "vas_event"
+            and e.get("data", {}).get("event") == "asr_endpoint_detected"
+            and (
+                e["data"].get("clock_id"),
+                e["data"].get("monotonic_ns"),
+                e["data"].get("span_id"),
+            )
+            in endpoints
+        ),
+        None,
+    )
+    return (
+        (received - zero) / 1e6 if zero is not None and received is not None else None
+    )
 
 
 def _text(value):
@@ -374,13 +482,31 @@ def _notices(report, turn=None):
         if turn.get("error"):
             messages.append(turn["error"])
         messages.extend(
-            f'{check["name"]}：期望 {check["expected"]}，实际 {check["actual"]}'
+            (
+                f'{check["name"]}：{check["reason"]}'
+                if check.get("reason")
+                else f'{check["name"]}：期望 {check["expected"]}，实际 {check["actual"]}'
+            )
             for check in turn.get("checks", [])
             if not check["passed"]
         )
     else:
         messages.extend(report.get("failures", []))
-    return "".join(
+    labels = {
+        "functional": "功能失败",
+        "diagnostic_missing": "诊断缺失",
+        "latency": "延迟超标",
+        "configuration_unverified": "配置未核实",
+    }
+    groups = report.get("failure_groups", {})
+    category_summary = " · ".join(
+        f"{labels[key]} {len(items)}" for key, items in groups.items() if items
+    )
+    return (
+        f'<div class="notice" role="status">{_text(category_summary)}</div>'
+        if category_summary
+        else ""
+    ) + "".join(
         f'<div class="notice" role="status">{_text(message)}</div>'
         for message in dict.fromkeys(messages)
     )
@@ -644,12 +770,119 @@ def _turn_page(report, index):
     for label, key in handoff_metrics:
         value = metrics.get(key)
         content += f"<div><span>{label}</span><strong>{_seconds(value / 1000 if value is not None else None)} s</strong></div>"
-    content += '</div><details class="inline-disclosure"><summary>查看结束事件</summary><div class="table-scroll detail-body"><table id="handoff"></table></div></details></section>'
+    content += "</div>"
+    if vad:
+        requested = [
+            e
+            for e in turn.get("asr_settings", [])
+            if e["event"] == "asr_session_config_requested"
+        ]
+        confirmed = [
+            e
+            for e in turn.get("asr_settings", [])
+            if e["event"] == "asr_session_config_confirmed"
+        ]
+        request_value = (
+            requested[-1].get("data", {}).get("requested_silence_duration_ms")
+            if requested
+            else None
+        )
+        confirm_value = (
+            confirmed[-1].get("data", {}).get("confirmed_silence_duration_ms")
+            if confirmed
+            else None
+        )
+        content += (
+            '<p class="muted">ASR 静音阈值：请求 '
+            + (
+                f"{escape(str(request_value))} ms"
+                if request_value is not None
+                else "未知"
+            )
+            + " · 服务端确认 "
+            + (
+                f"{escape(str(confirm_value))} ms"
+                if confirm_value is not None
+                else "未知"
+            )
+            + "</p>"
+        )
+        observed = metrics.get("input_finish_to_asr_endpoint_observed_ms")
+        content += (
+            '<p class="muted">说完 → ASR 判停：精确间隔未知（客户端与服务端时钟独立）。客户端收到判停事件：'
+            + (f"{observed / 1000:.3f} s" if observed is not None else "未知")
+            + "，含诊断推送与网络延迟；负值表示事件在音频素材发送结束前到达，需检查提前断句。</p>"
+        )
+    content += '<details class="inline-disclosure"><summary>查看结束事件</summary><div class="table-scroll detail-body"><table id="handoff"></table></div></details></section>'
+    content += _llm_evidence_panel(turn)
     checks = turn.get("checks", [])
     content += f'<details class="disclosure"><summary>回归断言 <span>{sum(c["passed"] for c in checks)} / {len(checks)} 通过</span></summary><div class="detail-body table-scroll"><table id="checks"></table></div></details>'
     content += '<details class="disclosure"><summary>原始诊断数据</summary><div class="detail-body"><a href="report.json" download>下载 JSON</a><pre id="raw"></pre></div></details>'
     content += f'<nav class="bottom-navigation" aria-label="轮次翻页"><a href="report.html">返回会话总览</a><div>{previous}{following}</div></nav>'
     return content
+
+
+def _llm_evidence_panel(turn):
+    rows = turn.get("llm_requests", [])
+    if not rows:
+        return ""
+
+    def value(item):
+        return escape(str(item)) if item is not None else "未知"
+
+    def duration(item):
+        return f"{item / 1000:.3f} s" if item is not None else "未知"
+
+    headings = [
+        "请求 / 尝试 / SDK 重试 / 传输重试",
+        "供应商 · 模型",
+        "连接",
+        "输入 / 缓存 / 输出 Token",
+        "TCP / TLS",
+        "发送完成 → 响应头",
+        "响应头 → 首块",
+        "首块 → 有效输出",
+        "状态",
+    ]
+    body = []
+    for row in rows:
+        cells = [
+            " / ".join(
+                value(row.get(k))
+                for k in (
+                    "llm_request_seq",
+                    "http_request_seq",
+                    "retry_count",
+                    "transport_retry_count",
+                )
+            ),
+            " · ".join(value(row.get(k)) for k in ("provider", "model")),
+            {"new": "新建", "reused": "复用"}.get(row.get("connection_state"), "未知"),
+            " / ".join(
+                value(row.get(k))
+                for k in ("input_tokens", "cached_tokens", "output_tokens")
+            ),
+            " / ".join(duration(row.get(k)) for k in ("tcp_ms", "tls_ms")),
+            duration(row.get("sent_to_headers_ms")),
+            duration(row.get("headers_to_first_sse_ms")),
+            duration(row.get("first_sse_to_output_ms")),
+            (
+                "HTTP 未采集"
+                if row.get("evidence_status") == "unknown"
+                else value(row.get("status"))
+            ),
+        ]
+        body.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
+    return (
+        '<section class="panel compact-panel"><div class="section-heading"><h2>LLM 请求证据</h2></div>'
+        '<p class="muted">每行对应一次 HTTP 尝试，工具后的新请求与重试分别关联。首个完整 SSE 数据块可能只有角色信息；First Token 保留有效文本或工具增量口径。'
+        "发送后等待包含网络与服务端处理；服务端等待不等于模型计算。未观测到的连接、Token 和阶段显示未知。</p>"
+        '<div class="table-scroll" tabindex="0" aria-label="LLM 请求证据，可水平滚动"><table class="llm-evidence-table"><thead><tr>'
+        + "".join(f"<th>{h}</th>" for h in headings)
+        + "</tr></thead><tbody>"
+        + "".join(body)
+        + "</tbody></table></div></section>"
+    )
 
 
 def build_report(report, path):

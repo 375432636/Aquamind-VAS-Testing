@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from .__main__ import create_report
+from .assertions import validate_business_assertions
 from .failure_summary import failure_reasons
 from .model import SENSOR_COMMANDS, Scenario, sensor_command
 from .runner import run_scenario, save_result
@@ -54,6 +55,9 @@ def _validate_expect(expected, diagnostics):
     if not isinstance(expected, dict):
         raise ValueError("expect must be an object")
     for name, value in expected.items():
+        if name == "business":
+            validate_business_assertions(value)
+            continue
         metric = name.removeprefix("max_").removesuffix("_min")
         if diagnostics == "off" and metric not in {
             "first_playback_ms",

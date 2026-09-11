@@ -33,3 +33,11 @@ test('marker-only incomplete requests keep a valid time axis',()=>{
   assert.match(root.innerHTML,/timeline-marker/);
   assert.doesNotMatch(root.innerHTML,/NaN|Infinity/);
 });
+
+test('business evidence shows readable requirements and explicit unknown values',()=>{
+  const context={document:{getElementById:()=>({textContent:'{"turn":null}'}),addEventListener(){}},window:{addEventListener(){}},renderSessionTimeline(){}};
+  const format=vm.runInNewContext(readFileSync('voice_scenarios/report.js','utf8')+'\n({expected:checkExpectation,actual:checkActual});',context);
+  assert.match(format.expected({category:'tools',expected:{required:[{name:'News-getTodayNewsByTopic'}],forbidden:['DrawLots-drawLot']}}),/必须.*News-getTodayNewsByTopic.*禁止.*DrawLots-drawLot/);
+  assert.equal(format.actual({category:'audio',actual:{decodable:true,duration_ms:1200,ending:'normal'}}),'可解码 · 1.20 s · 正常结束');
+  assert.equal(format.actual({category:'reply',actual:{text:null}}),'未知');
+});

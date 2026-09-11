@@ -13,3 +13,6 @@
 .timeline-marker{position:absolute;top:1px;transform:translateX(-50%);display:flex;align-items:center;justify-content:center;gap:1px;min-width:28px;height:28px;padding:3px;border:1px solid transparent;border-radius:5px;background:#fff;color:#405ca3;cursor:pointer;z-index:2}
 .timeline-marker:hover,.timeline-marker:focus-visible{background:#edf2ff;border-color:#a9bce4;outline-offset:2px}
 .timeline-marker span{font-size:10px;font-weight:650}.lane-model{display:block;margin-top:5px;font-size:11px;color:#738096;line-height:1.5}.span-detail{white-space:pre-line;line-height:1.9}
+
+/* Keep short verdicts and unknown values readable inside dense evidence tables. */
+.llm-evidence-table{min-width:1040px}.llm-evidence-table th,#checks th{font-size:12px}.llm-evidence-table td{vertical-align:top}.llm-evidence-table td:nth-child(3),.llm-evidence-table td:last-child{white-space:nowrap}.llm-evidence-table th:nth-child(2){min-width:145px}.llm-evidence-table th:nth-child(4){min-width:155px}#checks{min-width:850px}#checks th:first-child,#checks td:first-child{min-width:100px}#checks th:nth-child(4),#checks td:nth-child(4){white-space:nowrap;min-width:65px;overflow-wrap:normal}.table-scroll:focus-visible{outline:3px solid #85a6fd;outline-offset:3px}

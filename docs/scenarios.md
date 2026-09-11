@@ -96,6 +96,53 @@ diagnostics: frame
 
 `expect` 沿用原有机器格式，时间阈值单位为毫秒；报告展示为秒。除上例外，可断言 `asr_text`、`llm_requests`、`tools`、`memory_requests_min`、`pre_speech_outputs_min`、`filler_outputs_min`。完整示例在 [`config/regression.example.yaml`](../config/regression.example.yaml)；示例的 Fake 预期结果不适用于真实 DEV 的自由回答。
 
+## 可选业务断言
+
+`expect.business` 对 Actions 文本场景和底层 WAV 场景通用，省略后沿用旧行为。下面的工具名必须替换为**该场景设备当前配置**中的真实名称，不能根据另一人设或一次错误调用猜测：
+
+```yaml
+expect:
+  llm_requests_min: 1
+  tts_requests_min: 1
+  business:
+    recognition:
+      contains_all: [[新闻, 要闻, 资讯]]
+    tools:
+      required:
+        - name: 实际新闻工具名
+          # 可选：只验证必要参数；键名与值须来自该工具契约
+          arguments: {topic: today}
+      forbidden: [DrawLots-drawLot]
+    reply:
+      contains_all: [[新闻, 要闻, 资讯]]
+      output_kind: answer
+    audio:
+      ending: normal
+      min_duration_ms: 1
+```
+
+`contains_all` 外层各组都要命中，组内任一同义表达即可；匹配前统一 Unicode 宽度、大小写和空白，不做全文精确匹配，也不把这种规则检查当成事实核验。复杂回复可列多个必要信息组，例如黄历的 `[[宜, 适宜], [忌, 不宜]]`。新闻时效、事实正确性仍需额外核验。
+
+`tools.required` 要求观察到指定工具开始及成功结束；`arguments` 仅检查列出的标量关键参数。`tools.forbidden` 检查不应调用的工具。两者都为空时明确显示不适用，不宣称已验证工具行为。缺少参数采集、执行结束或完整诊断时显示“未知”，不会把没有记录当成没有调用；已观察到的禁止工具调用即使诊断不完整也会功能失败。VAS 默认不记录工具参数，需要在服务端公共诊断配置的 `audio_diagnostics.tool_argument_allowlist` 显式允许对应工具的必要键，例如 `{Tung-Shing-get-tung-shing: [days, includeHours]}`。不要加入 Prompt、认证信息、用户私密资料或完整自由文本参数。
+
+`reply` 默认只检查通过音频包顺序归属的正式回答，开场白与临时播报不能满足必要信息断言。未采集到正式回复归属时显示未知；明确要检查所有本轮播报时可设置 `output_kind: any`。`audio` 校验接收文件可解码、PCM 与记录的帧一致、本轮非空及最小时长，排除开场白、其他轮次和打断后丢弃的帧。`ending: normal` 要求服务端结束和本地播放排空；预期打断使用 `ending: interrupted`，并要求已请求打断、本地停播和服务端停止确认。文件缺失属于采集证据缺失，音频损坏或错误结束属于功能失败。
+
+传感器输入没有 ASR。摸头轮次可写 `recognition: {sensor: touch-head}`；检查实际 `sensor_sent` 和可用的服务端 `detected_action.sensor_name` 回显。匹配时识别项显示“不适用（传感器指令已匹配）”，命令不符仍失败，发送证据缺失显示未知；实际人设的互动响应由 `reply` 检查。不要用服务端回显的互动 Prompt 冒充识别文本。
+
+尚未核实的设备要求显式写成：
+
+```yaml
+tools:
+  verified: false
+  reason: 当前设备的新闻工具契约尚未核实
+```
+
+每项可附 `source` 记录无敏感信息的配置证据。`verified: false` 返回 `configuration_unverified`，不会通过。确认配置后填入真实要求并移除该标记；更换设备或人设时必须同步更新断言。
+
+`report.json` 的每个 check 保留兼容的 `name / expected / actual / passed`，业务项另有 `category`（识别、工具、回复、音频）、`status`、`failure_kind` 和 `reason`。功能错误是 `functional`，证据缺失是 `diagnostic_missing`，设备契约未确认是 `configuration_unverified`；延迟阈值单独归类。非通过结果使报告失败，但原因不会混成一个“链路失败”。识别和音频断言在诊断关闭时仍能利用客户端证据；无法证明的内部工具及回答归属保持未知。
+
+反例回归 `tests/test_business_assertions.py::test_news_misrecognized_as_heart_wrong_tool_cannot_pass_successful_llm_tts` 固定“新闻 → 心 → 抽签工具”：即使 LLM/TTS 请求成功且收到有效音频，识别、工具和回复断言仍失败。
+
 ## VAD 场景
 
 ```yaml
