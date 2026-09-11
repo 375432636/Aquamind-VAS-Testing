@@ -13,7 +13,7 @@ import yaml
 
 from .dev_stack import ROOT, serve_stack
 from .failure_summary import failure_reasons
-from .model import Scenario, Turn
+from .model import SENSOR_COMMANDS, Scenario, Turn
 from .reply_audio import prepare_reply_audio
 from .report import build_report, evaluate
 from .report_archive import restore_audio
@@ -78,7 +78,10 @@ def create_report(directory):
         "inputs": [],
     }
     for turn in report["turns"]:
-        audio = Path(turn["audio"]["input"]) if turn.get("audio") else None
+        filename = turn.get("audio", {}).get("input")
+        audio = Path(filename) if filename else None
+        if turn.get("sensor"):
+            manifest["inputs"].append({"turn_id": turn["id"], "sensor": turn["sensor"]})
         if audio and audio.is_file():
             manifest["inputs"].append(
                 {
@@ -100,7 +103,11 @@ async def run(args):
     scenario = (
         Scenario.load(args.scenario)
         if args.scenario
-        else Scenario("single-audio", (Turn("audio", args.audio.resolve()),))
+        else (
+            Scenario.from_dict({"name": "sensor", "turns": [{"sensor": args.sensor}]})
+            if args.sensor
+            else Scenario("single-audio", (Turn("audio", args.audio.resolve()),))
+        )
     )
     if diagnostics == "off" and any(
         t.interrupt and t.interrupt.output_kind not in {"any", "music"}
@@ -163,6 +170,7 @@ def main():
     source = runp.add_mutually_exclusive_group(required=True)
     source.add_argument("--scenario", type=Path)
     source.add_argument("--audio", type=Path)
+    source.add_argument("--sensor", choices=list(SENSOR_COMMANDS))
     runp.add_argument("--url")
     runp.add_argument("--device-id")
     runp.add_argument("--diagnostics", choices=["off", "stage", "frame"])

@@ -1,0 +1,20 @@
+name: 四种标准传感器互动
+device_id: "30:ED:A0:A6:23:A4"
+environment: dev
+turns:
+  - sensor: touch-head
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+  - sensor: touch-hand
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+  - sensor: shake-body
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+  - sensor: throw-it-up
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1

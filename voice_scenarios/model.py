@@ -4,6 +4,19 @@ from pathlib import Path
 
 import yaml
 
+SENSOR_COMMANDS = {
+    "touch-head": "摸头",
+    "touch-hand": "摸手",
+    "shake-body": "摇晃身体",
+    "throw-it-up": "抛起／跌落",
+}
+
+
+def sensor_command(value):
+    if not isinstance(value, str) or value not in SENSOR_COMMANDS:
+        raise ValueError("sensor must be one of: " + ", ".join(SENSOR_COMMANDS))
+    return value
+
 
 def positive_number(value, name, *, allow_zero=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -27,11 +40,18 @@ class Interruption:
 @dataclass(frozen=True)
 class Turn:
     id: str
-    audio: Path
+    audio: Path | None = None
     interrupt: Interruption | None = None
     expect: dict = field(default_factory=dict)
     completion_goal: str = "audio_completed"
     input_text: str | None = None
+    sensor: str | None = None
+
+    def __post_init__(self):
+        if (self.audio is None) == (self.sensor is None):
+            raise ValueError("turn requires exactly one of audio or sensor")
+        if self.sensor is not None:
+            sensor_command(self.sensor)
 
 
 @dataclass(frozen=True)
@@ -74,8 +94,16 @@ class Scenario:
             raise ValueError("scenario requires a nonempty turns list")
         turns = []
         for index, value in enumerate(data["turns"], 1):
-            path = (Path(base_dir) / value["audio"]).resolve()
-            if not path.is_file():
+            if (
+                not isinstance(value, dict)
+                or sum(key in value for key in ("audio", "sensor")) != 1
+            ):
+                raise ValueError("turn requires exactly one of audio or sensor")
+            sensor = sensor_command(value["sensor"]) if "sensor" in value else None
+            path = (
+                (Path(base_dir) / value["audio"]).resolve() if sensor is None else None
+            )
+            if path is not None and not path.is_file():
                 raise ValueError(f"input audio does not exist: {path}")
             turn_id = str(value.get("id", f"turn-{index}"))
             if turn_id in {turn.id for turn in turns}:
@@ -126,7 +154,9 @@ class Scenario:
                     interruption,
                     value.get("expect", {}),
                     goal,
-                    value.get("input_text"),
+                    value.get("input_text")
+                    or (f"传感器 · {SENSOR_COMMANDS[sensor]}" if sensor else None),
+                    sensor,
                 )
             )
         return cls(

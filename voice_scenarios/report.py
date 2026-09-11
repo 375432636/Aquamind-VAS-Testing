@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .reply_timing import analyze_reply_timing, input_end_event
 from .timeline import group_timeline_spans
+from .turn_attribution import attribute_mixed_turns
 
 
 def delta(events, start, end, key):
@@ -19,7 +20,8 @@ def delta(events, start, end, key):
 
 def evaluate(result, vas_events):
     report = copy.deepcopy(result)
-    failures = []
+    vas_events, failures = attribute_mixed_turns(report, vas_events)
+    mixed = any(t.get("sensor") for t in report["turns"])
     tts_capabilities = next(
         (
             e["data"]
@@ -44,7 +46,11 @@ def evaluate(result, vas_events):
         rows = [
             e
             for e in vas_events
-            if e.get("listen_turn_id") == turn.get("listen_turn_id", index)
+            if (
+                e.get("client_turn_index") == index
+                if mixed
+                else e.get("listen_turn_id") == turn.get("listen_turn_id", index)
+            )
         ]
         turn["vas_events"] = rows
         for event in turn["events"]:
@@ -71,7 +77,8 @@ def evaluate(result, vas_events):
                     if (
                         event["event"] == "playback_frame_started"
                         and edge.get("listen_turn_id") is not None
-                        and edge.get("listen_turn_id") != index
+                        and edge.get("client_turn_index", edge.get("listen_turn_id"))
+                        != index
                     ):
                         failures.append(
                             f"{turn['id']}: 播放了属于其他轮次的迟到音频 seq={audio_seq}"
@@ -167,6 +174,9 @@ def evaluate(result, vas_events):
                 if e["event"] == "tool_call_started"
             ),
         }
+        if turn.get("sensor"):
+            turn["server_input_text"] = metrics["asr_text"]
+            metrics["asr_text"] = None
         outputs = [e for e in rows if e["event"] == "audio_output_started"]
         played = {
             e["data"].get("audio_seq"): e["at_ns"]
@@ -236,7 +246,11 @@ def evaluate(result, vas_events):
         if turn["status"] == "failed":
             failures.append(f"{turn['id']}: {turn.get('error','运行失败')}")
     report["session_events"] = [
-        e for e in vas_events if e.get("listen_turn_id") is None
+        e
+        for e in vas_events
+        if (
+            not e.get("client_turn_index") if mixed else e.get("listen_turn_id") is None
+        )
     ]
     report["failures"] = failures
     if failures:
@@ -280,6 +294,8 @@ def _turn_badges(turn):
         status += _badge("打断未触发", "warning")
     if turn.get("input_settings", {}).get("mode") == "vad":
         status += _badge("VAD")
+    if turn.get("sensor"):
+        status += _badge("传感器")
     return status
 
 
@@ -490,7 +506,7 @@ def _session_panel(report):
         '<details class="inline-disclosure"><summary>播放与计时口径</summary><div class="detail-body">'
         "<p>按客户端记录的发送、播放时间还原整段会话，保留句间与轮间空档。"
         "播放记录来自 Python 软件播放器，不代表设备扬声器的实测出声时刻。</p>"
-        "<p>输入结束是 WAV 素材发送结束，素材内部静音也计入；VAD 模式随后继续发送底噪。VAS 内部时钟在各轮详情中独立展示。</p>"
+        "<p>语音输入结束是 WAV 素材发送结束，VAD 模式随后继续发送底噪。传感器以指令发出作为输入时刻，不生成输入音频。VAS 内部时钟在各轮详情中独立展示。</p>"
     )
     if playback.get("playback_path"):
         content += "<p>默认回听混合用户与 VAS 的声音；分轨文件保留用户左声道、回复右声道的原始音频。</p>"
@@ -535,6 +551,10 @@ def _turn_page(report, index):
     asr = metrics.get("asr_text")
     if asr and turn.get("input_text") and asr != turn["input_text"]:
         content += f'<div class="asr-text"><span>ASR 识别</span>{_text(asr)}</div>'
+    if turn.get("sensor"):
+        content += f'<div class="asr-text"><span>传感器指令</span>{_text(turn["sensor"])} · 不经过 ASR / VAD</div>'
+        if turn.get("server_input_text"):
+            content += f'<div class="asr-text"><span>服务端事件回显</span>{_text(turn["server_input_text"])}</div>'
     content += "</section>"
     content += _cards(
         [
@@ -592,22 +612,34 @@ def _turn_page(report, index):
         "ASR 全程包含音频上传。临时回复、过渡语与正式回复以已采集的类型为准。</p>"
         '<div class="table-scroll"><table id="spans"></table></div></div></details></section>'
         '<section class="panel compact-panel"><div class="section-heading"><h2>'
-        + ("VAD 结束与识别收尾" if vad else "语音结束与识别收尾")
+        + (
+            "传感器触发"
+            if turn.get("sensor")
+            else "VAD 结束与识别收尾" if vad else "语音结束与识别收尾"
+        )
         + "</h2>"
-        + _badge("VAD 自动结束" if vad else "手动停止")
+        + _badge(
+            "sensor 指令"
+            if turn.get("sensor")
+            else "VAD 自动结束" if vad else "手动停止"
+        )
         + '</div><div class="fact-grid">'
     )
     handoff_metrics = (
-        [
-            ("本地 VAD 静音判定", "local_vad_silence_ms"),
-            ("ASR VAD → 最终文本", "asr_endpoint_to_final_ms"),
-        ]
-        if vad
-        else [
-            ("停止消息排队", "stop_queue_ms"),
-            ("停止 → 开始处理", "stop_to_execution_ms"),
-            ("ASR 提交 → 最终文本", "asr_commit_to_final_ms"),
-        ]
+        [("指令发送 → 首次播放", "first_playback_ms")]
+        if turn.get("sensor")
+        else (
+            [
+                ("本地 VAD 静音判定", "local_vad_silence_ms"),
+                ("ASR VAD → 最终文本", "asr_endpoint_to_final_ms"),
+            ]
+            if vad
+            else [
+                ("停止消息排队", "stop_queue_ms"),
+                ("停止 → 开始处理", "stop_to_execution_ms"),
+                ("ASR 提交 → 最终文本", "asr_commit_to_final_ms"),
+            ]
+        )
     )
     for label, key in handoff_metrics:
         value = metrics.get(key)
