@@ -74,6 +74,8 @@ def _time(events, kind):
 
 
 def _input(turn, directory, frames, not_before):
+    if turn.get("sensor"):
+        return [], [], "event", 0, 0
     events = turn.get("events", [])
     vad = turn.get("input_settings", {}).get("mode") == "vad"
     if frames:
@@ -166,7 +168,7 @@ def _reply(turn, directory):
         )
         or any(
             packets[seq].get("server_listen_turn_id")
-            not in (None, turn.get("listen_turn_id"))
+            not in (None, turn.get("server_listen_turn_id", turn.get("listen_turn_id")))
             for seq in seqs
         )
     ):
@@ -352,7 +354,13 @@ def prepare_session_playback(report, directory):
             {"code": "too_many_turns", "message": "会话超过 30 轮，未生成整段音频。"}
         )
         return result
-    anchors = [_time(t.get("events", []), "first_audio_sent") for t in turns]
+    anchors = [
+        _time(
+            t.get("events", []),
+            "sensor_sent" if t.get("sensor") else "first_audio_sent",
+        )
+        for t in turns
+    ]
     anchors = [value for value in anchors if value is not None]
     if not anchors:
         result["limitations"].append(
@@ -436,8 +444,10 @@ def prepare_session_playback(report, directory):
         clips.extend(input_clips + reply_clips)
         endpoint = max([endpoint] + [clip.end_ns for clip in input_clips + reply_clips])
         latest = max(latest, endpoint)
-        input_start = _time(events, "speech_input_started") or _time(
-            events, "first_audio_sent"
+        input_start = (
+            _time(events, "sensor_sent")
+            or _time(events, "speech_input_started")
+            or _time(events, "first_audio_sent")
         )
         input_end = _time(events, input_end_event(turn))
         reply_events = [
@@ -491,7 +501,7 @@ def prepare_session_playback(report, directory):
                 row["input_segments"].append(item)
         result["turns"].append(row)
         for kind, anchor in (
-            ("input_end", input_end),
+            ("sensor_sent" if turn.get("sensor") else "input_end", input_end),
             ("first_received", first_received),
             ("first_playback", first_playback),
             ("abort", _time(events, "abort_requested")),

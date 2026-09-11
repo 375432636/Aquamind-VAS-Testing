@@ -104,7 +104,8 @@ async def _run_turn(
     input_path = prefix.with_suffix(".input.wav")
     received_path = prefix.with_suffix(".received.wav")
     played_path = prefix.with_suffix(".played.wav")
-    shutil.copyfile(turn.audio, input_path)
+    if turn.audio is not None:
+        shutil.copyfile(turn.audio, input_path)
     result = {
         "id": turn.id,
         "input_text": turn.input_text,
@@ -112,7 +113,7 @@ async def _run_turn(
         "started_at_ns": start_ns,
         "events": [],
         "audio": {
-            "input": str(input_path),
+            **({"input": str(input_path)} if turn.audio is not None else {}),
             "received": str(received_path),
             "played": str(played_path),
         },
@@ -124,6 +125,8 @@ async def _run_turn(
         "requested_interruption": asdict(turn.interrupt) if turn.interrupt else None,
         "input_settings": asdict(scenario.input),
     }
+    if turn.sensor:
+        result.update(sensor=turn.sensor, input_settings={"mode": "sensor"})
     sink = sink or events.put_nowait
     player = player_factory(sink, played_path)
     writer = None
@@ -157,7 +160,9 @@ async def _run_turn(
     async def send_input():
         try:
             sink(Event("input_started"))
-            if scenario.input.mode == "vad":
+            if turn.sensor:
+                data = await transport.send_sensor(turn.sensor)
+            elif scenario.input.mode == "vad":
                 uplink = prefix.with_suffix(".uplink.wav")
                 result["audio"]["uplink"] = str(uplink)
                 data = await transport.send_audio(
@@ -233,7 +238,9 @@ async def _run_turn(
                 )
                 data["discarded_after_abort"] = abort_requested_ns is not None
             elif event.kind == "tts_stop":
-                if event.data.get("is_session_output"):
+                if event.data.get("is_session_output") or event.data.get(
+                    "response_listen_turn_id"
+                ) not in (None, index):
                     # Keep hello audio in the session FIFO/WAV, but only the
                     # question's own reply may finish this turn or its player.
                     continue
@@ -248,12 +255,11 @@ async def _run_turn(
                     )
             elif event.kind == "input_completed":
                 input_done = True
+                if "server_listen_turn_id" in data:
+                    result["server_listen_turn_id"] = data["server_listen_turn_id"]
             elif event.kind == "vas_event":
                 row = event.data
-                if (
-                    row.get("event") == "audio_output_started"
-                    and row.get("listen_turn_id") == index
-                ):
+                if row.get("event") == "audio_output_started":
                     output_starts[row["data"]["audio_seq"]] = row.get("output_kind")
             elif event.kind == "playback_frame_started":
                 played_starts[event.data["audio_seq"]] = event.at_ns

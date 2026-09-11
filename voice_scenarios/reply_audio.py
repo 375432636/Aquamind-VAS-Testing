@@ -113,7 +113,12 @@ def prepare_reply_audio(report, directory):
                     continue
                 if any(
                     packets[seq].get("server_listen_turn_id")
-                    not in (None, turn.get("listen_turn_id", index))
+                    not in (
+                        None,
+                        turn.get(
+                            "server_listen_turn_id", turn.get("listen_turn_id", index)
+                        ),
+                    )
                     for seq in seqs
                 ):
                     clip["reason"] = "cross_turn_audio"

@@ -95,7 +95,7 @@ if (!turn) renderSessionTimeline($('session-timeline'), report.session_playback)
 if (turn) {
   renderReplyTiming($('reply-timing'), turn.reply_timing, report.session_playback, report.turn_index);
   const events = turn.events || [], vas = turn.vas_events || [];
-  const clientLabels = {input_started:'开始发送输入', first_audio_sent:'第一帧音频发出', audio_send_completed:'音频发送完成', speech_input_started:'语音开始', speech_input_finished:'语音结束', background_noise_started:'持续发送底噪', listen_stop_sent:'停止指令发出', playback_started:'开始播放回复', playback_stopped:'停止播放', playback_drained:'回复播放完成', abort_wire_sent:'打断指令发出', music_call_accepted:'音乐指令已接受', music_playback_started:'音乐开始播放', music_playback_stopped:'音乐停止播放'};
+  const clientLabels = {sensor_sent:'传感器指令发出', input_started:'开始发送输入', first_audio_sent:'第一帧音频发出', audio_send_completed:'音频发送完成', speech_input_started:'语音开始', speech_input_finished:'语音结束', background_noise_started:'持续发送底噪', listen_stop_sent:'停止指令发出', playback_started:'开始播放回复', playback_stopped:'停止播放', playback_drained:'回复播放完成', abort_wire_sent:'打断指令发出', music_call_accepted:'音乐指令已接受', music_playback_started:'音乐开始播放', music_playback_stopped:'音乐停止播放'};
   const vadLabels = {local_vad_speech_started:'本地 VAD · 语音开始', local_vad_last_voice:'本地 VAD · 最后语音帧', local_vad_endpoint_detected:'本地 VAD · 结束', asr_speech_started:'ASR VAD · 语音开始', asr_endpoint_detected:'ASR VAD · 结束', asr_final:'ASR · 最终识别结果'};
   const colors = {asr_request:'#318494', memory_request:'#9074af', llm_request:'#5070bf', tool_call:'#b1833e', guardrail_embedding:'#b27552'};
   const ttsColors = ['#397d75','#5b80ad','#9273a4','#ac843d','#ad7187','#528488'];

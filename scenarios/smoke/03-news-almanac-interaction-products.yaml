@@ -1,0 +1,25 @@
+name: 新闻黄历、肢体互动与产品介绍
+device_id: "30:ED:A0:A6:23:A4"
+environment: dev
+input_mode: vad
+turns:
+  - id: news
+    text: 帮我看一下今天的新闻
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+  - id: almanac
+    text: 帮我看一下今天的黄历。
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+  - id: head-touch
+    sensor: touch-head
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+  - id: products
+    text: 给我介绍一下产品，这有什么好玩的？
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1

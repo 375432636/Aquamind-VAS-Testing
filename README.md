@@ -16,9 +16,34 @@
 
 | 场景目录 | 内容 |
 | --- | --- |
-| [`scenarios/smoke`](scenarios/smoke/) | 多轮上下文、正式回答播放后 2 秒打断、打断后继续对话 |
+| [`scenarios/smoke`](scenarios/smoke/) | 多轮上下文、正式回答播放后 2 秒打断、打断后继续对话、新闻黄历、肢体互动描述与产品介绍 |
 | [`scenarios/vad`](scenarios/vad/) | 连续发送语音和底噪，由后台 VAD 判断结束 |
 | [`scenarios/products`](scenarios/products/) | 会议耳机上下文、正式回答后 2 秒打断 |
+| [`scenarios/sensors`](scenarios/sensors/) | 摸头、摸手、摇晃、抛起四种标准传感器指令 |
+
+新闻、黄历、摸头和产品介绍保存在 [`03-news-almanac-interaction-products.yaml`](scenarios/smoke/03-news-almanac-interaction-products.yaml)，使用 DEV 设备 `30:ED:A0:A6:23:A4`，四轮共享一个 session。语音采用 VAD 模式，说完后继续发送底噪；摸头直接发送标准传感器消息。每轮检查至少发生一次 LLM 和 TTS 请求；新闻时效、黄历正确性和回复内容需结合报告核对。
+
+传感器步骤使用 `sensor` 字段，与 `text`、`audio` 三选一。四种标准值为 `touch-head`（摸头）、`touch-hand`（摸手）、`shake-body`（摇晃身体）、`throw-it-up`（抛起／跌落）。例如：
+
+```yaml
+turns:
+  - text: 你好
+  - sensor: touch-head
+  - text: 刚才我碰了哪里？
+```
+
+临时 Action 同样接受 `[{"text":"你好"},{"sensor":"touch-head"}]`。传感器通过当前连接发送 `{"type":"sensor","mode":"touch-head","state":"stop"}`，不合成或上传语音，也不发送 `listen/start` 或 `listen/stop`。回复仍参与整段 session 回听，首音等待从指令发出开始计时。服务端通过 STT 消息回显的互动描述显示为“服务端事件回显”，不计作 ASR 识别结果。
+
+单独触发一次摸头：
+
+```bash
+python main.py run --sensor touch-head \
+  --url wss://lumin-vas-aquamind-dev.deep-edge.cn/looomyn/v1/ \
+  --device-id 30:ED:A0:A6:23:A4 --diagnostics frame \
+  --output artifacts/sensor-head
+```
+
+复用现有 VAS 协议，无需修改 VAS。设备侧必须启用对应互动回复；未产生回复会按超时失败处理。混合会话利用同一 WebSocket 上的 TTS 控制顺序关联内部记录，保留原始服务端收音轮次；若控制记录不完整或无法匹配，报告明确失败，不按时间接近程度猜测。旧报告仍可读取。
 
 新增一个 session，例如 `scenarios/custom/my-session.yaml`：
 
