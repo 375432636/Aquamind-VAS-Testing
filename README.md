@@ -10,7 +10,11 @@
 4. 点击 **Run workflow**。各 session 逐个运行；一个 session 失败后仍继续后面的场景。
 5. 在 **Summary** 选择需要的 session，点击该会话的下载链接。每个 artifact 只包含一个 session，解压后直接打开 `report.html`。
 
-两个测试 Action 均由用户手动运行，没有启用定时任务。批量测试只需维护 [`scenarios/`](scenarios/) 中的文件，运行时无需重复粘贴对话。
+**每天北京时间 07:00 自动运行全部冒烟测试。** [`VAS 批量语音测试`](.github/workflows/voice-test.yml) 使用默认分支 `main` 的最新已合并版本，读取 [`scenarios/smoke/`](scenarios/smoke/) 下的全部场景。当前是 3 个 session、10 轮，沿用各文件的 DEV 环境和 MAC 配置，诊断级别为 `frame`。新增到该目录的用例会自动纳入每日测试。
+
+定时和手动测试共用 Docker 缓存、串行执行和报告流程；某个 session 失败后继续后续场景。结果在 **Actions → VAS 批量语音测试 → 对应运行 → Summary** 查看，各 session 的报告与无损压缩音频独立下载，保留 14 天。GitHub 按 UTC 调度（`0 23 * * *`），实际启动可能因队列繁忙延迟。
+
+批量测试和临时对话 Action 仍可手动运行。批量测试只需维护 [`scenarios/`](scenarios/) 中的文件，运行时无需重复粘贴对话。
 
 三个 Action（含 CI）共用 Docker 测试环境。首次构建安装系统与 Python 依赖，之后通过 GitHub BuildKit 缓存复用镜像层；修改场景或业务代码不会重新安装依赖，修改 `pyproject.toml` 或基础环境时才重建对应层。缓存受 GitHub 分支可见性和回收规则限制，缓存失效时会正常重建。设备认证只在运行容器时传入，报告和生成音频不进入构建缓存。
 

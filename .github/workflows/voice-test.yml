@@ -2,6 +2,9 @@ name: VAS 批量语音测试
 run-name: VAS · 批量场景 · ${{ github.run_number }}
 
 on:
+  schedule:
+    # GitHub cron uses UTC: 23:00 UTC is 07:00 the following day in Shanghai.
+    - cron: '0 23 * * *'
   workflow_dispatch:
     inputs:
       scenario_path:
@@ -13,7 +16,7 @@ on:
 permissions:
   contents: read
 
-# Saved sessions can target different devices; serialize both manual workflows.
+# Saved sessions can target different devices; serialize scheduled and manual tests.
 concurrency:
   group: voice-tests
   cancel-in-progress: false
