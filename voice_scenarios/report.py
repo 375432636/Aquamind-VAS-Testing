@@ -10,7 +10,7 @@ from pathlib import Path
 from .assertions import evaluate_business_assertions
 from .llm_evidence import summarize_llm_requests
 from .reply_timing import analyze_reply_timing, input_end_event
-from .timeline import group_timeline_spans
+from .timeline import group_timeline_spans, image_timeline_markers
 from .turn_attribution import attribute_mixed_turns
 
 
@@ -611,7 +611,13 @@ def _session_panel(report):
         '<div class="session-toolbar"><div class="session-legend">'
         '<span><i class="legend-input"></i>用户输入</span><span><i class="legend-temporary"></i>过渡 / 临时</span>'
         '<span><i class="legend-answer"></i>正式回复</span><span><i class="legend-wait"></i>等待</span>'
-        '<span><i class="legend-abort"></i>打断</span></div>'
+        '<span><i class="legend-abort"></i>打断</span>'
+        + (
+            '<span><i class="legend-image"></i>图片到达</span>'
+            if playback.get("image_markers")
+            else ""
+        )
+        + "</div>"
         '<div class="session-zoom" role="group" aria-label="时间轴缩放">'
         '<button type="button" data-session-zoom="out" aria-label="缩小时间轴">−</button>'
         '<button type="button" data-session-zoom="fit">全会话</button>'
@@ -896,6 +902,7 @@ def build_report(report, path):
     script = "\n".join(
         (assets / name).read_text()
         for name in (
+            "image_markers.js",
             "reply_timing.js",
             "session_timeline.js",
             "timeline_measurement.js",
@@ -903,7 +910,20 @@ def build_report(report, path):
         )
     )
     display = copy.deepcopy(report)
-    for turn in display["turns"]:
+    playback = display.setdefault("session_playback", {})
+    playback["image_markers"] = []
+    zero = playback.get("zero_at_ns")
+    for index, turn in enumerate(display["turns"], 1):
+        turn["image_markers"] = image_timeline_markers(turn.get("events", []))
+        if zero is not None:
+            playback["image_markers"].extend(
+                dict(
+                    marker,
+                    turn_index=index,
+                    at_seconds=(marker["start_ns"] - zero) / 1e9,
+                )
+                for marker in turn["image_markers"]
+            )
         if "reply_timing" not in turn:
             turn["reply_timing"] = analyze_reply_timing(turn)
         turn["timeline_lanes"] = group_timeline_spans(

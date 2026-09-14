@@ -16,3 +16,5 @@
 
 /* Keep short verdicts and unknown values readable inside dense evidence tables. */
 .llm-evidence-table{min-width:1040px}.llm-evidence-table th,#checks th{font-size:12px}.llm-evidence-table td{vertical-align:top}.llm-evidence-table td:nth-child(3),.llm-evidence-table td:last-child{white-space:nowrap}.llm-evidence-table th:nth-child(2){min-width:145px}.llm-evidence-table th:nth-child(4){min-width:155px}#checks{min-width:850px}#checks th:first-child,#checks td:first-child{min-width:100px}#checks th:nth-child(4),#checks td:nth-child(4){white-space:nowrap;min-width:65px;overflow-wrap:normal}.table-scroll:focus-visible{outline:3px solid #85a6fd;outline-offset:3px}
+
+.image-marker{color:#824d9b}.image-marker-detail{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 0}.image-marker-detail a{min-height:32px;display:inline-flex;align-items:center}.image-marker-detail code{display:block;flex-basis:100%;overflow-wrap:anywhere;font-size:12px}.image-marker-detail+ .image-marker-detail{border-top:1px solid var(--border)}
