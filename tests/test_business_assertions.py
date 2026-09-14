@@ -3,12 +3,13 @@ import json
 import wave
 
 import pytest
+import yaml
 
 from voice_scenarios.assertions import (
     evaluate_business_assertions,
     validate_business_assertions,
 )
-from voice_scenarios.ci_run import settings_from_env, validate_turns
+from voice_scenarios.ci_run import ROOT, settings_from_env, validate_turns
 from voice_scenarios.failure_summary import failure_reasons
 from voice_scenarios.model import Scenario
 from voice_scenarios.report import evaluate as evaluate_report
@@ -87,6 +88,24 @@ def evaluate(turn, rows=None, complete=True, **kwargs):
             **kwargs,
         )
     }
+
+
+@pytest.mark.parametrize(
+    ("reply", "passed"),
+    [
+        ("今天的星象关键词是清醒的混乱。", True),
+        ("太阳处女与火星六合，月亮天秤合金星，水星逆行。", True),
+        ("今天有几条新闻资讯，请稍后查看。", False),
+    ],
+)
+def test_smoke_news_checks_astrology_in_the_formal_reply(tmp_path, reply, passed):
+    scenario = yaml.safe_load(
+        (ROOT / "scenarios/smoke/03-news-almanac-interaction-products.yaml").read_text()
+    )
+    news = next(turn for turn in scenario["turns"] if turn["id"] == "news")
+    turn = turn_fixture(tmp_path, reply=reply)
+    turn["expected"] = news["expect"]
+    assert evaluate(turn)["reply"]["passed"] is passed
 
 
 def test_semantic_synonyms_required_tool_key_arguments_and_decodable_reply(tmp_path):

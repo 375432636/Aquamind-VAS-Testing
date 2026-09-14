@@ -25,9 +25,9 @@
 | [`scenarios/products`](scenarios/products/) | 会议耳机上下文、正式回答后 2 秒打断 |
 | [`scenarios/sensors`](scenarios/sensors/) | 摸头、摸手、摇晃、抛起四种标准传感器指令 |
 
-新闻、黄历、摸头和产品介绍保存在 [`03-news-almanac-interaction-products.yaml`](scenarios/smoke/03-news-almanac-interaction-products.yaml)，使用 DEV 设备 `30:ED:A0:A6:23:A4`，四轮共享一个 session。语音采用 VAD 模式，说完后继续发送底噪；摸头直接发送标准传感器消息。每轮分别检查识别意图、工具、回复必要信息及可解码非空音频，保留 LLM/TTS 次数检查。新闻要求调用 `News-getTodayNewsByTopic`，黄历要求 `Tung-Shing-get-tung-shing`；新闻误识别为“心”后调用抽签工具会失败。
+新闻、黄历、摸头和产品介绍保存在 [`03-news-almanac-interaction-products.yaml`](scenarios/smoke/03-news-almanac-interaction-products.yaml)，使用 DEV 设备 `30:ED:A0:A6:23:A4`，四轮共享一个 session。语音采用 VAD 模式，说完后继续发送底噪；摸头直接发送标准传感器消息。
 
-工具与产品能力来自 2026-09-11 该设备的 UMS 配置及 MCP 工具清单。运行时需核对 DEV 的实际配置来源，换设备或人设时同步修改预期。摸头检查实际传感器发送及服务端回显；当前配置未明确固定回复规则，默认要求回应摸头或“大笨蛋”的调侃，禁止误触发抽签，具体人设规则确认后可收紧。产品介绍检查占星、星盘及黄历/抽签/MBTI 能力，不强制其他人设的产品答案或工具流程。新闻事实时效与黄历事实正确性仍需进一步核验。配置方法见[可选业务断言](docs/scenarios.md#可选业务断言)。
+这组冒烟只保留两条内容检查：新闻按占星人设检查正式回答是否包含星象、星盘、星座或示例星象关键词；黄历检查识别文本是否包含“黄历／通胜／老黄历”，避免“黄历 → 管理”的识别偏差被忽略。摸头与产品介绍不限制回复用词。不要求固定工具或调用次数；时间轴、工具调用和音频仍正常采集。关键词仅用于轻量检查，不验证星象或黄历的事实正确性。严格业务评测需要时另行配置，见[可选业务断言](docs/scenarios.md#可选业务断言)。
 
 传感器步骤使用 `sensor` 字段，与 `text`、`audio` 三选一。四种标准值为 `touch-head`（摸头）、`touch-hand`（摸手）、`shake-body`（摇晃身体）、`throw-it-up`（抛起／跌落）。例如：
 
