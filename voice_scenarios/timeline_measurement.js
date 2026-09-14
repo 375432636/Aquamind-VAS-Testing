@@ -1,10 +1,10 @@
-// A measurement belongs to one chart and its clock. It never seeks session audio.
+// Measures the displayed axis only (uncalibrated across sources). Never seeks audio.
 function enableTimelineMeasurement(root, duration) {
   const extent = Number(duration);
   if (!(extent > 0)) return;
   const plot = root.querySelector('.timeline-plot');
   const axis = plot.querySelector('.axis');
-  root.insertAdjacentHTML('afterbegin', `<div class="chain-measure-tools"><span class="measurement-hint">拖动划线测量 · Esc 清除</span><div class="measurement-controls" role="group" aria-label="${root.id === 'server' ? 'VAS 内部' : '客户端'}链路区间测量"><label>起点 <input data-chain-start type="number" min="0" max="${extent}" step="0.01" placeholder="—" aria-label="链路测量起点，秒"> s</label><label>终点 <input data-chain-end type="number" min="0" max="${extent}" step="0.01" placeholder="—" aria-label="链路测量终点，秒"> s</label><output data-chain-duration aria-live="polite">Δ — s</output><button type="button" data-chain-clear>清除</button></div></div>`);
+  root.insertAdjacentHTML('afterbegin', `<div class="chain-measure-tools"><span class="measurement-hint">拖动划线测量 · Esc 清除${root.id === 'combined' ? ' · 跨来源间隔未校时' : ''}</span><div class="measurement-controls" role="group" aria-label="${root.id === 'combined' ? '客户端与 VAS' : root.id === 'server' ? 'VAS 内部' : '客户端'}链路区间测量"><label>起点 <input data-chain-start type="number" min="0" max="${extent}" step="0.01" placeholder="—" aria-label="链路测量起点，秒"> s</label><label>终点 <input data-chain-end type="number" min="0" max="${extent}" step="0.01" placeholder="—" aria-label="链路测量终点，秒"> s</label><output data-chain-duration aria-live="polite">Δ — s</output><button type="button" data-chain-clear>清除</button></div></div>`);
   plot.insertAdjacentHTML('beforeend', '<div class="chain-selection-layer"><div class="chain-selection" hidden><button type="button" class="measure-handle handle-start" data-chain-handle="start" aria-label="调整链路测量起点"></button><span data-chain-caption></span><button type="button" class="measure-handle handle-end" data-chain-handle="end" aria-label="调整链路测量终点"></button></div></div>');
   const overlay = plot.querySelector('.chain-selection');
   const startInput = root.querySelector('[data-chain-start]');

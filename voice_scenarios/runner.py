@@ -6,6 +6,7 @@ import wave
 from dataclasses import asdict
 from pathlib import Path
 
+from .clock_timeline import client_wall_time
 from .diagnostics import DiagnosticCollector
 from .player import ClockedPlayer
 from .protocol import Event
@@ -23,12 +24,25 @@ async def run_scenario(
     """Run all turns on one connection; preserve partial results on failure."""
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Capture once, before connecting. No server offset estimation and no extra
+    # wall-clock syscall per audio frame; playback timing stays monotonic.
+    client_clock = {
+        "monotonic_ns": time.monotonic_ns(),
+        "wall_time_ns": time.time_ns(),
+    }
     result = {
         "schema_version": 1,
         "name": scenario.name,
         "status": "running",
         "turns": [],
+        "client_clock": client_clock,
     }
+    if scenario.evaluation:
+        result["evaluation"] = scenario.evaluation
+        result["evaluation_turns"] = [
+            {"id": turn.id, "tool": turn.tool, "input_text": turn.input_text}
+            for turn in scenario.turns
+        ]
     events = asyncio.Queue()
     collector = None
     journal = (output_dir / "client-events.jsonl").open("w")
@@ -48,6 +62,7 @@ async def run_scenario(
             "clock_id": "python-process",
             "event": event.kind,
             "monotonic_ns": event.at_ns,
+            "wall_time_ns": client_wall_time(event.at_ns, client_clock),
             "data": {k: v for k, v in event.data.items() if k != "pcm"},
         }
         if event.kind != "vas_event":
@@ -69,6 +84,7 @@ async def run_scenario(
                 index,
                 player_factory,
                 emit,
+                client_clock=client_clock,
             )
             result["turns"].append(item)
             save_result(result, output_dir)
@@ -97,7 +113,16 @@ async def run_scenario(
 
 
 async def _run_turn(
-    scenario, turn, transport, events, output_dir, index, player_factory, sink=None
+    scenario,
+    turn,
+    transport,
+    events,
+    output_dir,
+    index,
+    player_factory,
+    sink=None,
+    *,
+    client_clock=None,
 ):
     start_ns = time.monotonic_ns()
     prefix = output_dir / f"turn-{index:03d}"
@@ -125,6 +150,8 @@ async def _run_turn(
         "requested_interruption": asdict(turn.interrupt) if turn.interrupt else None,
         "input_settings": asdict(scenario.input),
     }
+    if turn.tool:
+        result["tool"] = turn.tool
     if turn.sensor:
         result.update(sensor=turn.sensor, input_settings={"mode": "sensor"})
     sink = sink or events.put_nowait
@@ -147,6 +174,7 @@ async def _run_turn(
         record = {
             "event": event.kind,
             "at_ns": event.at_ns,
+            "wall_time_ns": client_wall_time(event.at_ns, client_clock),
             "offset_ms": (event.at_ns - start_ns) / 1e6,
             "data": data,
         }

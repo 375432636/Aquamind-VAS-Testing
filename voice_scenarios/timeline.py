@@ -3,6 +3,43 @@
 import math
 
 
+def request_spans(events):
+    """Extract the same logical requests for turn and session-level diagnostics."""
+    starts = {
+        (e.get("span_id"), e["event"].removesuffix("_started")): e
+        for e in events
+        if e["event"].endswith("_started") and e.get("span_id")
+    }
+    spans, errors = [], []
+    for end in events:
+        # HTTP phases / retries are milestones inside the logical request.
+        if end["event"].startswith("http_"):
+            continue
+        start = starts.get((end.get("span_id"), end["event"].removesuffix("_finished")))
+        if (
+            not start
+            or end["event"] != start["event"].removesuffix("_started") + "_finished"
+        ):
+            continue
+        if start["clock_id"] != end["clock_id"]:
+            errors.append("span 的时钟来源不一致")
+            continue
+        spans.append(
+            {
+                "name": start["event"].removesuffix("_started"),
+                "start_ns": start["monotonic_ns"],
+                "end_ns": end["monotonic_ns"],
+                "duration_ms": (end["monotonic_ns"] - start["monotonic_ns"]) / 1e6,
+                "status": end.get("status"),
+                "data": {**start.get("data", {}), **end.get("data", {})},
+                "clock_id": start.get("clock_id"),
+                "span_id": end.get("span_id"),
+                "parent_span_id": start.get("parent_span_id"),
+            }
+        )
+    return spans, errors
+
+
 def media_timeline_markers(events):
     """Media URL arrival is a client event, not server send/load/playback time."""
     markers = []
@@ -37,6 +74,7 @@ def media_timeline_markers(events):
                     "label": f"{labels[kind]} #{counts[kind]} 到达",
                     "kind": kind,
                     "start_ns": at,
+                    "wall_time_ns": event.get("wall_time_ns"),
                     "url": url if isinstance(url, str) else None,
                 }
             )
@@ -261,6 +299,7 @@ def group_timeline_spans(spans, events):
             event=name,
             label=MILESTONE_LABELS[name],
             start_ns=at,
+            clock_id=event.get("clock_id"),
             span_id=event.get("span_id"),
             data=event.get("data", {}),
             status=event.get("status"),

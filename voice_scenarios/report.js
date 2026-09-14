@@ -22,6 +22,7 @@ function checkExpectation(check) {
   if (spec.contains_all) return spec.contains_all.map(group=>'至少包含 ' + group.join(' / ')).join('；');
   if (spec.sensor) return '发送传感器指令 ' + spec.sensor;
   if (check.category === 'tools') return [
+    ...(spec.any_of?.length ? ['至少一次正常完成：' + spec.any_of.join(' / ')] : []),
     ...(spec.required || []).map(tool=>'必须 ' + tool.name + (tool.arguments ? '（' + Object.entries(tool.arguments).map(([key,value])=>key+'='+value).join('，') + '）' : '')),
     ...(spec.forbidden || []).map(name=>'禁止 ' + name),
   ].join('；') || '未指定工具要求';
@@ -50,16 +51,39 @@ function configDetails(data = {}) {
   const values = {...params, ...(params.voice_setting || {}), ...(params.audio_setting || {})};
   return [configSummary(data), ...Object.entries(values).filter(([key,value]) => labels[key] && value != null && typeof value !== 'object').map(([key,value]) => `${labels[key]} ${value}`)].filter(Boolean).join(' · ');
 }
-function timeline(id, lanes) {
+function beijingTime(timestamp, withDate = false) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits:3, hourCycle:'h23',
+  }).formatToParts(new Date(timestamp)).map(part=>[part.type,part.value]));
+  return (withDate ? `${parts.year}-${parts.month}-${parts.day} ` : '') + `${parts.hour}:${parts.minute}:${parts.second}.${parts.fractionalSecond}`;
+}
+function traceLanes(lanes, includeTurn = false) {
+  const colors = {asr_request:'#318494', memory_request:'#9074af', llm_request:'#5070bf', tool_call:'#b1833e', guardrail_embedding:'#b27552'};
+  const ttsColors = ['#397d75','#5b80ad','#9273a4','#ac843d','#ad7187','#528488'];
+  return lanes.map(lane => ({
+    source:lane.source,
+    label:(includeTurn ? (lane.turn_index == null ? '会话级 · ' : `第 ${lane.turn_index} 轮 · `) : '') + (lane.source === 'client' ? '客户端 · ' : 'VAS · ') + (lane.label === 'memory_request' ? 'Memory' : lane.label),
+    segments:lane.segments.map((span,index)=>({...span,label:lane.label,segment_number:index+1,start:span.plot_start_ns,end:span.plot_end_ns,color:span.name==='tts_request'?ttsColors[index%ttsColors.length]:colors[span.name]})),
+    markers:(lane.markers || []).map(marker=>({...marker,start:marker.plot_start_ns,monotonic_start_ns:marker.start_ns})),
+  }));
+}
+function traceLabel(lane) {
+  const configs = [...new Set((lane.segments || [lane]).map(item=>configSummary(item.data)).filter(Boolean))];
+  return esc(lane.label) + (configs.length ? '<small class="lane-model">'+esc(configs.join(' / '))+'</small>' : '');
+}
+function timeline(id, lanes, clock = {}, options = {}) {
   const root = $(id);
   const all = lanes.flatMap(lane => lane.segments || [lane]);
   const points = lanes.flatMap(lane => lane.markers || []);
   const bounds = [...all, ...points].filter(item => Number.isFinite(item.start));
   if (!bounds.length) {root.innerHTML = '<div class="empty-state">未采集到该来源的时间数据</div>'; return;}
-  const zero = Math.min(...bounds.map(item => item.start));
-  const end = Math.max(...bounds.map(item => item.end ?? item.start));
+  const zero = options.start_ns ?? Math.min(...bounds.map(item => item.start));
+  const end = options.end_ns ?? Math.max(...bounds.map(item => item.end ?? item.start));
+  const timeZero = options.time_zero_ns ?? zero;
   const range = Math.max(100000000, end-zero);
-  const title = item => `${item.label}${item.segment_number ? ' #' + item.segment_number : ''} · ${(item.start-zero)/1e9 < 0 ? '' : '开始 '}${((item.start-zero)/1e9).toFixed(3)} s${item.end != null ? ' · 结束 ' + sec((item.end-zero)/1e9) + ' s · 耗时 ' + sec((item.end-item.start)/1e9) + ' s' : ''}${item.status && item.status !== 'ok' ? ' · ' + item.status : ''}`;
+  const durationSeconds = item => item.duration_ms != null ? item.duration_ms/1000 : (item.end-item.start)/1e9;
+  const title = item => `${options.embedded ? (item.turn_index == null ? '会话级 · ' : '第 '+item.turn_index+' 轮 · ') : ''}${item.label}${item.segment_number ? ' #' + item.segment_number : ''}${item.wall_time_ms != null ? ' · 北京时间 ' + beijingTime(item.wall_time_ms,true) : ''} · 开始 ${((item.start-timeZero)/1e9).toFixed(3)} s${item.end != null ? ' · 结束 ' + sec((item.end-timeZero)/1e9) + ' s · 耗时 ' + sec(durationSeconds(item)) + ' s' : ''}${item.status && item.status !== 'ok' ? ' · ' + item.status : ''}`;
   function bar(item) {
     const index = all.indexOf(item);
     const duration = item.end != null;
@@ -68,7 +92,7 @@ function timeline(id, lanes) {
   const markerGroups = [];
   function markers(lane) {
     const groups = [];
-    const width = Math.max(300, (root.clientWidth || 800)-176);
+    const width = Math.max(300, (root.clientWidth || 800)-(options.embedded ? 0 : 176));
     for (const marker of [...(lane.markers || [])].sort((a,b)=>a.start-b.start)) {
       const previous = groups[groups.length-1];
       if (previous && (marker.start-previous[0].start)/range*width < (['image','video'].includes(marker.kind) ? 56 : 28)) previous.push(marker);
@@ -82,22 +106,22 @@ function timeline(id, lanes) {
       return `<button type="button" class="timeline-marker${media ? ' media-marker' : ''}" data-marker-index="${index}" aria-label="${esc(caption)}" title="${esc(caption)}" style="left:${(group[0].start-zero)/range*100}%">${media ? mediaMarkerIcon(group) : '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 11 6 6 11 1 6Z" fill="currentColor"/></svg>'}${group.length>1 ? '<span>'+group.length+'</span>' : ''}</button>`;
     }).join('') + '</div>';
   }
-  root.innerHTML = `<div class="timeline-plot"><div class="axis"><span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span></div>` + lanes.map(lane => {
+  const axis = clock.mode === 'wall' ? [0,range/2,range].map(offset=>`<span>${beijingTime(clock.origin_wall_time_ms+(zero+offset)/1e6)}<small>+${sec(offset/1e9)} s</small></span>`).join('') : `<span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span>`;
+  root.innerHTML = `<div class="timeline-plot">${options.embedded ? '' : '<div class="axis">'+axis+'</div>'}` + lanes.map(lane => {
     const segments = lane.segments || [lane];
-    const configs = [...new Set(segments.map(item=>configSummary(item.data)).filter(Boolean))];
-    return `<div class="lane"><span class="lane-label">${esc(lane.label)}${configs.length ? '<small class="lane-model">'+esc(configs.join(' / '))+'</small>' : ''}</span><div><div class="track">${segments.map(bar).join('')}</div>${markers(lane)}<div class="segment-key">${segments.filter(item => item.end != null).map(item => `<span><i style="background:${item.color || '#407d77'}"></i>${item.segment_number ? '#' + item.segment_number + ' · ' : ''}${sec((item.end-item.start)/1e9)} s</span>`).join('')}</div></div></div>`;
-  }).join('') + '</div><div class="span-detail" role="status" hidden></div>';
-  enableTimelineMeasurement(root, range/1e9);
-  root.onclick = event => {
-    const button = event.target.closest('[data-event-index], [data-marker-index]');
-    if (!button || !root.contains(button)) return;
-    const detail = root.querySelector('.span-detail');
+    return `<div class="lane" data-source="${lane.source === 'client' ? 'client' : 'server'}">${options.embedded ? '' : '<span class="lane-label">'+traceLabel(lane)+'</span>'}<div><div class="track">${segments.map(bar).join('')}</div>${markers(lane)}<div class="segment-key">${segments.filter(item => item.end != null).map(item => `<span><i style="background:${item.color || '#407d77'}"></i>${item.segment_number ? '#' + item.segment_number + ' · ' : ''}${sec(durationSeconds(item))} s</span>`).join('')}</div></div></div>`;
+  }).join('') + '</div>' + (options.detail ? '' : '<div class="span-detail" role="status" hidden></div>');
+  if (!options.embedded) enableTimelineMeasurement(root, range/1e9);
+  function activate(element) {
+    const button = element.closest('[data-event-index], [data-marker-index]');
+    if (!button || !root.contains(button)) return false;
+    const detail = options.detail || root.querySelector('.span-detail');
     if (button.dataset.markerIndex != null) {
       const group = markerGroups[Number(button.dataset.markerIndex)];
       if (['image','video'].includes(group[0].kind)) {
         detail.innerHTML = mediaMarkerDetails(group, title);
         detail.hidden = false;
-        return;
+        return true;
       }
       detail.textContent = group.map(item => {
         const data = item.data || {};
@@ -106,7 +130,7 @@ function timeline(id, lanes) {
         if (data.delta_kind) extra.push(data.delta_kind === 'tool' ? '工具增量' : '正文增量');
         if (data.punctuation) extra.push(`分句标点 ${data.punctuation}`);
         if (data.trigger && data.trigger !== 'punctuation') extra.push(data.trigger === 'stream_end' ? '流结束提交' : '请求边界观测');
-        if (data.text_received_ns != null) extra.push(`触发文本入队后 ${((item.start-data.text_received_ns)/1e9).toFixed(3)} s`);
+        if (data.text_received_ns != null) extra.push(`触发文本入队后 ${(((item.monotonic_start_ns ?? item.start)-data.text_received_ns)/1e9).toFixed(3)} s`);
         if (data.http_status != null) extra.push(`HTTP ${data.http_status}`);
         if (data.http_request_id) extra.push(`请求 ${data.llm_request_seq ?? '未知'} · HTTP 尝试 ${data.http_request_seq ?? '未知'} · 重试 ${data.retry_count ?? '未知'} · ID ${data.http_request_id}`);
         if (data.connection_state) extra.push(`连接 ${{new:'新建',reused:'复用',unknown:'未知'}[data.connection_state] || '未知'}`);
@@ -123,31 +147,22 @@ function timeline(id, lanes) {
       detail.textContent = [title(item), configDetails(item.data), item.data?.purpose === 'rules' ? '规则向量' : item.data?.purpose === 'query' ? '用户问题向量' : '', item.data?.error_type || ''].filter(Boolean).join(' · ');
     }
     detail.hidden = false;
-  };
+    return true;
+  }
+  if (!options.embedded) root.onclick = event=>activate(event.target);
+  return {activate};
 }
 if (!turn) renderSessionTimeline($('session-timeline'), report.session_playback);
 if (turn) {
   renderReplyTiming($('reply-timing'), turn.reply_timing, report.session_playback, report.turn_index);
   const events = turn.events || [], vas = turn.vas_events || [];
-  const clientLabels = {sensor_sent:'传感器指令发出', input_started:'开始发送输入', first_audio_sent:'第一帧音频发出', audio_send_completed:'音频发送完成', speech_input_started:'语音开始', speech_input_finished:'语音结束', background_noise_started:'持续发送底噪', listen_stop_sent:'停止指令发出', playback_started:'开始播放回复', playback_stopped:'停止播放', playback_drained:'回复播放完成', abort_wire_sent:'打断指令发出', music_call_accepted:'音乐指令已接受', music_playback_started:'音乐开始播放', music_playback_stopped:'音乐停止播放'};
   const vadLabels = {local_vad_speech_started:'本地 VAD · 语音开始', local_vad_last_voice:'本地 VAD · 最后语音帧', local_vad_endpoint_detected:'本地 VAD · 结束', asr_speech_started:'ASR VAD · 语音开始', asr_endpoint_detected:'ASR VAD · 结束', asr_final:'ASR · 最终识别结果'};
-  const colors = {asr_request:'#318494', memory_request:'#9074af', llm_request:'#5070bf', tool_call:'#b1833e', guardrail_embedding:'#b27552'};
-  const ttsColors = ['#397d75','#5b80ad','#9273a4','#ac843d','#ad7187','#528488'];
   const stageLabels = {memory_request:'Memory', listen_stop_received:'VAS 收到停止', listen_stop_enqueued:'停止消息入队', listen_stop_dequeued:'停止消息出队', listen_finalize_started:'开始处理语音结束', audio_input_completed:'上行音频接收完成', asr_commit_sent:'ASR 提交结束', ...vadLabels};
-  const clientLanes = events.filter(event => clientLabels[event.event]).map(event => ({label:clientLabels[event.event], start:event.at_ns, data:event.data}));
-  if (turn.media_markers?.length) clientLanes.push({label:mediaMarkerLabel(turn.media_markers)+'到达', segments:[], markers:turn.media_markers.map(marker=>({...marker,start:marker.start_ns}))});
-  timeline('client', clientLanes);
-  timeline('server', (turn.timeline_lanes || []).map(lane => ({
-    label:stageLabels[lane.label] || lane.label,
-    segments:lane.segments.map((span,index) => ({label:lane.label, segment_number:index+1, start:span.start_ns, end:span.end_ns, color:span.name==='tts_request' ? ttsColors[index%ttsColors.length] : colors[span.name], status:span.status, data:span.data})),
-    markers:(lane.markers || []).map(marker=>({...marker, start:marker.start_ns}))
-  })));
-  document.querySelectorAll('[data-clock]').forEach(button => button.addEventListener('click', () => {
-    const server = button.dataset.clock === 'server';
-    $('server').hidden = !server; $('client').hidden = server;
-    $('clock-label').textContent = server ? 'VAS 单调时钟 · 本轮首个已采集阶段 = 0 s' : '客户端单调时钟 · 本轮首个已采集事件 = 0 s';
-    document.querySelectorAll('[data-clock]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
-  }));
+  const clock = turn.combined_timeline;
+  $('clock-label').textContent = clock.mode === 'wall'
+    ? `北京时间 ${beijingTime(clock.origin_wall_time_ms,true).slice(0,10)}（UTC+8）· 两端系统时间，未校准偏移`
+    : `${clock.reason === 'clock_discontinuity' ? '绝对时间记录不连续' : '旧记录缺少绝对时间'} · 各来源独立从 0 s 开始，不能跨来源相减`;
+  timeline('combined', traceLanes(clock.lanes), clock);
   const handoff = vas.filter(event => stageLabels[event.event] && event.event !== 'memory_request').sort((a,b) => a.monotonic_ns-b.monotonic_ns);
   const isVad = turn.input_settings?.mode === 'vad';
   const base = handoff.find(event => event.event === (isVad ? 'asr_endpoint_detected' : 'listen_stop_received'))?.monotonic_ns;

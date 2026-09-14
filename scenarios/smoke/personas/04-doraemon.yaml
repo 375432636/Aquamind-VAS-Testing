@@ -1,0 +1,22 @@
+name: 多啦A梦 · 人设与知识库
+device_id: "00:00:00:00:00:24"
+environment: main
+input_mode: vad
+evaluation:
+  persona: 多啦A梦
+  knowledge_base_count: 3
+  focus: ""
+turns:
+  - {tool: 人设, text: 你是谁}
+  - {tool: 人设, text: 你最害怕什么？}
+  - {tool: 人设, text: 你最喜欢吃什么？}
+  - {tool: 人设, text: 你能做什么？}
+  - {tool: 人设, text: 你有什么道具？}
+  - {tool: 知识库-文字, text: 你还记得，大雄什么时候问你拿过记忆面包使用吗？}
+  - {tool: 知识库-文字, text: 你还记得，大雄什么时候使用过替身吗？}
+  - {tool: 知识库-文字, text: 你什么时候出生的？}
+  - {tool: 知识库-文字, text: 你有多少种秘密道具？}
+  - {tool: 知识库-文字, text: 大雄喜欢谁啊？}
+  - {tool: LLM, text: 给我一个变成百万富翁的道具！}
+  - {tool: 知识库-文字, text: 你知道高教授是谁吗？}
+  - {tool: 知识库-文字, text: 如果我听力有问题，你有没有什么品牌可以推荐给我？}

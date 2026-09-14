@@ -1,3 +1,15 @@
+function sessionTimelineScale(session) {
+  const duration = Math.max(0,Number(session.duration_seconds) || 0);
+  const start = Math.min(0,session.vas_timeline?.axis_start_seconds ?? 0);
+  const end = Math.max(duration,session.vas_timeline?.axis_end_seconds ?? duration);
+  const extent = Math.max(.01,end-start);
+  const clamp = value=>Math.max(start,Math.min(end,Number(value) || 0));
+  return {duration,start,end,extent,clamp,
+    audioTime:value=>Math.max(0,Math.min(duration,Number(value) || 0)),
+    percent:value=>(clamp(value)-start)/extent*100,
+    atFraction:value=>clamp(start+value*extent),
+  };
+}
 function renderSessionTimeline(target, session = {}) {
   if (!target) return;
   const canvas = document.getElementById('session-canvas');
@@ -9,26 +21,29 @@ function renderSessionTimeline(target, session = {}) {
   const result = document.getElementById('measure-duration');
   const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const seconds = value => value == null ? '—' : Number(value).toFixed(2) + ' s';
-  const duration = Math.max(0, Number(session.duration_seconds) || 0);
-  const extent = Math.max(.01, duration);
-  const percent = value => Math.max(0, Math.min(100, Number(value) / extent * 100));
-  const clamp = value => Math.max(0, Math.min(duration, Number(value) || 0));
+  const scale = sessionTimelineScale(session);
+  const {duration,extent,percent,clamp} = scale;
+  const trace = session.vas_timeline || {lanes:[]};
+  const vasLanes = traceLanes(trace.lanes || [],true);
+  const clockCaption = time=>trace.mode === 'wall' ? ' · 北京时间 '+beijingTime(trace.origin_wall_time_ms+time*1000,true) : '';
   const kindLabels = {greeting:'欢迎语',answer:'正式回复',pre_speech:'过渡语',filler:'临时回复',unknown:'类型未关联',mixed:'混合回复'};
   const waitLabels = {first_reply:'等待首句',transition:'等待正式回复',sentence:'句间等待'};
   const markerLabels = {sensor_sent:'传感器触发',input_end:'输入结束',first_received:'首包到达',first_playback:'开始播放',abort:'打断'};
   const items = [];
   const turns = session.turns || [];
-  const mediaPoints = (session.media_markers || []).filter(row=>Number.isFinite(row.at_seconds) && row.at_seconds >= 0 && row.at_seconds <= duration);
+  const mediaPoints = (session.media_markers || []).filter(row=>Number.isFinite(row.at_seconds) && row.at_seconds >= scale.start && row.at_seconds <= scale.end);
   let mediaGroups = [];
   canvas.classList.toggle('has-media-markers', mediaPoints.length > 0);
+  target.classList.toggle('has-vas',vasLanes.length > 0);
   let zoom = Math.max(1,Math.min(64,extent*18/Math.max(1,viewport.clientWidth))), selection = null, gesture = null, pendingSeek = null;
   let animation = null, lastAutoScroll = 0;
   let fullAudioRequest = null, fullAudioUrl = null;
-  startInput.max = endInput.max = String(duration);
+  startInput.min = endInput.min = String(scale.start);
+  startInput.max = endInput.max = String(scale.end);
   function itemButton(item, className, caption, contents = '') {
     const id = items.push(item) - 1;
     const span = item.end_seconds - item.start_seconds;
-    const label = `第 ${item.turn_index} 轮 · ${item.label} · ${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} · ${seconds(span)}${item.text ? ' · ' + item.text : ''}`;
+    const label = `第 ${item.turn_index} 轮 · ${item.label} · ${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} · ${seconds(span)}${clockCaption(item.start_seconds)}${item.text ? ' · ' + item.text : ''}`;
     return `<button type="button" class="session-range ${className}" data-session-item="${id}" style="left:${percent(item.start_seconds)}%;width:${Math.max(0, span/extent*100)}%" title="${escape(label)}" aria-label="${escape(label)}">${contents}<span>${escape(caption)}</span></button>`;
   }
   let inputBars = '', replyBars = '', turnLines = '', markers = '';
@@ -59,7 +74,14 @@ function renderSessionTimeline(target, session = {}) {
     const label = `第 ${row.turn_index} 轮 · ${markerLabels[row.kind] || row.kind} · ${seconds(row.at_seconds)}`;
     markers += `<button type="button" class="session-marker marker-${escape(row.kind)}" data-session-marker="${escape(row.kind)}" data-session-time="${Number(row.at_seconds)}" data-session-turn-index="${row.turn_index}" style="left:${percent(row.at_seconds)}%" title="${escape(label)}" aria-label="${escape(label)}"><i></i><span>${escape(markerLabels[row.kind] || row.kind)}</span></button>`;
   });
-  canvas.innerHTML = `<div class="session-ruler" id="session-ruler" aria-hidden="true"></div><div class="session-grid" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}<div class="session-media-markers"></div><div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
+  const vasTop = mediaPoints.length ? 294 : 252;
+  const vasContent = vasLanes.length ? `<div class="session-vas-heading" style="top:${vasTop-32}px">VAS 内部时序 · 与详细页相同维度</div><div class="session-vas" id="session-vas" style="top:${vasTop}px"></div>` : '';
+  canvas.innerHTML = `<div class="session-ruler" id="session-ruler" aria-hidden="true"></div><div class="session-grid" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}<div class="session-media-markers"></div>${vasContent}<div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
+  let vasController = null;
+  const labelRoot = document.getElementById('session-track-labels');
+  if (vasLanes.length) {
+    labelRoot.innerHTML = `<span>用户语音</span><span>回复播放</span><div class="session-vas-labels" style="top:${vasTop}px">${vasLanes.map(lane=>'<div class="session-vas-label">'+traceLabel(lane)+'</div>').join('')}</div>`;
+  }
   const overlay = document.getElementById('session-selection');
   const caption = document.getElementById('selection-caption');
   const playhead = document.getElementById('session-playhead');
@@ -85,11 +107,11 @@ function renderSessionTimeline(target, session = {}) {
     });
   }
   function revealTime(time) {
-    const x = clamp(time)/extent*canvas.clientWidth;
+    const x = percent(time)/100*canvas.clientWidth;
     if (x < viewport.scrollLeft+20 || x > viewport.scrollLeft+viewport.clientWidth-50) viewport.scrollLeft = Math.max(0,x-viewport.clientWidth*.3);
   }
   function positionPlayhead(time, follow = false) {
-    const value = clamp(time);
+    const value = scale.audioTime(time);
     playhead.style.left = percent(value) + '%';
     playhead.querySelector('span').textContent = seconds(value);
     playhead.querySelector('span').style.transform = `translateX(${percent(value) < 1 ? '0' : percent(value) > 99 ? '-100%' : '-50%'})`;
@@ -99,7 +121,7 @@ function renderSessionTimeline(target, session = {}) {
     }
   }
   function seek(time) {
-    const value = clamp(time);
+    const value = scale.audioTime(time);
     pendingSeek = value;
     const seekable = audio && Array.from({length:audio.seekable.length}, (_, index) => [audio.seekable.start(index),audio.seekable.end(index)]).some(([start,end]) => value >= start && value <= end);
     if (audio && audio.readyState >= 1 && (value === 0 || seekable || fullAudioUrl)) {
@@ -140,9 +162,14 @@ function renderSessionTimeline(target, session = {}) {
       body = `<p>${escape(descriptions[item.kind] || '未播放声音的等待区间')}</p>`;
     }
     const stats = item.item_type === 'input' && row ? `<div class="selected-turn-metrics"><span>输入结束 <b>${seconds(row.input_end_seconds)}</b></span><span>首包到达 <b>${seconds(row.first_received_seconds)}</b></span><span>首句播放 <b>${seconds(row.first_playback_seconds)}</b></span></div>` : '';
-    detail.innerHTML = `<div class="session-detail-heading"><span class="badge">第 ${item.turn_index} 轮</span><strong>${escape(item.label)}</strong><span class="detail-time">${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} <b>· ${seconds(item.end_seconds-item.start_seconds)}</b></span><a href="turn-${String(item.turn_index).padStart(3,'0')}.html">内部时序 ↗</a></div>${body}${stats}`;
+    detail.innerHTML = `<div class="session-detail-heading"><span class="badge">第 ${item.turn_index} 轮</span><strong>${escape(item.label)}</strong><span class="detail-time">${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} <b>· ${seconds(item.end_seconds-item.start_seconds)}</b>${escape(clockCaption(item.start_seconds))}</span><a href="turn-${String(item.turn_index).padStart(3,'0')}.html">内部时序 ↗</a></div>${body}${stats}`;
   }
   function activate(element, time) {
+    if (element.closest('#session-vas')) {
+      // VAS timestamps are uncalibrated: inspecting them must not seek audio.
+      vasController?.activate(element);
+      return;
+    }
     const mediaButton = element.closest('[data-session-media]');
     if (mediaButton) {
       const group = mediaGroups[Number(mediaButton.dataset.sessionMedia)];
@@ -172,10 +199,10 @@ function renderSessionTimeline(target, session = {}) {
   }
   function timeAt(event) {
     const bounds = canvas.getBoundingClientRect();
-    return clamp((event.clientX-bounds.left)/bounds.width*extent);
+    return scale.atFraction((event.clientX-bounds.left)/bounds.width);
   }
   canvas.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || !duration) return;
+    if (event.button !== 0 || !extent) return;
     const handle = event.target.closest('[data-measure-handle]');
     gesture = {pointerId:event.pointerId,clientX:event.clientX,start:timeAt(event),target:event.target,handle:handle?.dataset.measureHandle,selection:selection?.slice(),dragged:false};
     canvas.setPointerCapture(event.pointerId);
@@ -208,7 +235,7 @@ function renderSessionTimeline(target, session = {}) {
       event.preventDefault();
       const index = handle.dataset.measureHandle === 'start' ? 0 : 1;
       const delta = (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 1 : .01);
-      const value = event.key === 'Home' ? 0 : event.key === 'End' ? duration : selection[index]+delta;
+      const value = event.key === 'Home' ? scale.start : event.key === 'End' ? scale.end : selection[index]+delta;
       selection[index] = index === 0 ? Math.min(selection[1],clamp(value)) : Math.max(selection[0],clamp(value));
       drawSelection();
     } else if (event.target === canvas && ['ArrowLeft','ArrowRight'].includes(event.key)) {
@@ -241,9 +268,19 @@ function renderSessionTimeline(target, session = {}) {
     const base = 10**Math.floor(Math.log10(Math.max(.01,desired)));
     const step = [1,2,5,10].map(value => value*base).find(value => value >= desired) || base*10;
     let ticks = '';
-    for (let t=0;t<=extent;t+=step) ticks += `<span style="left:${percent(t)}%">${Number(t.toFixed(2))} s</span>`;
+    for (let t=Math.ceil(scale.start/step)*step;t<=scale.end;t+=step) ticks += `<span style="left:${percent(t)}%">${Number(t.toFixed(2))} s${trace.mode === 'wall' ? '<small>'+beijingTime(trace.origin_wall_time_ms+t*1000)+'</small>' : ''}</span>`;
     ruler.innerHTML = ticks;
     canvas.style.setProperty('--grid-step',step/extent*100+'%');
+    canvas.style.setProperty('--grid-offset',percent(Math.ceil(scale.start/step)*step)+'%');
+    if (vasLanes.length) {
+      vasController = timeline('session-vas',vasLanes,trace,{embedded:true,start_ns:scale.start*1e9,end_ns:scale.end*1e9,time_zero_ns:0,detail});
+      const labels = [...labelRoot.querySelectorAll('.session-vas-label')];
+      const rows = [...canvas.querySelectorAll('#session-vas .lane')];
+      labels.forEach(label=>{label.style.minHeight='';});
+      const heights = rows.map((row,index)=>Math.max(76,row.getBoundingClientRect().height,labels[index].getBoundingClientRect().height));
+      rows.forEach((row,index)=>{row.style.minHeight=labels[index].style.minHeight=heights[index]+'px';});
+      canvas.style.height = vasTop+heights.reduce((sum,value)=>sum+value,0)+24+'px';
+    }
     canvas.querySelectorAll('.session-range').forEach(button => {
       button.classList.toggle('compact-range',button.clientWidth < 65);
     });

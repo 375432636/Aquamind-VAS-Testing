@@ -19,6 +19,7 @@ import yaml
 
 from .__main__ import create_report
 from .assertions import validate_business_assertions
+from .evaluation import validate_evaluation, validate_tool
 from .failure_summary import failure_reasons
 from .model import SENSOR_COMMANDS, Scenario, sensor_command
 from .runner import run_scenario, save_result
@@ -161,6 +162,7 @@ def validate_turns(raw, settings):
         "interrupt_after_seconds",
         "output_kind",
         "expect",
+        "tool",
     }
     normalized, ids = [], set()
     for index, turn in enumerate(turns, 1):
@@ -183,6 +185,8 @@ def validate_turns(raw, settings):
             )
         ids.add(turn_id)
         item = {"id": turn_id}
+        if "tool" in turn:
+            item["tool"] = validate_tool(turn["tool"])
         if "sensor" in turn:
             item["sensor"] = sensor_command(turn["sensor"])
             item["input_text"] = f"传感器 · {SENSOR_COMMANDS[item['sensor']]}"
@@ -326,6 +330,10 @@ def prepare(output, env, *, name=None):
         "input": {"mode": settings["input_mode"]},
         "turns": turns,
     }
+    if env.get("VAS_EVALUATION_JSON"):
+        scenario["evaluation"] = validate_evaluation(
+            json.loads(env["VAS_EVALUATION_JSON"])
+        )
     (output / "scenario.yaml").write_text(
         yaml.safe_dump(scenario, allow_unicode=True, sort_keys=False)
     )

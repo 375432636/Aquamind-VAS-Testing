@@ -6,3 +6,21 @@
 .session-canvas.has-media-markers{height:254px}.session-media-marker{position:absolute;top:207px;transform:translateX(-50%);height:36px;min-width:36px;display:flex;align-items:center;justify-content:center;gap:2px;padding:4px;background:#fff;border:1px solid #d5c3df;border-radius:6px;color:#824d9b;z-index:5}.session-media-marker:hover,.session-media-marker:focus-visible{background:#f5edf9}.session-media-marker span{font-size:11px;font-weight:650}.legend-image{background:#824d9b}
 
 .legend-video{background:#2b7e86}
+
+.session-panel.has-vas .session-chart-layout{grid-template-columns:196px minmax(0,1fr)}
+.session-panel.has-vas .session-track-labels{position:relative;display:block;padding:0 12px 0 0}
+.session-panel.has-vas .session-track-labels>span{position:absolute;left:0;right:12px;top:68px;height:37px;padding:0;align-items:center;font-weight:600}
+.session-panel.has-vas .session-track-labels>span+span{top:137px}
+.session-vas-labels{position:absolute;left:0;right:12px}
+.session-vas-label{padding:10px 8px 8px 0;border-top:1px solid #edf0f5;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
+.session-vas{position:absolute;left:0;right:0}
+.session-vas .lane{display:block;min-height:76px;box-sizing:border-box}
+.session-vas .track{background:none}
+.session-vas .timeline-plot{position:relative}
+.session-vas-heading{position:absolute;left:0;right:0;font-size:11px;font-weight:600;color:#546c8b;padding:8px 0;border-top:2px solid #dce5f0;background:#f8fafd}
+.session-panel.has-vas .session-detail{position:sticky;top:8px;z-index:12;max-height:160px;overflow:auto;margin-bottom:16px;white-space:pre-line;box-shadow:0 3px 12px #2033480a}
+.session-ruler small{display:block;font-size:8px;line-height:12px;color:#687c94}
+.session-grid{background-position-x:var(--grid-offset,0)}
+.session-panel.has-vas .session-ruler{height:36px}
+.session-panel.has-vas .session-turn-line{top:39px}
+@media(max-width:620px){.session-panel.has-vas .session-chart-layout{grid-template-columns:132px minmax(0,1fr)}.session-vas-label{font-size:10px}.session-panel.has-vas .session-detail{max-height:140px;top:4px}}

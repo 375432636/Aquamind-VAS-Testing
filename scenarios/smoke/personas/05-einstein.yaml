@@ -1,0 +1,14 @@
+name: 爱因斯坦 · Skill 连续对话
+device_id: "00:00:00:00:00:25"
+environment: main
+input_mode: vad
+evaluation:
+  persona: 爱因斯坦
+  knowledge_base_count: 1
+  focus: skill
+turns:
+  - {tool: Skill, text: 月饼是怎么来的？}
+  - {tool: Skill, text: 那月饼健康吗？}
+  - {tool: Skill, text: 什么应节食物最不健康？}
+  - {tool: Skill, text: 不知道}
+  - {tool: Skill, text: 复习}

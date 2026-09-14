@@ -24,7 +24,7 @@ turns:
 
 `text` 会离线合成为中文 WAV。也可把某轮换成 `audio: fixtures/my-question.wav`；这里的 WAV 路径相对于**仓库根目录**，必须留在仓库内。每轮恰好填写 `text`、`audio` 之一。固定真人录音可以保存在 `scenarios/audio/`；文件夹递归加载只读取 YAML/JSON，不会把 WAV 当成场景。
 
-文件必须设置 `device_id`（冒号分隔的 MAC）、`environment`（`dev` 或 `main`）和 `turns`；可选 `name`、`input_mode`、`turn_timeout_seconds`。省略名称使用文件名，省略输入模式和超时使用 `manual` / 90 秒。这些用例配置不会被本机默认环境或设备覆盖；每轮可设置 `id`、`text` 或 `audio`、`interrupt_after_seconds`、`output_kind`、`expect`。未知字段、重复 turn ID 和非法阈值都会在连接 VAS 之前被拒绝。
+文件必须设置 `device_id`（冒号分隔的 MAC）、`environment`（`dev` 或 `main`）和 `turns`；可选 `name`、`input_mode`、`turn_timeout_seconds`、`evaluation`。省略名称使用文件名，省略输入模式和超时使用 `manual` / 90 秒。这些用例配置不会被本机默认环境或设备覆盖；每轮可设置 `id`、`text` 或 `audio`、`interrupt_after_seconds`、`output_kind`、`expect`、`tool`。未知字段、重复 turn ID 和非法阈值都会在连接 VAS 之前被拒绝。
 
 ```bash
 export VAS_DIAGNOSTICS=frame
@@ -48,7 +48,9 @@ junit.xml                    汇总所有 session 的测试结果
 sessions/<场景路径标识>/       独立的报告、原始记录和音频
 ```
 
-批量 Action 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`、`scenarios/products`，或 `scenarios` 一次运行全部。每个 session 单独上传 FLAC 压缩报告，两种手动 Action 共用执行队列。两个测试 Action 均没有定时触发，由用户手动运行。
+批量 Action 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`、`scenarios/products`，或 `scenarios` 一次运行全部。每个 session 单独上传 FLAC 压缩报告，两种手动 Action 共用执行队列。批量 Action 另在每天北京时间 07:00 自动运行 `scenarios/smoke`；临时对话只由用户手动运行。
+
+可选的 `evaluation` 和 `tool` 用于人设表格与 Excel 导出，详见[人设冒烟与 Excel](persona-smoke.md)。
 
 ## 固定音频的多轮对话
 

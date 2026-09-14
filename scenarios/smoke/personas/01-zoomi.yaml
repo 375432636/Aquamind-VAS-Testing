@@ -1,0 +1,20 @@
+name: Zoomi（粉）· 产品出图
+device_id: "00:00:00:00:00:21"
+environment: main
+input_mode: vad
+evaluation:
+  persona: Zoomi（粉）
+  knowledge_base_count: 4
+  focus: 产品出图情况
+turns:
+  - {tool: 人设, text: 你是谁}
+  - {tool: 人设, text: 你可以做什么}
+  - {tool: 人设, text: 现在有什么优惠}
+  - {tool: 知识库-图文, text: 上海有多少家门店}
+  - {tool: 知识库-图文, text: 上海静安店的具体信息}
+  - {tool: 知识库-图文, text: 给我介绍防水的耳机}
+  - {tool: 知识库-图文, text: 给我介绍适合送女朋友的产品}
+  - {tool: 知识库-图文, text: 如何成为会员}
+  - {tool: 知识库-视频, text: 你这边有奢音耳机吗？}
+  - {tool: 知识库-图文, text: 给我推荐一款最便宜的耳机}
+  - {tool: 知识库-图文, text: 哪一家门店周六早上最早开门？}

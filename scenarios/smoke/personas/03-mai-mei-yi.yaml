@@ -1,0 +1,20 @@
+name: 麦美仪 · 临时回复
+device_id: "00:00:00:00:00:23"
+environment: main
+input_mode: vad
+evaluation:
+  persona: 麦美仪
+  knowledge_base_count: 6
+  focus: 临时回复
+turns:
+  - {tool: 人设, text: 你是谁}
+  - {tool: 人设, text: 你可以做什么？}
+  - {tool: 人设, text: 你原本是做什么工作的？}
+  - {tool: LLM, text: 现任香港特首是谁？}
+  - {tool: 知识库-文字, text: "70岁以上，可以申请什么津贴？"}
+  - {tool: 知识库-文字, text: 议员是干什么的？}
+  - {tool: 知识库-文字, text: 友愛邨附近去邊度睇醫生好？}
+  - {tool: 知识库-文字, text: 八达通热线是多少？}
+  - {tool: 知识库-文字, text: 友愛邨有哪些大型商场？}
+  - {tool: 知识库-文字, text: 兩蚊搭車是什么优惠？}
+  - {tool: 知识库-文字, text: 你能帮我填表吗？}

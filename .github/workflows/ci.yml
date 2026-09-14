@@ -34,6 +34,7 @@ jobs:
         env:
           CI_REPORT_DIR: artifacts/ci-example
           CI_BATCH_REPORT_DIR: artifacts/batch-example
+          CI_PERSONA_REPORT_DIR: artifacts/persona-example
         run: bash .github/actions/test-image/run.sh python -m pytest --cov-config=.coveragerc-client --cov=voice_scenarios --cov-fail-under=80 --cov-report=term-missing --cov-report=xml:artifacts/coverage.xml --junitxml=artifacts/junit.xml
       - name: 保存测试结果
         if: always()
@@ -45,5 +46,6 @@ jobs:
             artifacts/junit.xml
             artifacts/ci-example/
             artifacts/batch-example/
+            artifacts/persona-example/
           if-no-files-found: warn
           retention-days: 14

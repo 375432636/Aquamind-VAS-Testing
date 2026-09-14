@@ -26,4 +26,4 @@ pythonpath = ["."]
 profile = "black"
 
 [tool.setuptools.package-data]
-voice_scenarios = ["*.html", "*.js", "*.css"]
+voice_scenarios = ["*.html", "*.js", "*.css", "*.xlsx"]
