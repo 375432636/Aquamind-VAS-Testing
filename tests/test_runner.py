@@ -58,8 +58,18 @@ def test_second_question_waits_for_playback_drain_after_server_stop(tmp_path):
             "name": "sequential",
             "settle_seconds": 0.01,
             "turn_timeout_seconds": 1,
+            "evaluation": {
+                "persona": "Zoomi（粉）",
+                "knowledge_base_count": 4,
+                "focus": "产品出图情况",
+            },
             "turns": [
-                {"id": "first", "audio": str(first)},
+                {
+                    "id": "first",
+                    "audio": str(first),
+                    "tool": "人设",
+                    "input_text": "你是谁",
+                },
                 {"id": "second", "audio": str(second)},
             ],
         }
@@ -78,7 +88,27 @@ def test_second_question_waits_for_playback_drain_after_server_stop(tmp_path):
     assert peer.closed
     saved = json.loads((tmp_path / "result" / "result.json").read_text())
     assert saved["status"] == "passed"
+    assert saved["evaluation"] == scenario.evaluation
+    assert saved["turns"][0]["tool"] == "人设"
+    assert saved["evaluation_turns"][0] == {
+        "id": "first",
+        "tool": "人设",
+        "input_text": "你是谁",
+    }
     assert Path(saved["turns"][0]["audio"]["received"]).is_file()
+    clock = saved["client_clock"]
+    assert abs(clock["wall_time_ns"] - time.time_ns()) < 5_000_000_000
+    journal = [
+        json.loads(line)
+        for line in (tmp_path / "result" / "client-events.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    for event in journal:
+        assert event["wall_time_ns"] - clock["wall_time_ns"] == (
+            event["monotonic_ns"] - clock["monotonic_ns"]
+        )
+    assert saved["turns"][0]["events"][0]["wall_time_ns"] is not None
 
 
 def test_interrupt_after_playback_start_stops_buffer_and_then_runs_next_turn(tmp_path):

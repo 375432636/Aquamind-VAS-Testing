@@ -2,7 +2,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {readFileSync} = require('node:fs');
 const vm = require('node:vm');
-const helpers = vm.runInNewContext(readFileSync('voice_scenarios/image_markers.js','utf8')+'\n({details:imageMarkerDetails,group:groupImageMarkers});',{URL});
+const helpers = vm.runInNewContext(readFileSync('voice_scenarios/media_markers.js','utf8')+'\n({details:mediaMarkerDetails,group:groupMediaMarkers,icon:mediaMarkerIcon});',{URL});
 
 test('image details escape message text and only offer credential-free HTTP links',()=>{
   const rows=['javascript:alert(1)','data:image/svg+xml,<svg onload=alert(1)>','https://user:pass@example.com/image.png',null,'https://example.com/image.png?x=%22'];
@@ -11,6 +11,24 @@ test('image details escape message text and only offer credential-free HTTP link
   assert.match(html,/target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"/);
   assert.doesNotMatch(html,/<script>|<img|href="(?:javascript|data):/);
   assert.match(html,/&lt;script&gt;/);
+});
+
+test('mixed display items keep video and image icons and explicit links without auto playback',()=>{
+  const markers = [
+    {kind:'video',at_seconds:2,url:'https://example.com/demo.mp4'},
+    {kind:'image',at_seconds:2,url:'https://example.com/poster.png'},
+    {kind:'video',at_seconds:2,url:'https://example.com/demo.mp4'},
+    {kind:'video',at_seconds:8,url:'javascript:alert(1)'},
+  ];
+  const groups=helpers.group(markers,10,1000);
+  assert.deepEqual(Array.from(groups,g=>g.length),[3,1]);
+  assert.equal((helpers.icon(groups[0]).match(/<svg /g)||[]).length,2);
+  const html=helpers.details(markers,marker=>marker.kind);
+  assert.equal((html.match(/查看视频/g)||[]).length,2);
+  assert.equal((html.match(/查看图片/g)||[]).length,1);
+  assert.match(html,/加载与播放时间未采集/);
+  assert.match(html,/视频地址缺失或不支持打开/);
+  assert.doesNotMatch(html,/<video|<iframe|<img|href="javascript:|autoplay/);
 });
 
 test('nearby images are grouped without deduplication and separate when zoomed',()=>{

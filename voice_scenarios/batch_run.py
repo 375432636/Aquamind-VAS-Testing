@@ -22,6 +22,8 @@ from .ci_run import (
     validate_audio,
     validate_turns,
 )
+from .evaluation import validate_evaluation
+from .excel_report import export_excel
 from .failure_summary import failure_reasons, read_failure_reasons
 from .runner import save_result
 
@@ -59,9 +61,10 @@ def load_sessions(source, env):
                 "input_mode",
                 "turn_timeout_seconds",
                 "turns",
+                "evaluation",
             }:
                 raise ValueError(
-                    "session supports only name, device_id, environment, input_mode, turn_timeout_seconds and turns"
+                    "session supports only name, device_id, environment, input_mode, turn_timeout_seconds, evaluation and turns"
                 )
             name = data.get("name", path.stem)
             if not isinstance(name, str) or not 1 <= len(name.strip()) <= 160:
@@ -77,6 +80,11 @@ def load_sessions(source, env):
             if environment not in ("dev", "main"):
                 raise ValueError("environment is required and must be dev or main")
             session_env = dict(env)
+            session_env.pop("VAS_EVALUATION_JSON", None)
+            if "evaluation" in data:
+                session_env["VAS_EVALUATION_JSON"] = json.dumps(
+                    validate_evaluation(data["evaluation"]), ensure_ascii=False
+                )
             session_env["VAS_DEVICE_ID"] = device_id.upper()
             session_env["VAS_ENVIRONMENT"] = environment
             session_env["VAS_TURNS_JSON"] = json.dumps(
@@ -125,6 +133,15 @@ def write_batch(output, batch):
     """Persist machine-readable status plus a portable HTML entry point."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
+    reports = []
+    for item in batch["sessions"]:
+        report_path = output / item["directory"] / "report.json"
+        if report_path.is_file():
+            reports.append(json.loads(report_path.read_text()))
+    has_excel = export_excel(reports, output / "evaluation.xlsx")
+    excel_link = (
+        '<p><a href="evaluation.xlsx">下载 Excel 评测汇总</a></p>' if has_excel else ""
+    )
     (output / "batch.json").write_text(
         json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -143,7 +160,7 @@ def write_batch(output, batch):
     )
     document = f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VAS 批量测试</title>
 <style>body{{font:16px/1.6 system-ui,sans-serif;background:#f5f7fa;color:#192637;margin:0}}main{{max-width:1000px;margin:48px auto;padding:24px}}h1{{margin-bottom:8px}}p{{color:#526477}}table{{width:100%;border-collapse:collapse;background:white;border:1px solid #dce2e9;border-radius:12px}}th,td{{text-align:left;padding:16px;border-bottom:1px solid #e6ebf0}}th{{color:#64748b;font-size:13px}}a{{color:#1963d1;text-decoration:none;font-weight:600}}a:hover{{text-decoration:underline}}small{{display:block;color:#748295;font-size:12px}}.error{{color:#a42338;background:#fff1f2;padding:16px}}@media(max-width:600px){{main{{margin:12px auto;padding:12px}}th,td{{padding:10px}}small{{overflow-wrap:anywhere}}}}</style>
-<main><small>AQUAMIND · VOICE TESTING</small><h1>批量会话测试</h1><p>{html.escape(batch["status"])} · {len(batch["sessions"])} 个 session · {html.escape(batch.get("environment", ""))}</p>{error}<table><thead><tr><th>#</th><th>会话</th><th>结果</th><th>轮数</th></tr></thead><tbody>{"".join(rows)}</tbody></table></main></html>"""
+<main><small>AQUAMIND · VOICE TESTING</small><h1>批量会话测试</h1><p>{html.escape(batch["status"])} · {len(batch["sessions"])} 个 session · {html.escape(batch.get("environment", ""))}</p>{'<p>MOCK 模拟数据 · 不代表真实服务性能</p>' if batch.get('data_source') == 'mock' else ''}{excel_link}{error}<table><thead><tr><th>#</th><th>会话</th><th>结果</th><th>轮数</th></tr></thead><tbody>{"".join(rows)}</tbody></table></main></html>"""
     for name in ("index.html", "report.html"):
         (output / name).write_text(document, encoding="utf-8")
     suites = ET.Element("testsuites", name="VAS batch")
@@ -182,7 +199,7 @@ def write_batch(output, batch):
     )
 
 
-async def execute(source, output, env, *, prepare_only=False):
+async def execute(source, output, env, *, prepare_only=False, mock=False):
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Output already contains files; choose a new directory")
@@ -191,6 +208,7 @@ async def execute(source, output, env, *, prepare_only=False):
         "status": "preparing",
         "environment": "",
         "sessions": [],
+        "data_source": "mock" if mock else "live",
     }
     prepared = []
     try:
@@ -224,7 +242,14 @@ async def execute(source, output, env, *, prepare_only=False):
     for item, (session_env, settings, scenario) in zip(batch["sessions"], prepared):
         directory = output / item["directory"]
         try:
-            code = await execute_prepared(directory, session_env, settings, scenario)
+            if mock:
+                from .mock_run import execute_mock
+
+                code = execute_mock(directory, settings, scenario)
+            else:
+                code = await execute_prepared(
+                    directory, session_env, settings, scenario
+                )
             item["status"] = "passed" if code == 0 else "failed"
         except Exception as exc:
             item.update(status="failed", error=_safe_error(exc, session_env))
@@ -237,6 +262,13 @@ async def execute(source, output, env, *, prepare_only=False):
                         "status": "failed",
                         "turns": [],
                         "error": item["error"],
+                        "data_source": batch["data_source"],
+                        "evaluation": scenario.evaluation,
+                        "evaluation_turns": [
+                            dict(id=t.id, tool=t.tool, input_text=t.input_text)
+                            for t in scenario.turns
+                        ],
+                        "run_metadata": settings,
                     },
                     directory,
                 )
@@ -303,6 +335,11 @@ def main():
     parser.add_argument("--scenarios", type=Path, default=Path("scenarios/smoke"))
     parser.add_argument("--output", type=Path, default=Path("artifacts/batch"))
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Generate deterministic local diagnostic fixtures; never connect to VAS",
+    )
     parser.add_argument("--summarize", type=Path)
     parser.add_argument(
         "--matrix-output",
@@ -340,7 +377,11 @@ def main():
             return
         code = asyncio.run(
             execute(
-                args.scenarios, args.output, os.environ, prepare_only=args.prepare_only
+                args.scenarios,
+                args.output,
+                os.environ,
+                prepare_only=args.prepare_only,
+                mock=args.mock,
             )
         )
     except Exception as exc:

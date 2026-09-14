@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from .assertions import validate_business_assertions
+from .evaluation import validate_evaluation, validate_tool
 
 SENSOR_COMMANDS = {
     "touch-head": "摸头",
@@ -48,6 +49,7 @@ class Turn:
     completion_goal: str = "audio_completed"
     input_text: str | None = None
     sensor: str | None = None
+    tool: str | None = None
 
     def __post_init__(self):
         if (self.audio is None) == (self.sensor is None):
@@ -58,6 +60,8 @@ class Turn:
             raise ValueError("expect must be an object")
         if "business" in self.expect:
             validate_business_assertions(self.expect["business"])
+        if self.tool is not None:
+            validate_tool(self.tool)
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,7 @@ class Scenario:
     turn_timeout_seconds: float = 30
     settle_seconds: float = 0.2
     input: InputStream = field(default_factory=InputStream)
+    evaluation: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data, *, base_dir=Path.cwd()):
@@ -163,6 +168,7 @@ class Scenario:
                     value.get("input_text")
                     or (f"传感器 · {SENSOR_COMMANDS[sensor]}" if sensor else None),
                     sensor,
+                    value.get("tool"),
                 )
             )
         return cls(
@@ -175,6 +181,7 @@ class Scenario:
                 data.get("settle_seconds", 0.2), "settle_seconds", allow_zero=True
             ),
             InputStream(**data.get("input", {})),
+            validate_evaluation(data["evaluation"]) if "evaluation" in data else {},
         )
 
     @classmethod

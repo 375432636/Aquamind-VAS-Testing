@@ -10,7 +10,7 @@ options=(--rm --init -i --user "$(id -u):$(id -g)"
 # arguments, Docker layers or the shared build cache.
 for name in VAS_ENVIRONMENT VAS_DEVICE_ID VAS_TURNS_JSON VAS_INPUT_MODE \
     VAS_DIAGNOSTICS VAS_TURN_TIMEOUT_SECONDS VAS_TOKEN VAS_DEV_URL VAS_MAIN_URL \
-    CI_REPORT_DIR CI_BATCH_REPORT_DIR; do
+    VAS_EVALUATION_JSON CI_REPORT_DIR CI_BATCH_REPORT_DIR CI_PERSONA_REPORT_DIR; do
     if [[ ${!name+x} ]]; then
         options+=(--env "$name")
     fi

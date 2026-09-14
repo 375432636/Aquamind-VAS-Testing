@@ -8,9 +8,12 @@ from html import escape
 from pathlib import Path
 
 from .assertions import evaluate_business_assertions
+from .clock_timeline import combined_timeline, session_trace_timeline
+from .evaluation import tool_check
+from .excel_report import export_excel
 from .llm_evidence import summarize_llm_requests
 from .reply_timing import analyze_reply_timing, input_end_event
-from .timeline import group_timeline_spans, image_timeline_markers
+from .timeline import group_timeline_spans, media_timeline_markers, request_spans
 from .turn_attribution import attribute_mixed_turns
 
 
@@ -105,49 +108,20 @@ def evaluate(result, vas_events, *, artifact_dir=None):
                             f"{turn['id']}: 播放了属于其他轮次的迟到音频 seq={audio_seq}"
                         )
                         failure_groups["functional"].append(failures[-1])
-        starts = {
-            (e.get("span_id"), e["event"].removesuffix("_started")): e
-            for e in rows
-            if e["event"].endswith("_started") and e.get("span_id")
-        }
-        spans = []
-        for end in rows:
-            # HTTP phases are markers within the logical operation's span.
-            # Retries share that span but must not replace it with HTTP spans.
-            if end["event"].startswith("http_"):
-                continue
-            start = starts.get(
-                (end.get("span_id"), end["event"].removesuffix("_finished"))
-            )
-            if (
-                start
-                and end["event"]
-                == start["event"].removesuffix("_started") + "_finished"
-            ):
-                if start["clock_id"] != end["clock_id"]:
-                    failures.append("span 的时钟来源不一致")
-                    failure_groups["diagnostic_missing"].append(failures[-1])
-                    continue
-                spans.append(
-                    {
-                        "name": start["event"].removesuffix("_started"),
-                        "start_ns": start["monotonic_ns"],
-                        "end_ns": end["monotonic_ns"],
-                        "duration_ms": (end["monotonic_ns"] - start["monotonic_ns"])
-                        / 1e6,
-                        "status": end.get("status"),
-                        "data": {**start.get("data", {}), **end.get("data", {})},
-                        "clock_id": start.get("clock_id"),
-                        "span_id": end.get("span_id"),
-                        "parent_span_id": start.get("parent_span_id"),
-                    }
-                )
+        spans, span_errors = request_spans(rows)
+        failures.extend(span_errors)
+        failure_groups["diagnostic_missing"].extend(span_errors)
         turn["spans"] = spans
         counts = Counter(e["event"] for e in rows)
         tools = Counter(
             e["data"]["tool_name"] for e in rows if e["event"] == "tool_call_started"
         )
+        media_counts = Counter(
+            marker["kind"] for marker in media_timeline_markers(turn["events"])
+        )
         metrics = {
+            "image_items": media_counts["image"],
+            "video_items": media_counts["video"],
             "asr_text": next(
                 (
                     e.get("data", {}).get("text")
@@ -305,6 +279,17 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             ),
             artifact_dir=artifact_dir,
         )
+        if turn.get("tool"):
+            turn["tool_check"] = tool_check(
+                turn["tool"],
+                rows,
+                (
+                    report.get("diagnostics", {}).get("complete")
+                    if attribution_complete
+                    else False
+                ),
+            )
+            business_checks.append(turn["tool_check"])
         checks.extend(business_checks)
         for check in business_checks:
             if not check["passed"]:
@@ -475,6 +460,11 @@ def _navigation(report, active):
 
 def _notices(report, turn=None):
     messages = [report[key] for key in ("error", "close_error") if report.get(key)]
+    if report.get("data_source") == "mock":
+        messages.insert(
+            0,
+            "MOCK 模拟数据 · 未连接 VAS，回复及时间仅用于验证测试工具，不代表真实服务表现。",
+        )
     if report.get("diagnostics") and not report["diagnostics"].get("complete"):
         messages.append("诊断数据不完整，部分阶段的时间可能缺失。")
     messages.extend(report.get("metric_limitations", []))
@@ -521,9 +511,14 @@ def _overview(report):
     completed = sum(not _turn_failed(turn) for turn in turns)
     content = (
         '<div class="page-heading"><div><div class="eyebrow">SESSION OVERVIEW</div>'
-        f'<h1>{_text(report.get("name", "语音测试"))}</h1><p>完整会话回放 · 用户输入、等待和回复使用同一时间轴。</p></div>'
+        f'<h1>{_text(report.get("name", "语音测试"))}</h1><p>整段会话 · 用户语音、回复播放与 VAS 全链路时序。</p></div>'
         f'{_badge("测试通过", "success") if report.get("status") == "passed" else _badge("需要检查", "danger")}</div>'
         + _notices(report)
+        + (
+            '<p><a href="evaluation.xlsx" download>下载 Excel 评测表</a></p>'
+            if report.get("evaluation")
+            else ""
+        )
         + _cards(
             [
                 (
@@ -539,7 +534,7 @@ def _overview(report):
         )
         + _session_panel(report)
         + '<section class="panel"><div class="section-heading"><div><h2>逐轮结果</h2>'
-        '<p>回听定位到整段会话；内部时序在独立页面查看。</p></div><span class="unit-label">时间单位 · 秒</span></div>'
+        '<p>上方查看全会话时序，详细页聚焦单轮。</p></div><span class="unit-label">时间单位 · 秒</span></div>'
         '<div class="table-scroll"><table class="turn-table"><thead><tr>'
         "<th>轮次 / 用户输入</th><th>首句声音</th><th>正式回复</th><th>过渡等待</th><th>结果</th><th></th>"
         "</tr></thead><tbody>"
@@ -584,12 +579,22 @@ def _session_start(report, index):
 
 def _session_panel(report):
     playback = report.get("session_playback", {})
+    trace = playback.get("vas_timeline", {})
+    clock_label = (
+        "北京时间 UTC+8 · 客户端开始发送 = 0 s · 两端未校时"
+        if trace.get("mode") == "wall"
+        else (
+            "相对时间 · 客户端与 VAS 各自从 0 s 开始，不能跨来源相减"
+            if trace.get("lanes")
+            else "客户端实时时间 · 开始发送音频 = 0 s"
+        )
+    )
     path = playback.get("playback_path") or playback.get("path")
     duration = playback.get("duration_seconds", 0)
     content = (
         '<section class="panel session-panel" id="session-timeline"><div class="section-heading">'
-        '<div><div class="eyebrow">SESSION PLAYBACK</div><h2>会话播放与等待</h2>'
-        "<p>客户端实时时间 · 开始发送音频 = 0 s</p></div>"
+        '<div><div class="eyebrow">SESSION TIMELINE</div><h2>会话全链路时序</h2>'
+        f"<p>{clock_label}</p></div>"
         f'<span class="unit-label">全程 {_seconds(duration)} s</span></div>'
     )
     if path:
@@ -613,20 +618,18 @@ def _session_panel(report):
         '<span><i class="legend-answer"></i>正式回复</span><span><i class="legend-wait"></i>等待</span>'
         '<span><i class="legend-abort"></i>打断</span>'
         + (
-            '<span><i class="legend-image"></i>图片到达</span>'
-            if playback.get("image_markers")
-            else ""
+            "".join(
+                f'<span><i class="legend-{kind}"></i>{label}到达</span>'
+                for kind, label in (("image", "图片"), ("video", "视频"))
+                if any(m["kind"] == kind for m in playback.get("media_markers", []))
+            )
         )
         + "</div>"
         '<div class="session-zoom" role="group" aria-label="时间轴缩放">'
         '<button type="button" data-session-zoom="out" aria-label="缩小时间轴">−</button>'
         '<button type="button" data-session-zoom="fit">全会话</button>'
         '<button type="button" data-session-zoom="in" aria-label="放大时间轴">+</button></div></div>'
-        '<div class="session-chart-layout"><div class="session-track-labels" aria-hidden="true">'
-        '<span>用户语音</span><span>回复播放</span></div><div class="session-viewport" id="session-viewport">'
-        '<div class="session-canvas" id="session-canvas" tabindex="0" role="group" '
-        'aria-label="会话时间轴，点击定位，拖动选择时间区间；也可在下方输入起止秒数"></div></div></div>'
-        '<div class="session-tools"><span class="measurement-hint">点击定位 · 拖动划线测量</span>'
+        '<div class="session-tools"><span class="measurement-hint">音频点击定位 · VAS 点击详情 · 拖动划线测量</span>'
         '<div class="measurement-controls" role="group" aria-label="时间区间测量">'
         '<label>起点 <input id="measure-start" type="number" min="0" step="0.01" placeholder="—" aria-label="测量起点，秒"> s</label>'
         '<span aria-hidden="true">→</span>'
@@ -634,11 +637,18 @@ def _session_panel(report):
         '<output id="measure-duration" aria-live="polite">Δ — s</output>'
         '<button type="button" id="measure-clear">清除</button></div></div>'
         '<div id="session-detail" class="session-detail" aria-live="polite">'
-        '<span class="detail-placeholder">选择语音、回复或等待区间，查看文字与时间。</span></div>'
+        '<span class="detail-placeholder">选择语音、回复或 VAS 节点，查看内容与时间。</span></div>'
+        '<div class="session-chart-layout"><div class="session-track-labels" id="session-track-labels" aria-hidden="true">'
+        '<span>用户语音</span><span>回复播放</span></div><div class="session-viewport" id="session-viewport">'
+        '<div class="session-canvas" id="session-canvas" tabindex="0" role="group" '
+        'aria-label="会话全链路时间轴，上方用户语音和回复，下方 VAS；拖动测量，也可输入起止秒数"></div></div></div>'
         '<details class="inline-disclosure"><summary>播放与计时口径</summary><div class="detail-body">'
         "<p>按客户端记录的发送、播放时间还原整段会话，保留句间与轮间空档。"
         "播放记录来自 Python 软件播放器，不代表设备扬声器的实测出声时刻。</p>"
-        "<p>语音输入结束是 WAV 素材发送结束，VAD 模式随后继续发送底噪。传感器以指令发出作为输入时刻，不生成输入音频。VAS 内部时钟在各轮详情中独立展示。</p>"
+        "<p>VAS 展示所有轮次及欢迎语等会话级阶段，维度与详细页一致。"
+        "两端尚未校时，跨来源间距可能包含时钟误差；旧记录缺少绝对时间时，各来源独立归零。"
+        "超出音频长度的 VAS 记录仍显示，音频回听长度不变。</p>"
+        "<p>语音输入结束是 WAV 素材发送结束，VAD 模式随后继续发送底噪。传感器以指令发出作为输入时刻，不生成输入音频。</p>"
     )
     if playback.get("playback_path"):
         content += "<p>默认回听混合用户与 VAS 的声音；分轨文件保留用户左声道、回复右声道的原始音频。</p>"
@@ -718,10 +728,8 @@ def _turn_page(report, index):
         )
     content += (
         '<section class="panel"><div class="section-heading"><div><h2>链路时序</h2>'
-        '<p id="clock-label">VAS 单调时钟 · 本轮首个已采集阶段 = 0 s</p></div>'
-        '<div class="segmented-control" role="group" aria-label="时间轴来源">'
-        '<button type="button" data-clock="server" aria-pressed="true">VAS 内部</button>'
-        '<button type="button" data-clock="client" aria-pressed="false">客户端</button></div></div>'
+        '<p id="clock-label"></p></div>'
+        '<span class="badge">客户端 + VAS · 未校时</span></div>'
         '<div class="request-counts">'
     )
     for label, key in (
@@ -737,10 +745,12 @@ def _turn_page(report, index):
         )
         content += f"<span>{label}<b>{_text(value)}</b></span>"
     content += (
-        '</div><div class="timeline-scroll"><div id="server" class="timeline"></div>'
-        '<div id="client" class="timeline" hidden></div></div>'
+        '</div><div class="timeline-scroll"><div id="combined" class="timeline"></div></div>'
         '<details class="inline-disclosure"><summary>请求明细与计时口径</summary><div class="detail-body">'
-        "<p>两种时间轴分别归零，不能跨轴相减。TTS 按所属 LLM 分组；重叠请求的耗时不相加。"
+        "<p>绝对时刻统一显示北京时间（UTC+8）；客户端以会话开始时的本机系统时间换算。"
+        "两端未做时钟偏移校准，跨端间隔可能包含时钟误差。耗时统计仍使用各端单调时钟。"
+        "旧记录缺少绝对时间时，各来源独立归零，不能跨来源相减。"
+        "TTS 按所属 LLM 分组；重叠请求的耗时不相加。"
         "ASR 全程包含音频上传。临时回复、过渡语与正式回复以已采集的类型为准。</p>"
         '<div class="table-scroll"><table id="spans"></table></div></div></details></section>'
         '<section class="panel compact-panel"><div class="section-heading"><h2>'
@@ -893,6 +903,7 @@ def _llm_evidence_panel(turn):
 
 def build_report(report, path):
     """Write a session overview and independent, fully offline turn pages."""
+    export_excel([report], Path(path).with_name("evaluation.xlsx"))
     assets = Path(__file__).parent
     template = (assets / "report_template.html").read_text()
     style = "\n".join(
@@ -902,7 +913,7 @@ def build_report(report, path):
     script = "\n".join(
         (assets / name).read_text()
         for name in (
-            "image_markers.js",
+            "media_markers.js",
             "reply_timing.js",
             "session_timeline.js",
             "timeline_measurement.js",
@@ -911,24 +922,26 @@ def build_report(report, path):
     )
     display = copy.deepcopy(report)
     playback = display.setdefault("session_playback", {})
-    playback["image_markers"] = []
+    playback["media_markers"] = []
     zero = playback.get("zero_at_ns")
     for index, turn in enumerate(display["turns"], 1):
-        turn["image_markers"] = image_timeline_markers(turn.get("events", []))
+        turn["media_markers"] = media_timeline_markers(turn.get("events", []))
         if zero is not None:
-            playback["image_markers"].extend(
+            playback["media_markers"].extend(
                 dict(
                     marker,
                     turn_index=index,
                     at_seconds=(marker["start_ns"] - zero) / 1e9,
                 )
-                for marker in turn["image_markers"]
+                for marker in turn["media_markers"]
             )
         if "reply_timing" not in turn:
             turn["reply_timing"] = analyze_reply_timing(turn)
         turn["timeline_lanes"] = group_timeline_spans(
             turn.get("spans", []), turn.get("vas_events", [])
         )
+        turn["combined_timeline"] = combined_timeline(turn, display.get("client_clock"))
+    playback["vas_timeline"] = session_trace_timeline(display)
     environment = display.get("run_metadata", {}).get("environment", "本地报告")
 
     def page(index):
