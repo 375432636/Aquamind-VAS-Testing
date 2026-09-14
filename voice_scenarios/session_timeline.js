@@ -18,9 +18,9 @@ function renderSessionTimeline(target, session = {}) {
   const markerLabels = {sensor_sent:'传感器触发',input_end:'输入结束',first_received:'首包到达',first_playback:'开始播放',abort:'打断'};
   const items = [];
   const turns = session.turns || [];
-  const imagePoints = (session.image_markers || []).filter(row=>Number.isFinite(row.at_seconds) && row.at_seconds >= 0 && row.at_seconds <= duration);
-  let imageGroups = [];
-  canvas.classList.toggle('has-image-markers', imagePoints.length > 0);
+  const mediaPoints = (session.media_markers || []).filter(row=>Number.isFinite(row.at_seconds) && row.at_seconds >= 0 && row.at_seconds <= duration);
+  let mediaGroups = [];
+  canvas.classList.toggle('has-media-markers', mediaPoints.length > 0);
   let zoom = Math.max(1,Math.min(64,extent*18/Math.max(1,viewport.clientWidth))), selection = null, gesture = null, pendingSeek = null;
   let animation = null, lastAutoScroll = 0;
   let fullAudioRequest = null, fullAudioUrl = null;
@@ -59,7 +59,7 @@ function renderSessionTimeline(target, session = {}) {
     const label = `第 ${row.turn_index} 轮 · ${markerLabels[row.kind] || row.kind} · ${seconds(row.at_seconds)}`;
     markers += `<button type="button" class="session-marker marker-${escape(row.kind)}" data-session-marker="${escape(row.kind)}" data-session-time="${Number(row.at_seconds)}" data-session-turn-index="${row.turn_index}" style="left:${percent(row.at_seconds)}%" title="${escape(label)}" aria-label="${escape(label)}"><i></i><span>${escape(markerLabels[row.kind] || row.kind)}</span></button>`;
   });
-  canvas.innerHTML = `<div class="session-ruler" id="session-ruler" aria-hidden="true"></div><div class="session-grid" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}<div class="session-image-markers"></div><div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
+  canvas.innerHTML = `<div class="session-ruler" id="session-ruler" aria-hidden="true"></div><div class="session-grid" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}<div class="session-media-markers"></div><div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
   const overlay = document.getElementById('session-selection');
   const caption = document.getElementById('selection-caption');
   const playhead = document.getElementById('session-playhead');
@@ -143,10 +143,10 @@ function renderSessionTimeline(target, session = {}) {
     detail.innerHTML = `<div class="session-detail-heading"><span class="badge">第 ${item.turn_index} 轮</span><strong>${escape(item.label)}</strong><span class="detail-time">${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} <b>· ${seconds(item.end_seconds-item.start_seconds)}</b></span><a href="turn-${String(item.turn_index).padStart(3,'0')}.html">内部时序 ↗</a></div>${body}${stats}`;
   }
   function activate(element, time) {
-    const imageButton = element.closest('[data-session-images]');
-    if (imageButton) {
-      const group = imageGroups[Number(imageButton.dataset.sessionImages)];
-      detail.innerHTML = imageMarkerDetails(group, marker=>`第 ${marker.turn_index} 轮期间 · ${marker.label} · ${seconds(marker.at_seconds)}`);
+    const mediaButton = element.closest('[data-session-media]');
+    if (mediaButton) {
+      const group = mediaGroups[Number(mediaButton.dataset.sessionMedia)];
+      detail.innerHTML = mediaMarkerDetails(group, marker=>`第 ${marker.turn_index} 轮期间 · ${marker.label} · ${seconds(marker.at_seconds)}`);
       seek(group[0].at_seconds);
       return;
     }
@@ -231,10 +231,10 @@ function renderSessionTimeline(target, session = {}) {
   function redrawScale() {
     const width = Math.max(1,viewport.clientWidth);
     canvas.style.width = width*zoom + 'px';
-    imageGroups = groupImageMarkers(imagePoints, extent, width*zoom);
-    canvas.querySelector('.session-image-markers').innerHTML = imageGroups.map((group,index)=> {
+    mediaGroups = groupMediaMarkers(mediaPoints, extent, width*zoom);
+    canvas.querySelector('.session-media-markers').innerHTML = mediaGroups.map((group,index)=> {
       const caption = group.map(marker=>`第 ${marker.turn_index} 轮期间 · ${marker.label} · ${seconds(marker.at_seconds)}`).join(' / ');
-      return `<button type="button" class="session-image-marker" data-session-images="${index}" style="left:${percent(group[0].at_seconds)}%" title="${escape(caption)}" aria-label="${escape(caption)}">${IMAGE_MARKER_ICON}${group.length>1 ? '<span>'+group.length+'</span>' : ''}</button>`;
+      return `<button type="button" class="session-media-marker" data-session-media="${index}" style="left:${percent(group[0].at_seconds)}%" title="${escape(caption)}" aria-label="${escape(caption)}">${mediaMarkerIcon(group)}${group.length>1 ? '<span>'+group.length+'</span>' : ''}</button>`;
     }).join('');
     const ruler = document.getElementById('session-ruler');
     const desired = extent/(width*zoom/95);
@@ -285,10 +285,10 @@ function renderSessionTimeline(target, session = {}) {
     const row = items.find(item => item.item_type === 'reply' && requested >= item.start_seconds && requested <= item.end_seconds) || items.find(item => item.item_type === 'input' && requested >= item.start_seconds && requested <= item.end_seconds);
     if (row) showItem(row);
   }
-  if ((session.image_markers || []).length > imagePoints.length) {
+  if ((session.media_markers || []).length > mediaPoints.length) {
     const notice = document.createElement('p');
     notice.className = 'session-capture-notice';
-    notice.textContent = '有图片消息在回放时间范围之外，可在对应轮次的客户端时序查看。';
+    notice.textContent = '有图片或视频消息在回放时间范围之外，可在对应轮次的客户端时序查看。';
     target.append(notice);
   }
   if (session.status === 'incomplete') {

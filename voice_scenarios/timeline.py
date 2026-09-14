@@ -3,27 +3,43 @@
 import math
 
 
-def image_timeline_markers(events):
-    """Image URL arrival is a client event, not server send or image load time."""
+def media_timeline_markers(events):
+    """Media URL arrival is a client event, not server send/load/playback time."""
     markers = []
+    labels = {"image": "图片", "video": "视频"}
+    counts = dict.fromkeys(labels, 0)
     for event in events:
         at = event.get("at_ns")
         if (
-            event.get("event") != "image"
+            event.get("event") not in ("image", "display")
             or type(at) not in (int, float)
             or not math.isfinite(at)
         ):
             continue
         data = event.get("data")
-        url = data.get("url") if isinstance(data, dict) else None
-        markers.append(
-            {
-                "label": f"图片 #{len(markers) + 1} 到达",
-                "kind": "image",
-                "start_ns": at,
-                "url": url if isinstance(url, str) else None,
-            }
+        if not isinstance(data, dict):
+            continue
+        items = (
+            [{"kind": "image", "url": data.get("url")}]
+            if event["event"] == "image"
+            else data.get("items")
         )
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or item.get("kind") not in ("image", "video"):
+                continue
+            kind = item["kind"]
+            counts[kind] += 1
+            url = item.get("url")
+            markers.append(
+                {
+                    "label": f"{labels[kind]} #{counts[kind]} 到达",
+                    "kind": kind,
+                    "start_ns": at,
+                    "url": url if isinstance(url, str) else None,
+                }
+            )
     return markers
 
 

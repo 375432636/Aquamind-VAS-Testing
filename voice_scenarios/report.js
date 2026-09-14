@@ -71,14 +71,15 @@ function timeline(id, lanes) {
     const width = Math.max(300, (root.clientWidth || 800)-176);
     for (const marker of [...(lane.markers || [])].sort((a,b)=>a.start-b.start)) {
       const previous = groups[groups.length-1];
-      if (previous && (marker.start-previous[0].start)/range*width < 28) previous.push(marker);
+      if (previous && (marker.start-previous[0].start)/range*width < (['image','video'].includes(marker.kind) ? 56 : 28)) previous.push(marker);
       else groups.push([marker]);
     }
     if (!groups.length) return '';
     return '<div class="milestone-track">' + groups.map(group => {
       const index = markerGroups.push(group)-1;
       const caption = group.map(title).join(' / ');
-      return `<button type="button" class="timeline-marker${group[0].kind === 'image' ? ' image-marker' : ''}" data-marker-index="${index}" aria-label="${esc(caption)}" title="${esc(caption)}" style="left:${(group[0].start-zero)/range*100}%">${group[0].kind === 'image' ? IMAGE_MARKER_ICON : '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 11 6 6 11 1 6Z" fill="currentColor"/></svg>'}${group.length>1 ? '<span>'+group.length+'</span>' : ''}</button>`;
+      const media = ['image','video'].includes(group[0].kind);
+      return `<button type="button" class="timeline-marker${media ? ' media-marker' : ''}" data-marker-index="${index}" aria-label="${esc(caption)}" title="${esc(caption)}" style="left:${(group[0].start-zero)/range*100}%">${media ? mediaMarkerIcon(group) : '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 11 6 6 11 1 6Z" fill="currentColor"/></svg>'}${group.length>1 ? '<span>'+group.length+'</span>' : ''}</button>`;
     }).join('') + '</div>';
   }
   root.innerHTML = `<div class="timeline-plot"><div class="axis"><span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span></div>` + lanes.map(lane => {
@@ -93,8 +94,8 @@ function timeline(id, lanes) {
     const detail = root.querySelector('.span-detail');
     if (button.dataset.markerIndex != null) {
       const group = markerGroups[Number(button.dataset.markerIndex)];
-      if (group[0].kind === 'image') {
-        detail.innerHTML = imageMarkerDetails(group, title);
+      if (['image','video'].includes(group[0].kind)) {
+        detail.innerHTML = mediaMarkerDetails(group, title);
         detail.hidden = false;
         return;
       }
@@ -134,7 +135,7 @@ if (turn) {
   const ttsColors = ['#397d75','#5b80ad','#9273a4','#ac843d','#ad7187','#528488'];
   const stageLabels = {memory_request:'Memory', listen_stop_received:'VAS 收到停止', listen_stop_enqueued:'停止消息入队', listen_stop_dequeued:'停止消息出队', listen_finalize_started:'开始处理语音结束', audio_input_completed:'上行音频接收完成', asr_commit_sent:'ASR 提交结束', ...vadLabels};
   const clientLanes = events.filter(event => clientLabels[event.event]).map(event => ({label:clientLabels[event.event], start:event.at_ns, data:event.data}));
-  if (turn.image_markers?.length) clientLanes.push({label:'图片到达', segments:[], markers:turn.image_markers.map(marker=>({...marker,start:marker.start_ns}))});
+  if (turn.media_markers?.length) clientLanes.push({label:mediaMarkerLabel(turn.media_markers)+'到达', segments:[], markers:turn.media_markers.map(marker=>({...marker,start:marker.start_ns}))});
   timeline('client', clientLanes);
   timeline('server', (turn.timeline_lanes || []).map(lane => ({
     label:stageLabels[lane.label] || lane.label,

@@ -8,7 +8,7 @@ function renderer() {
   const root = {innerHTML:'', clientWidth:1000, contains:()=>true, querySelector:()=>detail};
   const context = {document:{getElementById:id=>id==='data'?{textContent:'{"turn":null}'}:root, addEventListener(){}},
     window:{addEventListener(){}}, URL, renderSessionTimeline(){}, enableTimelineMeasurement(){}};
-  const render = vm.runInNewContext(readFileSync('voice_scenarios/image_markers.js','utf8')+'\n'+readFileSync('voice_scenarios/report.js','utf8')+'\ntimeline;',context);
+  const render = vm.runInNewContext(readFileSync('voice_scenarios/media_markers.js','utf8')+'\n'+readFileSync('voice_scenarios/report.js','utf8')+'\ntimeline;',context);
   return {root,detail,render};
 }
 
@@ -55,4 +55,19 @@ test('image points share one lane and expose arrival time and safe links on clic
   assert.match(detail.innerHTML,/客户端收到图片地址/);
   assert.match(detail.innerHTML,/https:\/\/example.com\/a.png/);
   assert.doesNotMatch(detail.innerHTML,/href="javascript:/);
+});
+
+test('mixed video and image markers open a single detail panel with both links',()=>{
+  const {root,detail,render}=renderer();
+  render('client',[{label:'视频 / 图片到达',segments:[],markers:[
+    {label:'视频 #1 到达',kind:'video',start:2e9,url:'https://example.com/demo.mp4'},
+    {label:'图片 #1 到达',kind:'image',start:2e9,url:'https://example.com/poster.png'},
+  ]}]);
+  assert.equal((root.innerHTML.match(/data-marker-index=/g)||[]).length,1);
+  assert.match(root.innerHTML,/aria-label="[^"]*视频 #1 到达[^"]*图片 #1 到达/);
+  root.onclick({target:{closest:()=>({dataset:{markerIndex:'0'}})}});
+  assert.equal(detail.hidden,false);
+  assert.match(detail.innerHTML,/查看视频/);
+  assert.match(detail.innerHTML,/查看图片/);
+  assert.equal((detail.innerHTML.match(/开始 0.000 s/g)||[]).length,2);
 });
