@@ -12,7 +12,7 @@ VAS 发送 `type: image` 消息或 `type: display` 中的 `items`（`kind: image
 4. 点击 **Run workflow**。各 session 逐个运行；一个 session 失败后仍继续后面的场景。
 5. 在 **Summary** 选择需要的 session，点击该会话的下载链接。每个 artifact 只包含一个 session，解压后直接打开 `report.html`。
 
-**每天北京时间 07:00 自动运行全部冒烟测试。** [`VAS 批量语音测试`](.github/workflows/voice-test.yml) 使用默认分支 `main` 的最新已合并版本，读取 [`scenarios/smoke/`](scenarios/smoke/) 下的全部场景。当前是 3 个 session、10 轮，沿用各文件的 DEV 环境和 MAC 配置，诊断级别为 `frame`。新增到该目录的用例会自动纳入每日测试。
+**每天北京时间 07:00 自动运行全部冒烟测试。** [`VAS 批量语音测试`](.github/workflows/voice-test.yml) 使用默认分支 `main` 的最新已合并版本，读取 [`scenarios/smoke/`](scenarios/smoke/) 下的全部场景。当前是 4 个 session、13 轮，沿用各文件的 DEV 环境和 MAC 配置，诊断级别为 `frame`。新增到该目录的用例会自动纳入每日测试。
 
 定时和手动测试共用 Docker 缓存、串行执行和报告流程；某个 session 失败后继续后续场景。结果在 **Actions → VAS 批量语音测试 → 对应运行 → Summary** 查看，各 session 的报告与无损压缩音频独立下载，保留 14 天。GitHub 按 UTC 调度（`0 23 * * *`），实际启动可能因队列繁忙延迟。
 
@@ -22,10 +22,12 @@ VAS 发送 `type: image` 消息或 `type: display` 中的 `items`（`kind: image
 
 | 场景目录 | 内容 |
 | --- | --- |
-| [`scenarios/smoke`](scenarios/smoke/) | 多轮上下文、正式回答播放后 2 秒打断、打断后继续对话、新闻黄历、肢体互动描述与产品介绍 |
+| [`scenarios/smoke`](scenarios/smoke/) | 多轮上下文、正式回答播放后 2 秒打断、打断后继续对话、新闻黄历、肢体互动描述与产品介绍，以及图片 / 视频展示 |
 | [`scenarios/vad`](scenarios/vad/) | 连续发送语音和底噪，由后台 VAD 判断结束 |
 | [`scenarios/products`](scenarios/products/) | 会议耳机上下文、正式回答后 2 秒打断 |
 | [`scenarios/sensors`](scenarios/sensors/) | 摸头、摸手、摇晃、抛起四种标准传感器指令 |
+
+新增的 [`04-media-display.yaml`](scenarios/smoke/04-media-display.yaml) 使用 DEV 设备 `FF:FF:FF:FF:FF:11`，依次推荐产品、查看同款图片、查看同款演示视频，三轮共享上下文。后两轮各有一条检查：`image_items_min: 1` / `video_items_min: 1`。它们要求本轮实际收到对应媒体项，未返回就失败；不要求固定工具名或产品名。人设需要具备相应媒体资源和展示能力。计数验证收到消息，不保证媒体链接可访问或视频已播放。
 
 新闻、黄历、摸头和产品介绍保存在 [`03-news-almanac-interaction-products.yaml`](scenarios/smoke/03-news-almanac-interaction-products.yaml)，使用 DEV 设备 `30:ED:A0:A6:23:A4`，四轮共享一个 session。语音采用 VAD 模式，说完后继续发送底噪；摸头直接发送标准传感器消息。
 

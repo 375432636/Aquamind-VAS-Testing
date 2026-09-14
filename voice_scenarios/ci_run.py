@@ -30,6 +30,8 @@ ENDPOINTS = {
     "main": "wss://lumin-vas-aquamind.deep-edge.cn/looomyn/v1/",
 }
 NUMERIC_METRICS = {
+    "image_items",
+    "video_items",
     "first_playback_ms",
     "first_answer_playback_ms",
     "stop_queue_ms",
@@ -63,6 +65,8 @@ def _validate_expect(expected, diagnostics):
             "first_playback_ms",
             "interrupt_lateness_ms",
             "asr_text",
+            "image_items",
+            "video_items",
         }:
             raise ValueError(
                 "Internal metric assertions require stage/frame diagnostics"

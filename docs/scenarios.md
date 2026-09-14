@@ -221,3 +221,7 @@ python -m pytest --cov=voice_scenarios --cov-fail-under=80
 ```
 
 `stack` 的服务日志保存在 `artifacts/stack-<端口>/`，按 Ctrl-C 仅停止本次启动的子进程。
+
+### 图片与视频冒烟
+
+需要验证返回媒体时，每轮只需增加 `expect: {image_items_min: 1}` 或 `expect: {video_items_min: 1}`。统计本轮客户端收到的 `image` 及 `display.items`，按媒体项计数，不按 URL 去重；一条 `display` 可以包含多个项。这两项不依赖 VAS 内部诊断。没有收到时检查失败，单有文字回复不能通过。计数不验证链接有效性、下载完成或真实视频播放。

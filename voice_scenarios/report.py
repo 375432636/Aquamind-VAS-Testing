@@ -147,7 +147,12 @@ def evaluate(result, vas_events, *, artifact_dir=None):
         tools = Counter(
             e["data"]["tool_name"] for e in rows if e["event"] == "tool_call_started"
         )
+        media_counts = Counter(
+            marker["kind"] for marker in media_timeline_markers(turn["events"])
+        )
         metrics = {
+            "image_items": media_counts["image"],
+            "video_items": media_counts["video"],
             "asr_text": next(
                 (
                     e.get("data", {}).get("text")
