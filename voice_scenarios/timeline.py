@@ -1,5 +1,32 @@
 """Presentation lanes that retain each request's original timing and identity."""
 
+import math
+
+
+def image_timeline_markers(events):
+    """Image URL arrival is a client event, not server send or image load time."""
+    markers = []
+    for event in events:
+        at = event.get("at_ns")
+        if (
+            event.get("event") != "image"
+            or type(at) not in (int, float)
+            or not math.isfinite(at)
+        ):
+            continue
+        data = event.get("data")
+        url = data.get("url") if isinstance(data, dict) else None
+        markers.append(
+            {
+                "label": f"图片 #{len(markers) + 1} 到达",
+                "kind": "image",
+                "start_ns": at,
+                "url": url if isinstance(url, str) else None,
+            }
+        )
+    return markers
+
+
 MILESTONE_LABELS = {
     "llm_request_started": "LLM 请求提交",
     "llm_first_token": "First Token",

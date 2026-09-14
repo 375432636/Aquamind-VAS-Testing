@@ -7,8 +7,8 @@ function renderer() {
   const detail = {hidden:true, textContent:''};
   const root = {innerHTML:'', clientWidth:1000, contains:()=>true, querySelector:()=>detail};
   const context = {document:{getElementById:id=>id==='data'?{textContent:'{"turn":null}'}:root, addEventListener(){}},
-    window:{addEventListener(){}}, renderSessionTimeline(){}, enableTimelineMeasurement(){}};
-  const render = vm.runInNewContext(readFileSync('voice_scenarios/report.js','utf8')+'\ntimeline;',context);
+    window:{addEventListener(){}}, URL, renderSessionTimeline(){}, enableTimelineMeasurement(){}};
+  const render = vm.runInNewContext(readFileSync('voice_scenarios/image_markers.js','utf8')+'\n'+readFileSync('voice_scenarios/report.js','utf8')+'\ntimeline;',context);
   return {root,detail,render};
 }
 
@@ -40,4 +40,19 @@ test('business evidence shows readable requirements and explicit unknown values'
   assert.match(format.expected({category:'tools',expected:{required:[{name:'News-getTodayNewsByTopic'}],forbidden:['DrawLots-drawLot']}}),/必须.*News-getTodayNewsByTopic.*禁止.*DrawLots-drawLot/);
   assert.equal(format.actual({category:'audio',actual:{decodable:true,duration_ms:1200,ending:'normal'}}),'可解码 · 1.20 s · 正常结束');
   assert.equal(format.actual({category:'reply',actual:{text:null}}),'未知');
+});
+
+test('image points share one lane and expose arrival time and safe links on click',()=>{
+  const {root,detail,render}=renderer();
+  render('client',[{label:'图片到达',segments:[],markers:[
+    {label:'图片 #1 到达',kind:'image',start:2e9,url:'https://example.com/a.png'},
+    {label:'图片 #2 到达',kind:'image',start:2.001e9,url:'javascript:alert(1)'},
+  ]}]);
+  assert.equal((root.innerHTML.match(/class="lane"/g)||[]).length,1);
+  assert.match(root.innerHTML,/aria-label="[^"]*图片 #1 到达/);
+  root.onclick({target:{closest:()=>({dataset:{markerIndex:'0'}})}});
+  assert.equal(detail.hidden,false);
+  assert.match(detail.innerHTML,/客户端收到图片地址/);
+  assert.match(detail.innerHTML,/https:\/\/example.com\/a.png/);
+  assert.doesNotMatch(detail.innerHTML,/href="javascript:/);
 });
