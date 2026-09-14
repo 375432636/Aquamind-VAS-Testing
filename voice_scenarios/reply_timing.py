@@ -2,6 +2,8 @@
 
 
 def input_end_event(turn):
+    if turn.get("sensor"):
+        return "sensor_sent"
     return (
         "speech_input_finished"
         if turn.get("input_settings", {}).get("mode") == "vad"
@@ -63,7 +65,10 @@ def analyze_reply_timing(turn):
                 or frame.get("discarded_after_abort")
                 or (stopped is not None and start >= stopped)
                 or frame.get("server_listen_turn_id")
-                not in {None, turn.get("listen_turn_id")}
+                not in {
+                    None,
+                    turn.get("server_listen_turn_id", turn.get("listen_turn_id")),
+                }
             ):
                 continue
             end = start + round(duration * 1e6)
@@ -123,9 +128,13 @@ def analyze_reply_timing(turn):
             previous_start, previous_end = start, end
     limitations = [
         (
-            "0 秒取客户端语音 WAV 播送完毕的时刻，之后仍发送底噪，没有发送 listen/stop；WAV 内部静音也计入素材时长，不等于人工标注的最后发声点。"
-            if zero_event == "speech_input_finished"
-            else "0 秒取客户端发送 listen/stop 的时刻，代表本次语音输入结束。"
+            "0 秒取客户端发送 sensor 指令的时刻；本轮没有上传语音，不经过 VAD / ASR。"
+            if zero_event == "sensor_sent"
+            else (
+                "0 秒取客户端语音 WAV 播送完毕的时刻，之后仍发送底噪，没有发送 listen/stop；WAV 内部静音也计入素材时长，不等于人工标注的最后发声点。"
+                if zero_event == "speech_input_finished"
+                else "0 秒取客户端发送 listen/stop 的时刻，代表本次语音输入结束。"
+            )
         ),
         "按服务端播报分段，通过音频包序号关联模拟播放；不把收到 sentence_start 当成播放开始。",
         "句间空档按末帧开始加 PCM 时长估算，包含播放器调度误差，不包含音频内部自带的静音。",

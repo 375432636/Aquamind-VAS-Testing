@@ -1,6 +1,7 @@
 name: VAD 自动结束 · 连续上下文
+device_id: "FF:FF:FF:FF:FF:11"
+environment: dev
 input_mode: vad
-turn_timeout_seconds: 90
 turns:
   - id: choices
     text: 推荐两个适合初学者的室内运动，简单说一下各自的好处。

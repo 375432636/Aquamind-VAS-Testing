@@ -61,6 +61,69 @@ def samples(directory, metadata):
     return values[0::2], values[1::2]
 
 
+def test_default_replay_contains_user_and_reply_on_a_single_output_channel(tmp_path):
+    item = turn(
+        tmp_path,
+        1,
+        [
+            event("first_audio_sent", 0),
+            event("listen_stop_sent", 0.1),
+            event("tts_sentence_start", 1, text="这是回复"),
+            *frame(1, 1),
+            event("playback_frame_started", 1, audio_seq=1),
+            event("tts_stop", 1.1),
+        ],
+        [12000] * 1600,
+        [18000] * 1600,
+        ended_at_ns=BASE + 1_500_000_000,
+    )
+    playback = prepare_session_playback({"turns": [item]}, tmp_path)
+    default_path = playback.get("playback_path", playback["path"])
+    with wave.open(str(tmp_path / default_path)) as source:
+        pcm = source.readframes(source.getnframes())
+        values = struct.unpack(f"<{len(pcm)//2}h", pcm)
+        # A headset/speaker that only reproduces the left channel must still
+        # reproduce the VAS answer, not just the user's question.
+        audible = values[:: source.getnchannels()]
+        assert audible[RATE : RATE + 1600] == (18000,) * 1600
+        assert audible[:1600] == (12000,) * 1600
+        assert not any(audible[1600:RATE])
+        assert source.getnframes() == round(playback["duration_seconds"] * RATE)
+    left, right = samples(tmp_path, playback)
+    assert left[:1600] == (12000,) * 1600
+    assert not any(left[RATE:])
+    assert right[RATE : RATE + 1600] == (18000,) * 1600
+
+
+@pytest.mark.parametrize(
+    "input_value,reply_value,expected",
+    [(1000, 2000, 3000), (24000, 24000, 32767), (-24000, -24000, -32768)],
+)
+def test_mixed_replay_preserves_overlap_without_integer_wraparound(
+    tmp_path, input_value, reply_value, expected
+):
+    item = turn(
+        tmp_path,
+        1,
+        [
+            event("first_audio_sent", 0),
+            *frame(1, 0),
+            event("playback_frame_started", 0, audio_seq=1),
+            event("tts_stop", 0.1),
+        ],
+        [input_value] * 1600,
+        [reply_value] * 1600,
+    )
+    playback = prepare_session_playback({"turns": [item]}, tmp_path)
+    with wave.open(str(tmp_path / playback["playback_path"])) as audio:
+        assert audio.getnchannels() == 1
+        pcm = audio.readframes(1600)
+        assert struct.unpack("<1600h", pcm) == (expected,) * 1600
+    left, right = samples(tmp_path, playback)
+    assert left == (input_value,) * 1600
+    assert right == (reply_value,) * 1600
+
+
 def test_whole_session_preserves_packet_gaps_waits_and_inter_turn_pauses(tmp_path):
     first = turn(
         tmp_path,

@@ -1,0 +1,74 @@
+name: 新闻黄历、肢体互动与产品介绍
+device_id: "30:ED:A0:A6:23:A4"
+environment: dev
+input_mode: vad
+# 工具名与能力来源：2026-09-11 读取该设备 UMS 配置和 MCP tools/list。
+# 运行前核对当前 DEV 使用同一配置来源；更换设备或人设须同步更新这些要求。
+turns:
+  - id: news
+    text: 帮我看一下今天的新闻
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+      business:
+        recognition:
+          contains_all: [[新闻, 要闻, 资讯]]
+        tools:
+          source: 2026-09-11 设备 30:ED:A0:A6:23:A4 的 MCP tools/list
+          required:
+            - name: News-getTodayNewsByTopic
+          forbidden: [DrawLots-drawLot]
+        reply:
+          contains_all: [[新闻, 要闻, 消息, 报道, 资讯, 动态]]
+        audio:
+          ending: normal
+  - id: almanac
+    text: 帮我看一下今天的黄历。
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+      business:
+        recognition:
+          contains_all: [[黄历, 通胜, 老黄历]]
+        tools:
+          source: 2026-09-11 设备 30:ED:A0:A6:23:A4 的 MCP tools/list
+          required:
+            - name: Tung-Shing-get-tung-shing
+          forbidden: [DrawLots-drawLot, News-getTodayNewsByTopic]
+        reply:
+          contains_all: [[宜, 适合], [忌, 避免]]
+        audio:
+          ending: normal
+  - id: head-touch
+    sensor: touch-head
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+      business:
+        recognition:
+          sensor: touch-head
+        tools:
+          forbidden: [DrawLots-drawLot]
+        reply:
+          # 无固定回复规则时采用最小互动要求；明确人设规则后可收紧。
+          source: 当前 touch-head 输入为摸头并调侃大笨蛋；默认检查回应互动或调侃
+          contains_all: [[摸, 头, 揉, 笨, 傻, 调皮, 舒服]]
+        audio:
+          ending: normal
+  - id: products
+    text: 给我介绍一下产品，这有什么好玩的？
+    expect:
+      llm_requests_min: 1
+      tts_requests_min: 1
+      business:
+        recognition:
+          contains_all: [[产品, 设备], [介绍, 好玩, 功能, 能力]]
+        tools:
+          # 当前产品介绍未规定必须调用某个工具，不强制套用其他人设的 RAG 流程。
+          required: []
+          forbidden: []
+        reply:
+          source: 2026-09-11 设备 30:ED:A0:A6:23:A4 的 UMS 人设能力标记
+          contains_all: [[占星, 星盘], [黄历, 通胜, 抽签, MBTI]]
+        audio:
+          ending: normal

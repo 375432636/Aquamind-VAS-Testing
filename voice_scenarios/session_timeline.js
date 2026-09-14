@@ -15,7 +15,7 @@ function renderSessionTimeline(target, session = {}) {
   const clamp = value => Math.max(0, Math.min(duration, Number(value) || 0));
   const kindLabels = {greeting:'欢迎语',answer:'正式回复',pre_speech:'过渡语',filler:'临时回复',unknown:'类型未关联',mixed:'混合回复'};
   const waitLabels = {first_reply:'等待首句',transition:'等待正式回复',sentence:'句间等待'};
-  const markerLabels = {input_end:'输入结束',first_received:'首包到达',first_playback:'开始播放',abort:'打断'};
+  const markerLabels = {sensor_sent:'传感器触发',input_end:'输入结束',first_received:'首包到达',first_playback:'开始播放',abort:'打断'};
   const items = [];
   const turns = session.turns || [];
   let zoom = Math.max(1,Math.min(64,extent*18/Math.max(1,viewport.clientWidth))), selection = null, gesture = null, pendingSeek = null;
@@ -257,7 +257,7 @@ function renderSessionTimeline(target, session = {}) {
     audio.addEventListener('play', () => {cancelAnimationFrame(animation);animation = requestAnimationFrame(frame);});
     audio.addEventListener('pause', () => {cancelAnimationFrame(animation);positionPlayhead(audio.currentTime);});
     audio.addEventListener('error', () => {
-      detail.innerHTML = '<p class="capture-limitation">会话 WAV 无法读取，请保留完整报告文件夹后重新打开。</p>';
+      detail.innerHTML = '<p class="capture-limitation">会话音频无法读取，请保留完整报告文件夹后重新打开。</p>';
     });
     window.addEventListener('pagehide', event => {if (!event.persisted && fullAudioUrl) URL.revokeObjectURL(fullAudioUrl);});
   }

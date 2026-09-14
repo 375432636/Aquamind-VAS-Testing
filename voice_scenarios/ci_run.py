@@ -18,8 +18,9 @@ from urllib.parse import urlsplit
 import yaml
 
 from .__main__ import create_report
+from .assertions import validate_business_assertions
 from .failure_summary import failure_reasons
-from .model import Scenario
+from .model import SENSOR_COMMANDS, Scenario, sensor_command
 from .runner import run_scenario, save_result
 from .websocket import WebSocketTransport
 
@@ -54,6 +55,9 @@ def _validate_expect(expected, diagnostics):
     if not isinstance(expected, dict):
         raise ValueError("expect must be an object")
     for name, value in expected.items():
+        if name == "business":
+            validate_business_assertions(value)
+            continue
         metric = name.removeprefix("max_").removesuffix("_min")
         if diagnostics == "off" and metric not in {
             "first_playback_ms",
@@ -148,6 +152,7 @@ def validate_turns(raw, settings):
     allowed = {
         "text",
         "audio",
+        "sensor",
         "id",
         "interrupt_after_seconds",
         "output_kind",
@@ -159,8 +164,10 @@ def validate_turns(raw, settings):
             turn = {"text": turn}
         if not isinstance(turn, dict) or set(turn) - allowed:
             raise ValueError(f"turn {index}: unsupported fields")
-        if ("text" in turn) == ("audio" in turn):
-            raise ValueError(f"turn {index}: provide exactly one of text or audio")
+        if sum(key in turn for key in ("text", "audio", "sensor")) != 1:
+            raise ValueError(
+                f"turn {index}: provide exactly one of text, audio or sensor"
+            )
         turn_id = turn.get("id", f"turn-{index:03d}")
         if (
             not isinstance(turn_id, str)
@@ -172,7 +179,10 @@ def validate_turns(raw, settings):
             )
         ids.add(turn_id)
         item = {"id": turn_id}
-        if "text" in turn:
+        if "sensor" in turn:
+            item["sensor"] = sensor_command(turn["sensor"])
+            item["input_text"] = f"传感器 · {SENSOR_COMMANDS[item['sensor']]}"
+        elif "text" in turn:
             text = turn["text"]
             if (
                 not isinstance(text, str)
@@ -296,6 +306,8 @@ def prepare(output, env, *, name=None):
     inputs = output / "inputs"
     inputs.mkdir(exist_ok=True)
     for index, turn in enumerate(turns, 1):
+        if "sensor" in turn:
+            continue
         audio = inputs / f"turn-{index:03d}.wav"
         if "source_audio" in turn:
             shutil.copyfile(turn.pop("source_audio"), audio)

@@ -1,6 +1,22 @@
 from voice_scenarios.report import build_report, evaluate
 
 
+def test_session_player_prefers_mixed_audio_and_retains_split_download(tmp_path):
+    report = evaluate({"name": "完整对话", "status": "passed", "turns": []}, [])
+    report["session_playback"] = {
+        "status": "ready",
+        "path": "session.played.wav",
+        "playback_path": "session.mixed.wav",
+        "duration_seconds": 2,
+    }
+    build_report(report, tmp_path / "report.html")
+    page = (tmp_path / "report.html").read_text()
+    assert 'src="session.mixed.wav"' in page
+    assert 'href="session.mixed.wav" download' in page
+    assert 'href="session.played.wav" download' in page
+    assert page.count("<audio ") == 1
+
+
 def test_vad_report_uses_speech_boundary_and_separate_server_endpoint_clock(tmp_path):
     result = {
         "name": "vad",

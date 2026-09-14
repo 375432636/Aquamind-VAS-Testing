@@ -11,6 +11,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
 from .fake_device import TOOLS, FakeDevice
+from .model import sensor_command
 from .protocol import Event
 
 
@@ -40,6 +41,7 @@ class WebSocketTransport:
         self.diagnostics_active = False
         self.diagnostics_ended = asyncio.Event()
         self.turn_sequence = 0
+        self.listen_sequence = 0
         self.audio_sequence = 0
         self.microphone_task = None
         self.pending_response_turn = None
@@ -265,6 +267,20 @@ class WebSocketTransport:
             }
         await self._send_json({"type": "mcp", "payload": response})
 
+    async def send_sensor(self, mode):
+        mode = sensor_command(mode)
+        await self._stop_microphone()
+        self.turn_sequence += 1
+        message = {"type": "sensor", "mode": mode, "state": "stop"}
+        await self._send_json(message)
+        data = {
+            **message,
+            "listen_turn_id": self.turn_sequence,
+            "server_listen_turn_id": self.listen_sequence or None,
+        }
+        self.emit(Event("sensor_sent", data))
+        return data
+
     async def send_audio(self, path: Path, *, input_stream=None, uplink_path=None):
         if input_stream is not None and input_stream.mode == "vad":
             return await self._send_vad_audio(path, input_stream, uplink_path)
@@ -280,6 +296,7 @@ class WebSocketTransport:
             samples = audio.getnframes()
             encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
             self.turn_sequence += 1
+            self.listen_sequence += 1
             await self._send_json(
                 {"type": "listen", "state": "start", "mode": "manual"}
             )
@@ -328,6 +345,7 @@ class WebSocketTransport:
                 "frames": count,
                 "samples": samples,
                 "listen_turn_id": self.turn_sequence,
+                "server_listen_turn_id": self.listen_sequence,
             }
             self.emit(Event("audio_send_completed", metadata, last_sent))
             await asyncio.sleep(max(0, started + samples / 16000 - time.monotonic()))
@@ -343,6 +361,7 @@ class WebSocketTransport:
         await self._stop_microphone()
         self.turn_sequence += 1
         await self._send_json({"type": "listen", "state": "start", "mode": "auto"})
+        self.listen_sequence += 1
         self.emit(
             Event(
                 "listen_start_sent",
@@ -372,7 +391,7 @@ class WebSocketTransport:
                     speech_done.cancel()
 
         self.microphone_task = asyncio.create_task(stream())
-        return await speech_done
+        return {**await speech_done, "server_listen_turn_id": self.listen_sequence}
 
     async def _stop_microphone(self):
         if self.microphone_task is not None:

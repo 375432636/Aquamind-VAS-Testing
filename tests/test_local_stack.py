@@ -16,6 +16,94 @@ from voice_scenarios.dev_stack import ROOT, serve_stack
 @pytest.mark.skipif(
     not os.getenv("VAS_TEST_ROOT"), reason="Set VAS_TEST_ROOT for real VAS"
 )
+def test_real_stack_public_milestones_and_guardrail(tmp_path):
+    async def exercise():
+        import aiohttp
+
+        task = asyncio.create_task(
+            serve_stack(
+                Path(os.environ["VAS_TEST_ROOT"]),
+                ROOT / "config/fake-milestones.yaml",
+                19150,
+            )
+        )
+        try:
+            async with aiohttp.ClientSession() as client:
+                for _ in range(250):
+                    if task.done():
+                        await task
+                    try:
+                        async with client.get("http://127.0.0.1:19150") as response:
+                            if response.status == 200:
+                                break
+                    except aiohttp.ClientError:
+                        pass
+                    await asyncio.sleep(0.1)
+                else:
+                    raise TimeoutError("VAS did not start")
+            args = Namespace(
+                config=ROOT / "config/local-fake.example.yaml",
+                url="ws://127.0.0.1:19150",
+                diagnostics="stage",
+                scenario=ROOT / "config/milestones.example.yaml",
+                audio=None,
+                output=tmp_path / "milestones",
+                repeat=1,
+                device_id=None,
+                fake_device=True,
+            )
+            assert await run(args) == 0
+            report = json.loads((args.output / "report.json").read_text())
+            assert report["diagnostics"]["complete"]
+            for turn in report["turns"]:
+                events = turn["vas_events"]
+                names = {e["event"] for e in events}
+                assert {
+                    "llm_first_token",
+                    "llm_first_sse",
+                    "llm_first_output",
+                    "llm_usage",
+                    "tts_first_text",
+                    "tts_segment_ready",
+                    "http_request_body_sent",
+                    "http_response_headers",
+                    "tts_first_pcm",
+                    "guardrail_embedding_finished",
+                    "guardrail_released",
+                    "asr_final",
+                } <= names
+                assert turn["llm_requests"]
+                for attempt in turn["llm_requests"]:
+                    assert attempt["http_request_id"]
+                    assert attempt["connection_state"] in {"new", "reused"}
+                    assert attempt["sent_to_headers_ms"] is not None
+                    assert attempt["first_sse_to_output_ms"] is not None
+                    # Fake streaming responses omit usage; zero would be fabricated.
+                    assert attempt["input_tokens"] is None
+                    assert attempt["cached_tokens"] is None
+                assert len({s["span_id"] for s in turn["spans"]}) == len(turn["spans"])
+                for request in (
+                    e for e in events if e["event"] == "tts_request_started"
+                ):
+                    related = [e for e in events if e["span_id"] == request["span_id"]]
+                    headers = next(
+                        e for e in related if e["event"] == "http_response_headers"
+                    )
+                    pcm = next(e for e in related if e["event"] == "tts_first_pcm")
+                    assert pcm["monotonic_ns"] >= headers["monotonic_ns"]
+                    assert request["data"]["model"] == "fake-speech"
+            all_names = {e["event"] for t in report["turns"] for e in t["vas_events"]}
+            assert "http_connection_reused" in all_names
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.skipif(
+    not os.getenv("VAS_TEST_ROOT"), reason="Set VAS_TEST_ROOT for real VAS"
+)
 def test_real_stack_vad_continuous_noise_and_multiturn(tmp_path):
     async def exercise():
         import aiohttp

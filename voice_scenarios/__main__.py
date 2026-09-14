@@ -13,9 +13,10 @@ import yaml
 
 from .dev_stack import ROOT, serve_stack
 from .failure_summary import failure_reasons
-from .model import Scenario, Turn
+from .model import SENSOR_COMMANDS, Scenario, Turn
 from .reply_audio import prepare_reply_audio
 from .report import build_report, evaluate
+from .report_archive import restore_audio
 from .runner import run_scenario
 from .session_timing import prepare_session_playback
 from .websocket import WebSocketTransport
@@ -23,6 +24,7 @@ from .websocket import WebSocketTransport
 
 def create_report(directory):
     directory = Path(directory)
+    restore_audio(directory)
     result = json.loads((directory / "result.json").read_text())
     path = directory / "vas-events.jsonl"
     events = (
@@ -30,7 +32,7 @@ def create_report(directory):
         if path.exists()
         else []
     )
-    report = evaluate(result, events)
+    report = evaluate(result, events, artifact_dir=directory)
     prepare_reply_audio(report, directory)
     prepare_session_playback(report, directory)
     (directory / "report.json").write_text(
@@ -76,7 +78,10 @@ def create_report(directory):
         "inputs": [],
     }
     for turn in report["turns"]:
-        audio = Path(turn["audio"]["input"]) if turn.get("audio") else None
+        filename = turn.get("audio", {}).get("input")
+        audio = Path(filename) if filename else None
+        if turn.get("sensor"):
+            manifest["inputs"].append({"turn_id": turn["id"], "sensor": turn["sensor"]})
         if audio and audio.is_file():
             manifest["inputs"].append(
                 {
@@ -98,7 +103,11 @@ async def run(args):
     scenario = (
         Scenario.load(args.scenario)
         if args.scenario
-        else Scenario("single-audio", (Turn("audio", args.audio.resolve()),))
+        else (
+            Scenario.from_dict({"name": "sensor", "turns": [{"sensor": args.sensor}]})
+            if getattr(args, "sensor", None)
+            else Scenario("single-audio", (Turn("audio", args.audio.resolve()),))
+        )
     )
     if diagnostics == "off" and any(
         t.interrupt and t.interrupt.output_kind not in {"any", "music"}
@@ -161,6 +170,7 @@ def main():
     source = runp.add_mutually_exclusive_group(required=True)
     source.add_argument("--scenario", type=Path)
     source.add_argument("--audio", type=Path)
+    source.add_argument("--sensor", choices=list(SENSOR_COMMANDS))
     runp.add_argument("--url")
     runp.add_argument("--device-id")
     runp.add_argument("--diagnostics", choices=["off", "stage", "frame"])
