@@ -123,9 +123,68 @@ def export_session(source, output):
                 json.dumps(report, ensure_ascii=False, separators=(",", ":")),
                 encoding="utf-8",
             )
-            build_report(report, staged / "report.html")
+            if not report.get("fallback_report"):
+                build_report(report, staged / "report.html")
         staged.rename(output)
     return stats
+
+
+def export_batch(source, output):
+    """Export each session independently, retaining raw files if compression fails."""
+    from .batch_run import write_batch
+
+    source, output = Path(source).resolve(), Path(output).resolve()
+    if output.exists() or output.is_relative_to(source):
+        raise ValueError("Choose a new output directory outside the source batch")
+    batch = json.loads((source / "batch.json").read_text(encoding="utf-8"))
+    # Validate paths before writing anything; never archive files outside the run.
+    for item in batch["sessions"]:
+        _inside(source, item["directory"])
+        if (
+            not item["id"]
+            or Path(item["id"]).name != item["id"]
+            or item["id"] in (".", "..")
+        ):
+            raise ValueError("Invalid session identifier")
+    output.mkdir(parents=True)
+    batch["archive_status"] = "passed"
+    for item in batch["sessions"]:
+        directory = _inside(source, item["directory"])
+        item["execution_status"] = item["status"]
+        try:
+            destination = f'sessions/{item["id"]}'
+            item["audio_stats"] = export_session(directory, output / destination)
+            item["archive_status"] = "passed"
+        except Exception as exc:
+            # Error type is enough here; subprocess messages may contain input text.
+            error = f"Audio archive failed: {type(exc).__name__}"
+            item.update(status="failed", archive_status="failed", archive_error=error)
+            item.setdefault("failure_stage", "archive")
+            item.setdefault("error", error)
+            batch.update(status="failed", archive_status="failed")
+            destination = f'raw-fallback/{item["id"]}'
+            try:
+                if any(p.is_symlink() for p in directory.rglob("*")):
+                    raise ValueError("Raw downloads cannot include symlinks")
+                shutil.copytree(directory, output / destination)
+            except Exception as fallback_exc:
+                from .session_failure import write_failed_session_report
+
+                error += f"; raw copy failed: {type(fallback_exc).__name__}"
+                item["archive_error"] = error
+                write_failed_session_report(
+                    output / destination, item["name"], "archive", error
+                )
+            logging.error("%s | %s", item["name"], error)
+        item["directory"] = destination
+        item["report"] = f"{destination}/report.html"
+        write_batch(output, batch)
+    batch["archive_complete"] = True
+    write_batch(output, batch)
+    (output / "archive-complete.json").write_text(
+        json.dumps({"complete": True}), encoding="utf-8"
+    )
+    return batch
 
 
 def restore_audio(directory):
@@ -159,12 +218,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--batch",
+        action="store_true",
+        help="Export all sessions, continuing after compression failures",
+    )
+    mode.add_argument(
         "--single-batch",
         action="store_true",
         help="Export the sole session from a one-session batch run",
     )
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if args.batch:
+        batch = export_batch(args.source, args.output)
+        raise SystemExit(
+            0 if batch["archive_status"] == "passed" and not batch.get("error") else 1
+        )
     source = args.source
     if args.single_batch and (source / "batch.json").is_file():
         batch = json.loads((source / "batch.json").read_text(encoding="utf-8"))

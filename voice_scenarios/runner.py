@@ -108,7 +108,11 @@ async def run_scenario(
             else "failed"
         )
     except Exception as exc:
-        result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        result.update(
+            status="failed",
+            failure_stage="run" if result.get("session") else "connection",
+            error=f"{type(exc).__name__}: {exc}",
+        )
     finally:
         try:
             await transport.close()
@@ -341,6 +345,12 @@ async def _run_turn(
                 if ack_deadline is not None and time.monotonic() >= ack_deadline:
                     raise TimeoutError("abort_ack_timeout")
                 raise TimeoutError("turn_timeout")
+            if event.kind == "input_audio_frame_sent" and event.data.get(
+                "listen_turn_id"
+            ) not in (None, index):
+                # A VAD tail can remain queued across turn consumers. Its raw
+                # event stays in the session journal, never in the next WAV lane.
+                continue
             record = record_event(event)
             data = record["data"]
             if event.kind not in {

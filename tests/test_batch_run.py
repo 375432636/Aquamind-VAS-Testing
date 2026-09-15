@@ -20,6 +20,59 @@ from voice_scenarios.batch_run import write_batch
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("stage", ["prepare", "report"])
+def test_runtime_failure_keeps_evidence_and_continues(
+    scenario_folder, tmp_path, monkeypatch, stage
+):
+    from voice_scenarios import batch_run
+
+    for name in ("01.yaml", "02.yaml"):
+        write_scenario(scenario_folder, name)
+    original_prepare = batch_run.prepare
+    order = []
+
+    def prepare(directory, env, *, name):
+        order.append(("prepare", name))
+        if name == "01.yaml" and stage == "prepare":
+            raise RuntimeError("synthesis unavailable")
+        return original_prepare(directory, env, name=name)
+
+    async def run(directory, env, settings, scenario):
+        order.append(("run", scenario.name))
+        result = {"name": scenario.name, "status": "passed", "turns": []}
+        from voice_scenarios.runner import save_result
+
+        save_result(result, directory)
+        (directory / "vas-events.jsonl").write_text('{"event":"evidence"}\n')
+        if scenario.name == "01.yaml" and stage == "report":
+            from voice_scenarios.session_failure import SessionStageError
+
+            raise SessionStageError("report", "renderer unavailable")
+        from voice_scenarios.__main__ import create_report
+
+        create_report(directory)
+        return 0
+
+    monkeypatch.setattr(batch_run, "prepare", prepare)
+    monkeypatch.setattr(batch_run, "execute_prepared", run)
+    output = tmp_path / "run"
+    assert asyncio.run(batch_run.execute(scenario_folder, output, {})) == 1
+    batch = json.loads((output / "batch.json").read_text())
+    first, second = batch["sessions"]
+    assert [first["status"], second["status"]] == ["failed", "passed"]
+    assert first["failure_stage"] == stage
+    for item in batch["sessions"]:
+        for filename in ("result.json", "report.json", "report.html"):
+            assert (output / item["directory"] / filename).is_file()
+    if stage == "report":
+        assert order.index(("run", "01.yaml")) < order.index(("prepare", "02.yaml"))
+        assert (
+            output / first["directory"] / "vas-events.jsonl"
+        ).read_text() == '{"event":"evidence"}\n'
+        assert "renderer unavailable" in (output / first["report"]).read_text()
+    assert int(ET.parse(output / "junit.xml").getroot().get("failures")) >= 1
+
+
 @pytest.fixture
 def scenario_folder():
     (ROOT / "scenarios").mkdir(exist_ok=True)

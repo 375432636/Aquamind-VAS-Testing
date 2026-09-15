@@ -357,7 +357,7 @@ async def execute(output, env):
 
 
 async def execute_prepared(output, env, settings, scenario):
-    """Execute a validated session; callers can prepare a complete batch first."""
+    """Execute one validated session using its own WebSocket connection."""
     transport = WebSocketTransport(
         settings["endpoint"],
         device_id=settings["device_id"],
@@ -367,7 +367,12 @@ async def execute_prepared(output, env, settings, scenario):
     result = await run_scenario(scenario, transport, output)
     result["run_metadata"] = settings
     save_result(result, Path(output))
-    report = create_report(output)
+    try:
+        report = create_report(output)
+    except Exception as exc:
+        from .session_failure import SessionStageError
+
+        raise SessionStageError("report", str(exc)) from exc
     if report["status"] == "failed":
         for reason in failure_reasons(report, token=env.get("VAS_TOKEN", "")):
             logging.error("失败原因 | %s", reason)

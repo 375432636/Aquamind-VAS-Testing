@@ -36,6 +36,7 @@ PY
 COPY pyproject.toml main.py .coveragerc .coveragerc-client ./
 COPY voice_scenarios/ ./voice_scenarios/
 COPY tests/ ./tests/
+COPY scripts/ ./scripts/
 COPY config/ ./config/
 COPY fixtures/ ./fixtures/
 COPY scenarios/ ./scenarios/

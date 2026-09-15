@@ -307,3 +307,46 @@ def test_answer_interrupt_uses_answer_frame_instead_of_filler_playback(tmp_path)
         if e["event"] == "playback_started"
     )
     assert 0.13 < (peer.abort_times[0] - first) / 1e9 < 0.25
+
+
+def test_queued_previous_uplink_frame_never_enters_next_turn(tmp_path):
+    class TailVAS(ScriptedVAS):
+        async def send_audio(self, path):
+            turn = len(self.inputs) + 1
+            if turn == 2:
+                # A microphone tail already in the queue as the next turn begins.
+                self.emit(
+                    Event(
+                        "input_audio_frame_sent",
+                        {
+                            "listen_turn_id": 1,
+                            "pcm_offset_samples": 17280,
+                            "samples": 960,
+                        },
+                    )
+                )
+            self.emit(
+                Event(
+                    "input_audio_frame_sent",
+                    {"listen_turn_id": turn, "pcm_offset_samples": 0, "samples": 960},
+                )
+            )
+            return await super().send_audio(path)
+
+    audio = audio_fixture(tmp_path)
+    scenario = Scenario.from_dict(
+        {
+            "settle_seconds": 0.01,
+            "turn_timeout_seconds": 1,
+            "turns": [{"audio": str(audio)}, {"audio": str(audio)}],
+        }
+    )
+    output = tmp_path / "tail"
+    result = asyncio.run(run_scenario(scenario, TailVAS(), output))
+    assert result["status"] == "passed"
+    for index, turn in enumerate(result["turns"], 1):
+        frames = [e for e in turn["events"] if e["event"] == "input_audio_frame_sent"]
+        assert [e["data"]["listen_turn_id"] for e in frames] == [index]
+        assert [e["data"]["pcm_offset_samples"] for e in frames] == [0]
+    # Raw session evidence is retained even if it arrived between turn consumers.
+    assert "17280" in (output / "client-events.jsonl").read_text()

@@ -26,8 +26,8 @@ jobs:
         uses: ./.github/actions/test-image
       - name: 检查格式
         run: |
-          bash .github/actions/test-image/run.sh python -m black --check main.py voice_scenarios tests
-          bash .github/actions/test-image/run.sh python -m isort --check-only main.py voice_scenarios tests
+          bash .github/actions/test-image/run.sh python -m black --check main.py voice_scenarios tests scripts
+          bash .github/actions/test-image/run.sh python -m isort --check-only main.py voice_scenarios tests scripts
       - name: 测试时间轴交互
         run: node --test tests/*.test.cjs
       - name: 运行测试

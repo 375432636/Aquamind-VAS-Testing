@@ -10,6 +10,53 @@ import pytest
 from voice_scenarios.report_archive import export_session, restore_audio
 
 
+def test_batch_archive_isolates_compression_failure_and_preserves_raw(
+    tmp_path, monkeypatch
+):
+    from voice_scenarios import report_archive
+    from voice_scenarios.batch_run import write_batch
+
+    source = tmp_path / "run"
+    (source / "sessions").mkdir(parents=True)
+    items = []
+    for name in ("first", "second"):
+        session(source / "sessions" / name, name)
+        (source / "sessions" / name / "report.html").write_text("original page")
+        items.append(
+            dict(
+                id=name,
+                name=name,
+                source=name,
+                directory=f"sessions/{name}",
+                report=f"sessions/{name}/report.html",
+                status="passed",
+                turn_count=1,
+            )
+        )
+    write_batch(source, dict(status="passed", sessions=items))
+    original = (source / "batch.json").read_bytes()
+    convert = report_archive._convert
+
+    def fail_first(src, target, **kwargs):
+        if "first" in src.parts:
+            raise RuntimeError("ffmpeg failure")
+        return convert(src, target, **kwargs)
+
+    monkeypatch.setattr(report_archive, "_convert", fail_first)
+    output = tmp_path / "download"
+    batch = report_archive.export_batch(source, output)
+    assert batch["status"] == "failed"
+    assert batch["sessions"][0]["failure_stage"] == "archive"
+    assert batch["sessions"][1]["archive_status"] == "passed"
+    assert (output / "raw-fallback/first/session.played.wav").is_file()
+    assert (output / "raw-fallback/first/vas-events.jsonl").read_bytes() == (
+        source / "sessions/first/vas-events.jsonl"
+    ).read_bytes()
+    assert list((output / "sessions/second/audio").glob("*.flac"))
+    assert "raw-fallback/first/report.html" in (output / "index.html").read_text()
+    assert (source / "batch.json").read_bytes() == original
+
+
 def write_wav(path, channels=1):
     samples = array("h", [0] * (16000 * channels) + [1200, -1200] * (8000 * channels))
     with wave.open(str(path), "wb") as out:
