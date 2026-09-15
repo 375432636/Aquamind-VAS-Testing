@@ -1,6 +1,17 @@
 """Summarize observed LLM attempts without inferring unobserved network stages."""
 
 
+def thinking_mode(data):
+    """Label only an explicitly recorded request flag; never infer from model."""
+    parameters = (data or {}).get("parameters")
+    value = parameters.get("enable_thinking") if isinstance(parameters, dict) else None
+    if value is True:
+        return "Thinking"
+    if value is False:
+        return "Unthinking"
+    return "未采集"
+
+
 def _duration(events, start, end):
     a = next((e for e in events if e["event"] == start), None)
     b = next((e for e in events if e["event"] == end), None)
@@ -73,6 +84,7 @@ def summarize_llm_requests(events):
             "transport_retry_count": metadata.get("transport_retry_count"),
             "provider": metadata.get("vendor") or metadata.get("provider"),
             "model": metadata.get("model"),
+            "thinking_mode": thinking_mode(logical.get(sid, {}).get("data")),
             "connection_state": metadata.get("connection_state", "unknown"),
             "connection_evidence": metadata.get("connection_evidence"),
             "http_status": metadata.get("http_status"),

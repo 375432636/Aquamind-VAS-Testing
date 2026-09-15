@@ -581,7 +581,7 @@ def _session_panel(report):
     playback = report.get("session_playback", {})
     trace = playback.get("vas_timeline", {})
     clock_label = (
-        "北京时间 UTC+8 · 客户端开始发送 = 0 s · 两端未校时"
+        "北京时间 UTC+8 · 会话起点 = 0 s · 两端未校时"
         if trace.get("mode") == "wall"
         else (
             "相对时间 · 客户端与 VAS 各自从 0 s 开始，不能跨来源相减"
@@ -872,7 +872,9 @@ def _llm_evidence_panel(turn):
                     "transport_retry_count",
                 )
             ),
-            " · ".join(value(row.get(k)) for k in ("provider", "model")),
+            " · ".join(value(row.get(k)) for k in ("provider", "model"))
+            + " · "
+            + value(row.get("thinking_mode")),
             {"new": "新建", "reused": "复用"}.get(row.get("connection_state"), "未知"),
             " / ".join(
                 value(row.get(k))
@@ -891,7 +893,7 @@ def _llm_evidence_panel(turn):
         body.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
     return (
         '<section class="panel compact-panel"><div class="section-heading"><h2>LLM 请求证据</h2></div>'
-        '<p class="muted">每行对应一次 HTTP 尝试，工具后的新请求与重试分别关联。首个完整 SSE 数据块可能只有角色信息；First Token 保留有效文本或工具增量口径。'
+        '<p class="muted">每行对应一次 HTTP 尝试，工具后的新请求与重试分别关联。Thinking / Unthinking 取自请求的 enable_thinking 配置；未记录时显示未采集。首个完整 SSE 数据块可能只有角色信息；First Token 保留有效文本或工具增量口径。'
         "发送后等待包含网络与服务端处理；服务端等待不等于模型计算。未观测到的连接、Token 和阶段显示未知。</p>"
         '<div class="table-scroll" tabindex="0" aria-label="LLM 请求证据，可水平滚动"><table class="llm-evidence-table"><thead><tr>'
         + "".join(f"<th>{h}</th>" for h in headings)

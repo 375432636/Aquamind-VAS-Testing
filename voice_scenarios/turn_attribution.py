@@ -33,7 +33,7 @@ def attribute_mixed_turns(report, events):
     ]
     wire = [
         e
-        for t in turns
+        for t in [report.get("startup", {}), *turns]
         for e in t.get("events", [])
         if e["event"] in {"tts_start", "tts_stop"}
     ]

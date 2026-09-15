@@ -86,7 +86,7 @@ def test_milestones_use_request_and_segment_ids_and_keep_embedding_overlap():
         event("guardrail_released", None, 1.6),
     ]
     lanes = group_timeline_spans(spans, events)
-    llm = next(l for l in lanes if l["label"] == "LLM #1")
+    llm = next(l for l in lanes if l["label"] == "LLM #1 · 未采集")
     tts = next(l for l in lanes if l["category"] == "tts_request")
     guard = next(l for l in lanes if l["category"] == "guardrail_embedding")
     assert [m["event"] for m in llm["markers"]] == ["llm_first_token"]

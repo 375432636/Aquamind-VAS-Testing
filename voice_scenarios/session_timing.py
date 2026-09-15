@@ -362,6 +362,8 @@ def prepare_session_playback(report, directory):
         for t in turns
     ]
     anchors = [value for value in anchors if value is not None]
+    if report.get("connection_started_at_ns") is not None:
+        anchors.append(report["connection_started_at_ns"])
     if not anchors:
         result["limitations"].append(
             {
@@ -381,6 +383,39 @@ def prepare_session_playback(report, directory):
         )
 
     clips, incomplete, latest = [], False, zero
+    startup = report.get("startup", {})
+    if startup.get("received_frames"):
+        try:
+            greeting_clips, greeting_intervals = _reply(startup, directory)
+            clips.extend(greeting_clips)
+            if greeting_clips:
+                latest = max(latest, max(clip.end_ns for clip in greeting_clips))
+                result["segments"].append(
+                    {
+                        "turn_index": 0,
+                        "index": 0,
+                        "kind": "greeting",
+                        "status": startup.get("status"),
+                        "text": " ".join(
+                            e.get("data", {}).get("text", "")
+                            for e in startup.get("events", [])
+                            if e["event"] == "tts_sentence_start"
+                        ),
+                        "start_seconds": seconds(greeting_clips[0].at_ns),
+                        "end_seconds": seconds(max(c.end_ns for c in greeting_clips)),
+                        "audio_seqs": list(greeting_intervals),
+                        "intervals": [
+                            {
+                                "start_seconds": seconds(c.at_ns),
+                                "end_seconds": seconds(c.end_ns),
+                            }
+                            for c in greeting_clips
+                        ],
+                    }
+                )
+        except (OSError, EOFError, wave.Error, ValueError) as exc:
+            incomplete = True
+            limitation("greeting_audio_unavailable", 0, f"首次问候音频无法重建：{exc}")
     input_cursor = zero
     input_error = None
     try:

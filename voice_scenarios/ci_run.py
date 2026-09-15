@@ -144,6 +144,12 @@ def settings_from_env(env):
         "diagnostics": diagnostics,
         "turn_timeout_seconds": timeout,
         "speech_engine": "espeak-ng/cmn",
+        "greeting_wait_seconds": _number(
+            env.get("VAS_GREETING_WAIT_SECONDS", "5"), "greeting wait", 0, 30
+        ),
+        "greeting_timeout_seconds": _number(
+            env.get("VAS_GREETING_TIMEOUT_SECONDS", "60"), "greeting timeout", 1, 120
+        ),
     }
 
 
@@ -327,6 +333,8 @@ def prepare(output, env, *, name=None):
         "name": name
         or f"Aquamind {settings['environment'].upper()} · {len(turns)} 轮语音测试",
         "turn_timeout_seconds": settings["turn_timeout_seconds"],
+        "greeting_wait_seconds": settings["greeting_wait_seconds"],
+        "greeting_timeout_seconds": settings["greeting_timeout_seconds"],
         "input": {"mode": settings["input_mode"]},
         "turns": turns,
     }

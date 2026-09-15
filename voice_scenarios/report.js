@@ -46,10 +46,11 @@ function configSummary(data = {}) {
   return [vendor, data.model].filter(Boolean).join(' · ');
 }
 function configDetails(data = {}) {
-  const labels = {temperature:'Temperature', top_p:'Top P', max_tokens:'Max tokens', enable_thinking:'Thinking', voice_id:'音色', speed:'语速', vol:'音量', pitch:'音调', sample_rate:'采样率', format:'格式', channel:'声道', bitrate:'码率'};
+  const labels = {temperature:'Temperature', top_p:'Top P', max_tokens:'Max tokens', voice_id:'音色', speed:'语速', vol:'音量', pitch:'音调', sample_rate:'采样率', format:'格式', channel:'声道', bitrate:'码率'};
   const params = data.parameters || {};
   const values = {...params, ...(params.voice_setting || {}), ...(params.audio_setting || {})};
-  return [configSummary(data), ...Object.entries(values).filter(([key,value]) => labels[key] && value != null && typeof value !== 'object').map(([key,value]) => `${labels[key]} ${value}`)].filter(Boolean).join(' · ');
+  const mode = params.enable_thinking === true ? 'Thinking' : params.enable_thinking === false ? 'Unthinking' : null;
+  return [configSummary(data), mode, ...Object.entries(values).filter(([key,value]) => labels[key] && value != null && typeof value !== 'object').map(([key,value]) => `${labels[key]} ${value}`)].filter(Boolean).join(' · ');
 }
 function beijingTime(timestamp, withDate = false) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
@@ -83,7 +84,7 @@ function timeline(id, lanes, clock = {}, options = {}) {
   const timeZero = options.time_zero_ns ?? zero;
   const range = Math.max(100000000, end-zero);
   const durationSeconds = item => item.duration_ms != null ? item.duration_ms/1000 : (item.end-item.start)/1e9;
-  const title = item => `${options.embedded ? (item.turn_index == null ? '会话级 · ' : '第 '+item.turn_index+' 轮 · ') : ''}${item.label}${item.segment_number ? ' #' + item.segment_number : ''}${item.wall_time_ms != null ? ' · 北京时间 ' + beijingTime(item.wall_time_ms,true) : ''} · 开始 ${((item.start-timeZero)/1e9).toFixed(3)} s${item.end != null ? ' · 结束 ' + sec((item.end-timeZero)/1e9) + ' s · 耗时 ' + sec(durationSeconds(item)) + ' s' : ''}${item.status && item.status !== 'ok' ? ' · ' + item.status : ''}`;
+  const title = item => `${options.embedded ? (item.turn_index == null ? '会话级 · ' : '第 '+item.turn_index+' 轮 · ') : ''}${item.label}${item.thinking_mode && !item.label.includes(item.thinking_mode) ? ' · ' + item.thinking_mode : ''}${item.segment_number ? ' #' + item.segment_number : ''}${item.wall_time_ms != null ? ' · 北京时间 ' + beijingTime(item.wall_time_ms,true) : ''} · 开始 ${((item.start-timeZero)/1e9).toFixed(3)} s${item.end != null ? ' · 结束 ' + sec((item.end-timeZero)/1e9) + ' s · 耗时 ' + sec(durationSeconds(item)) + ' s' : ''}${item.status && item.status !== 'ok' ? ' · ' + item.status : ''}`;
   function bar(item) {
     const index = all.indexOf(item);
     const duration = item.end != null;

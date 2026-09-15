@@ -215,6 +215,8 @@ def test_overview_contains_all_turn_traces_but_detail_keeps_only_its_own(tmp_pat
     trace = data["session_playback"]["vas_timeline"]
     assert overview.count("<audio ") == 1
     assert "会话全链路时序" in overview
+    assert "会话起点 = 0 s" in overview
+    assert "客户端开始发送 = 0 s" not in overview
     assert trace["mode"] == "wall"
     assert [lane["turn_index"] for lane in trace["lanes"]] == [1, 2]
     assert [lane["segments"][0]["plot_start_ns"] for lane in trace["lanes"]] == [

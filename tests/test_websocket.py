@@ -274,16 +274,32 @@ def test_startup_greeting_does_not_complete_question_or_shift_later_replies(
     drained = next(e["at_ns"] for e in first_events if e["event"] == "playback_drained")
     assert input_starts[1] >= drained
     first_frames = [e for e in first_events if e["event"] == "playback_frame_started"]
-    assert len(first_frames) == 7
-    assert all(e["data"].get("is_session_output") for e in first_frames[:3])
-    assert all(not e["data"].get("is_session_output") for e in first_frames[3:])
+    if greeting_timing == "before_input":
+        assert result["startup"]["status"] == "completed"
+        assert input_starts[0] >= result["startup"]["playback_drained_at_ns"]
+        greeting_frames = [
+            e
+            for e in result["startup"]["events"]
+            if e["event"] == "playback_frame_started"
+        ]
+        assert len(greeting_frames) == 3
+        assert all(e["data"].get("is_session_output") for e in greeting_frames)
+        assert len(first_frames) == 4
+        assert all(not e["data"].get("is_session_output") for e in first_frames)
+        with wave.open(result["startup"]["audio"]["played"]) as audio:
+            assert audio.getnframes() == 3 * 960
+    else:
+        assert len(first_frames) == 7
+        assert all(e["data"].get("is_session_output") for e in first_frames[:3])
+        assert all(not e["data"].get("is_session_output") for e in first_frames[3:])
     with wave.open(result["turns"][0]["audio"]["played"]) as audio:
-        assert audio.getnframes() == 7 * 960
+        assert audio.getnframes() == len(first_frames) * 960
     prepare_reply_audio(report, tmp_path / "output")
-    greeting = report["turns"][0]["reply_timing"]["sentences"][0]
-    assert (greeting["kind"], greeting["text"]) == ("greeting", "欢迎来到门店")
-    assert greeting["audio"]["played"]["status"] == "ready"
-    assert greeting["audio"]["played"]["samples"] == 3 * 960
+    if greeting_timing == "after_input":
+        greeting = report["turns"][0]["reply_timing"]["sentences"][0]
+        assert (greeting["kind"], greeting["text"]) == ("greeting", "欢迎来到门店")
+        assert greeting["audio"]["played"]["status"] == "ready"
+        assert greeting["audio"]["played"]["samples"] == 3 * 960
     for turn in report["turns"]:
         assert _timing_values(turn)[0] == pytest.approx(
             turn["metrics"]["first_playback_ms"] / 1000
@@ -374,7 +390,7 @@ def test_first_question_interrupt_waits_for_real_reply_after_long_greeting(tmp_p
     first = result["turns"][0]
     greeting_frames = [
         event
-        for event in first["events"]
+        for event in result["startup"]["events"]
         if event["event"] == "playback_frame_started"
         and event["data"].get("is_session_output")
     ]

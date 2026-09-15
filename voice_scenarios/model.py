@@ -94,6 +94,8 @@ class Scenario:
     settle_seconds: float = 0.2
     input: InputStream = field(default_factory=InputStream)
     evaluation: dict = field(default_factory=dict)
+    greeting_wait_seconds: float = 0.5
+    greeting_timeout_seconds: float = 60
 
     @classmethod
     def from_dict(cls, data, *, base_dir=Path.cwd()):
@@ -182,6 +184,14 @@ class Scenario:
             ),
             InputStream(**data.get("input", {})),
             validate_evaluation(data["evaluation"]) if "evaluation" in data else {},
+            positive_number(
+                data.get("greeting_wait_seconds", 0.5),
+                "greeting_wait_seconds",
+                allow_zero=True,
+            ),
+            positive_number(
+                data.get("greeting_timeout_seconds", 60), "greeting_timeout_seconds"
+            ),
         )
 
     @classmethod

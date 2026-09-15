@@ -50,6 +50,101 @@ class ScriptedVAS:
         self.closed = True
 
 
+def test_first_input_waits_for_greeting_stop_and_playback_drain(tmp_path):
+    class GreetingVAS(ScriptedVAS):
+        async def connect(self, emit):
+            session = await super().connect(emit)
+            self.greeting_started = time.monotonic_ns()
+            emit(Event("tts_start", {"is_session_output": True}))
+            emit(
+                Event(
+                    "pcm",
+                    {
+                        "pcm": b"\x00\x10" * 4800,
+                        "sample_rate": 16000,
+                        "audio_seq": 1,
+                        "is_session_output": True,
+                    },
+                )
+            )
+            emit(Event("tts_stop", {"is_session_output": True}))
+            return session
+
+    scenario = Scenario.from_dict(
+        {
+            "settle_seconds": 0.01,
+            "turn_timeout_seconds": 1,
+            "turns": [{"id": "first", "audio": str(audio_fixture(tmp_path))}],
+        }
+    )
+    peer = GreetingVAS(replies=(0.06,))
+    result = asyncio.run(run_scenario(scenario, peer, tmp_path / "greeting"))
+    assert result["status"] == "passed", result
+    assert peer.inputs[0]["at_ns"] >= peer.greeting_started + 300_000_000
+    assert result["startup"]["status"] == "completed"
+    assert result["startup"]["playback_drained_at_ns"] <= peer.inputs[0]["at_ns"]
+
+
+def test_delayed_greeting_is_waited_for_before_first_input(tmp_path):
+    class DelayedGreetingVAS(ScriptedVAS):
+        async def connect(self, emit):
+            session = await super().connect(emit)
+            self.task = asyncio.create_task(self.greet())
+            return session
+
+        async def greet(self):
+            await asyncio.sleep(0.03)
+            self.emit(Event("tts_start", {"is_session_output": True}))
+            self.emit(
+                Event(
+                    "pcm",
+                    {
+                        "pcm": b"\x00\x10" * 1600,
+                        "sample_rate": 16000,
+                        "is_session_output": True,
+                    },
+                )
+            )
+            self.emit(Event("tts_stop", {"is_session_output": True}))
+            self.greeting_at = time.monotonic_ns()
+
+        async def close(self):
+            await self.task
+            await super().close()
+
+    scenario = Scenario.from_dict(
+        {
+            "settle_seconds": 0.01,
+            "greeting_wait_seconds": 0.1,
+            "turns": [{"audio": str(audio_fixture(tmp_path))}],
+        }
+    )
+    peer = DelayedGreetingVAS(replies=(0.01,))
+    result = asyncio.run(run_scenario(scenario, peer, tmp_path / "delayed"))
+    assert result["status"] == "passed"
+    assert peer.inputs[0]["at_ns"] >= peer.greeting_at + 100_000_000
+
+
+def test_unfinished_greeting_fails_without_sending_input(tmp_path):
+    class StuckGreetingVAS(ScriptedVAS):
+        async def connect(self, emit):
+            session = await super().connect(emit)
+            emit(Event("tts_start", {"is_session_output": True}))
+            return session
+
+    scenario = Scenario.from_dict(
+        {
+            "greeting_timeout_seconds": 0.05,
+            "turns": [{"audio": str(audio_fixture(tmp_path))}],
+        }
+    )
+    peer = StuckGreetingVAS()
+    result = asyncio.run(run_scenario(scenario, peer, tmp_path / "stuck"))
+    assert result["status"] == "failed"
+    assert "greeting_timeout" in result["error"]
+    assert not peer.inputs
+
+
 def test_second_question_waits_for_playback_drain_after_server_stop(tmp_path):
     first = audio_fixture(tmp_path, "first.wav")
     second = audio_fixture(tmp_path, "second.wav")

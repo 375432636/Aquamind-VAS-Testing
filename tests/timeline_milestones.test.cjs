@@ -116,3 +116,18 @@ test('embedded VAS lanes use the session extent and common details without a sec
   controller.activate({closest:()=>({dataset:{eventIndex:'0'}})});
   assert.match(detail.textContent,/DashScope · qwen-test/);
 });
+
+
+test('overview milestone clicks show request mode and ASR first character',()=>{
+  const {root,render}=renderer();
+  const detail={hidden:true,textContent:''};
+  const controller=render('session-vas',[{label:'第 3 轮 · LLM #1 · Unthinking',segments:[],markers:[
+    {label:'ASR 首字（首个非空中间结果）',turn_index:3,start:1e9,since_request_seconds:.2},
+    {label:'First Token',turn_index:3,start:3e9,thinking_mode:'Unthinking',since_request_seconds:.3},
+  ]}],{}, {embedded:true,start_ns:0,end_ns:5e9,detail});
+  assert.match(root.innerHTML,/ASR 首字/);
+  assert.match(root.innerHTML,/First Token · Unthinking/);
+  controller.activate({closest:()=>({dataset:{markerIndex:'1'}})});
+  assert.match(detail.textContent,/第 3 轮 · First Token · Unthinking/);
+  assert.match(detail.textContent,/距本次请求提交 0.300 s/);
+});

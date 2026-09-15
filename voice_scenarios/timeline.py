@@ -2,6 +2,8 @@
 
 import math
 
+from .llm_evidence import thinking_mode
+
 
 def request_spans(events):
     """Extract the same logical requests for turn and session-level diagnostics."""
@@ -126,7 +128,7 @@ MILESTONE_LABELS = {
     "asr_session_config_confirmed": "ASR VAD 服务端确认",
     "asr_first_audio_sent": "ASR 首帧提交",
     "asr_commit_sent": "ASR 提交结束",
-    "asr_partial": "ASR 首个中间结果",
+    "asr_partial": "ASR 首字（首个非空中间结果）",
     "asr_final": "ASR 最终识别结果",
     "asr_speech_started": "ASR VAD 语音开始",
     "asr_endpoint_detected": "ASR VAD 结束",
@@ -187,7 +189,10 @@ def group_timeline_spans(spans, events):
         key = ("span", span["span_id"])
         label = "流式 ASR 全程（含音频上传）" if name == "asr_request" else name
         if name == "llm_request":
-            label = f"LLM #{llm_numbers[span['span_id']]}"
+            segment["thinking_mode"] = thinking_mode(
+                event.get("data", span.get("data"))
+            )
+            label = f"LLM #{llm_numbers[span['span_id']]} · {segment['thinking_mode']}"
         elif name == "asr_request":
             key = ("asr",)
             if span.get("data", {}).get("mode") not in (None, "STREAM"):
@@ -220,9 +225,16 @@ def group_timeline_spans(spans, events):
             lanes[key] = dict(
                 label=label, category=name, llm_span_id=owner, segments=[], markers=[]
             )
+        if name == "llm_request":
+            lanes[key]["thinking_mode"] = segment["thinking_mode"]
         lanes[key]["segments"].append(segment)
         span_lanes[span["span_id"]] = lanes[key]
 
+    logical_llm = {
+        (e.get("clock_id"), e.get("span_id")): e
+        for e in events
+        if e["event"] == "llm_request_started" and e.get("span_id")
+    }
     seen_partial = set()
     for event in sorted(events, key=lambda e: e.get("monotonic_ns", 0)):
         name = event["event"]
@@ -290,8 +302,21 @@ def group_timeline_spans(spans, events):
                     markers=[],
                 ),
             )
-        partial_key = event.get("span_id")
+        if lane["category"] == "unmatched":
+            start = logical_llm.get((event.get("clock_id"), event.get("span_id")))
+            if start:
+                lane["thinking_mode"] = thinking_mode(start.get("data"))
+                lane["label"] = f"LLM · 未完成请求 · {lane['thinking_mode']}"
+        partial_key = (
+            event.get("clock_id"),
+            event.get("listen_turn_id"),
+            event.get("span_id"),
+        )
         if name == "asr_partial":
+            data = event.get("data", {})
+            # Old recordings may omit character counts; retain their evidence.
+            if data.get("text_chars") == 0 or data.get("text") == "":
+                continue
             if partial_key in seen_partial:
                 continue
             seen_partial.add(partial_key)
@@ -305,6 +330,14 @@ def group_timeline_spans(spans, events):
             status=event.get("status"),
             since_request_seconds=None,
         )
+        if lane.get("thinking_mode"):
+            marker["thinking_mode"] = lane["thinking_mode"]
+        if (
+            name == "asr_partial"
+            and not event.get("data", {}).get("text_chars")
+            and not event.get("data", {}).get("text")
+        ):
+            marker["label"] = "ASR 首个中间结果（字数未采集）"
         if request and at >= request["start_ns"]:
             marker["since_request_seconds"] = (at - request["start_ns"]) / 1e9
         lane["markers"].append(marker)
