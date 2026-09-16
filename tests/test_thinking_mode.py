@@ -106,7 +106,11 @@ def test_static_overview_and_details_share_all_markers_and_modes(tmp_path):
 
     overview = data("report.html")["session_playback"]["vas_timeline"]["lanes"]
     for index, mode in enumerate(("Thinking", "Unthinking", "未采集"), 1):
-        lanes = [l for l in overview if l["turn_index"] == index]
+        lanes = [
+            l
+            for l in overview
+            if l["turn_index"] == index and l["category"] != "key_moments"
+        ]
         detail = data(f"turn-{index:03d}.html")["turn"]
         server = [
             l for l in detail["combined_timeline"]["lanes"] if l["source"] == "server"

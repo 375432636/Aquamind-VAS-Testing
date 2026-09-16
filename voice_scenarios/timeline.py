@@ -106,7 +106,7 @@ MILESTONE_LABELS = {
     "http_transport_retry_finished": "传输重试继续",
     "tts_first_text": "首个播报文本",
     "tts_text_complete": "文本结束提交",
-    "tts_segment_ready": "片段可合成",
+    "tts_segment_ready": "TTS 分段就绪（消费侧）",
     "tts_request_started": "TTS 请求开始",
     "tts_first_pcm": "VAS 收到 TTS 首个可解码音频",
     "http_session_created": "HTTP 会话创建",
@@ -274,7 +274,17 @@ def group_timeline_spans(spans, events):
             ]
             if len(matches) == 1:
                 lane = matches[0]
-        if name.startswith("guardrail_"):
+        if name.startswith("local_vad_") or name in {
+            "asr_speech_started",
+            "asr_endpoint_detected",
+        }:
+            lane = lanes.setdefault(
+                ("vad",),
+                dict(
+                    label="VAD · 语音活动检测", category="vad", segments=[], markers=[]
+                ),
+            )
+        elif name.startswith("guardrail_"):
             lane = lanes.setdefault(
                 ("guardrail",),
                 dict(
@@ -337,6 +347,15 @@ def group_timeline_spans(spans, events):
             status=event.get("status"),
             since_request_seconds=None,
         )
+        if request and request["name"] == "tts_request":
+            marker["span_id"] = request["span_id"]
+            marker["segment_number"] = next(
+                index
+                for index, segment in enumerate(lane["segments"], 1)
+                if segment["span_id"] == request["span_id"]
+            )
+            if name == "tts_segment_ready" and "tts_evidence" in request:
+                marker["tts_evidence"] = request["tts_evidence"]
         if lane.get("thinking_mode"):
             marker["thinking_mode"] = lane["thinking_mode"]
         if (

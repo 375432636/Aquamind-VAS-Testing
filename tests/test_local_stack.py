@@ -8,6 +8,7 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from voice_scenarios.__main__ import run
 from voice_scenarios.dev_stack import ROOT, serve_stack
@@ -212,10 +213,16 @@ def test_real_stack_multiturn_tools_interruption_and_music(tmp_path):
                 device_id=None,
                 fake_device=True,
             )
-            assert await run(args) == 0
-            import json
-
+            exit_code = await run(args)
+            async with aiohttp.ClientSession() as client:
+                async with client.get("http://127.0.0.1:19091/records") as response:
+                    response.raise_for_status()
+                    records = await response.json()
+            (tmp_path / "fake-records.json").write_text(
+                json.dumps(records, ensure_ascii=False, indent=2)
+            )
             report = json.loads((tmp_path / "report/report.json").read_text())
+            assert exit_code == 0, report.get("failures")
             assert report["diagnostics"]["complete"]
             assert report["diagnostics"]["transport"] == "websocket"
             writebacks = {
@@ -231,10 +238,45 @@ def test_real_stack_multiturn_tools_interruption_and_music(tmp_path):
                 and e["status"] == "ok"
                 for e in report["session_events"]
             )
-            assert len(report["turns"]) == 5
-            assert report["turns"][2]["interruption"]["tts_abort_observed"]
-            assert report["turns"][3]["metrics"]["tools"] == {"self_music_play": 1}
-            assert report["turns"][4]["metrics"]["tools"] == {"self_music_stop": 1}
+            assert len(report["turns"]) == 6
+            script = yaml.safe_load((ROOT / "config/fake-regression.yaml").read_text())
+            reads = [
+                record
+                for record in records
+                if record["service"] == "memory" and record["operation"] == "get_memory"
+            ]
+            # Independently verify real HTTP calls, including the same question
+            # asked again in a new turn. Diagnostic counts alone could miss calls.
+            assert [r["query"] for r in reads] == [t["text"] for t in script["turns"]]
+            assert reads[1]["query"] == reads[2]["query"]
+            for turn, hit_count in zip(
+                report["turns"], (0, 2, 2, 0, 1, 1), strict=True
+            ):
+                events = turn["vas_events"]
+                requests = [
+                    e
+                    for e in events
+                    if e["event"] == "memory_request_started"
+                    and e["data"].get("operation") == "get_memory"
+                ]
+                assert len(requests) == 1, turn["id"]
+                assert any(
+                    e["event"] == "memory_request_finished"
+                    and e["span_id"] == requests[0]["span_id"]
+                    and e["status"] == "ok"
+                    for e in events
+                ), turn["id"]
+                hits = [
+                    e
+                    for e in events
+                    if e["event"] == "memory_cache_hit"
+                    and e["data"].get("cache") == "turn_memory"
+                ]
+                assert len(hits) == hit_count, turn["id"]
+            by_id = {turn["id"]: turn for turn in report["turns"]}
+            assert by_id["interrupt-answer"]["interruption"]["tts_abort_observed"]
+            assert by_id["music"]["metrics"]["tools"] == {"self_music_play": 1}
+            assert by_id["stop-music"]["metrics"]["tools"] == {"self_music_stop": 1}
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

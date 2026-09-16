@@ -64,15 +64,39 @@ function traceLanes(lanes, includeTurn = false) {
   const ttsColors = ['#397d75','#5b80ad','#9273a4','#ac843d','#ad7187','#528488'];
   return lanes.map(lane => ({
     source:lane.source, turn_index:lane.turn_index, category:lane.category,
-    label:(includeTurn ? (lane.turn_index == null ? '会话级 · ' : `第 ${lane.turn_index} 轮 · `) : '') + (lane.source === 'client' ? '客户端 · ' : 'VAS · ') + (lane.label === 'memory_request' ? 'Memory' : lane.label),
+    intervals:lane.intervals, missing:lane.missing, key_id:lane.key_id, llm_number:lane.llm_number,
+    label:(includeTurn ? (lane.turn_index == null ? '会话级 · ' : `第 ${lane.turn_index} 轮 · `) : '') + (lane.source === 'mixed' ? '' : lane.source === 'client' ? '客户端 · ' : 'VAS · ') + (lane.label === 'memory_request' ? 'Memory' : lane.label),
     segments:lane.segments.map((span,index)=>({...span,label:lane.label,segment_number:index+1,start:span.plot_start_ns,end:span.plot_end_ns,color:span.name==='tts_request'?ttsColors[index%ttsColors.length]:colors[span.name]})),
     markers:(lane.markers || []).map(marker=>({...marker,start:marker.plot_start_ns,monotonic_start_ns:marker.start_ns,
-      color:lane.category === 'tts_request' ? ttsColors[Math.max(0,lane.segments.findIndex(s=>s.span_id===marker.span_id))%ttsColors.length] : colors[lane.category] || '#64748b'})),
+      color:marker.color || (lane.category === 'tts_request' ? ttsColors[Math.max(0,lane.segments.findIndex(s=>s.span_id===marker.span_id))%ttsColors.length] : colors[lane.category] || '#176879')})),
   }));
 }
+function keyDuration(interval) {
+  if(!interval) return '未采集';
+  if(interval.duration_seconds==null) return '不可比较';
+  const value=interval.duration_seconds.toFixed(3)+' s';
+  return interval.clock_basis==='wall_unaligned' ? '≈ '+value+' · 未校时' : value;
+}
 function traceLabel(lane) {
+  if(lane.category==='key_moments') {
+    const pair=lane.intervals?.[0];
+    const names=pair ? `${pair.from_label} → ${pair.to_label}` : lane.markers.map(m=>m.label).join(' → ');
+    return `<strong class="pair-heading">${esc(lane.label)}</strong><small class="pair-names">${esc(names)}</small><b class="pair-duration">${esc(keyDuration(pair))}</b>`;
+  }
   const configs = [...new Set((lane.segments || [lane]).map(item=>configSummary(item.data)).filter(Boolean))];
   return esc(lane.label) + (configs.length ? '<small class="lane-model">'+esc(configs.join(' / '))+'</small>' : '');
+}
+function ttsTextDetails(item) {
+  const evidence = item.tts_evidence;
+  if (!evidence) return '';
+  if (evidence.status !== 'matched') return '文本未关联 · '+(evidence.reason || '没有足够的句子关联证据');
+  return `${evidence.source_label}：${evidence.text}\n未采集精确 TTS 请求文本。`;
+}
+function intervalOrderNote(item) {
+  if (!(item.duration_seconds < 0)) return '';
+  return item.clock_basis === 'monotonic'
+    ? '；后者先发生，不是负耗时'
+    : '；墙钟位置倒序，未校时不能判断实际先后';
 }
 function timeline(id, lanes, clock = {}, options = {}) {
   const root = $(id);
@@ -90,9 +114,34 @@ function timeline(id, lanes, clock = {}, options = {}) {
   function bar(item, laneIndex) {
     const index = all.indexOf(item);
     const duration = item.end != null;
-    return `<button type="button" class="${duration ? 'bar' : 'point'}" data-event-index="${index}" aria-expanded="${expandedLanes.has(laneIndex)}" aria-label="${esc(title(item))} · 点击${expandedLanes.has(laneIndex)?'折叠':'展开'}事件" title="${esc(title(item))} · 点击${expandedLanes.has(laneIndex)?'折叠':'展开'}事件" style="left:${(item.start-zero)/range*100}%;${duration ? 'width:' + Math.max(.25,(item.end-item.start)/range*100) + '%;' : ''}background:${item.color || '#407d77'}">${duration && item.segment_number && (item.end-item.start)/range>.04 ? '#' + item.segment_number : ''}</button>`;
+    const evidence=item.tts_evidence;
+    const caption=evidence ? `#${item.segment_number} ${evidence.status==='matched'?evidence.text:'文本未关联'}` : duration && item.segment_number && (item.end-item.start)/range>.04 ? '#' + item.segment_number : '';
+    const description=[title(item),ttsTextDetails(item)].filter(Boolean).join('\n');
+    return `<button type="button" class="${duration ? 'bar' : 'point'}${evidence?' tts-text-bar':''}" data-event-index="${index}" aria-expanded="${expandedLanes.has(laneIndex)}" aria-label="${esc(description)} · 点击${expandedLanes.has(laneIndex)?'折叠':'展开'}事件" title="${esc(description)} · 点击${expandedLanes.has(laneIndex)?'折叠':'展开'}事件" style="left:${(item.start-zero)/range*100}%;${duration ? 'width:' + Math.max(.25,(item.end-item.start)/range*100) + '%;' : ''}background:${item.color || '#407d77'}">${esc(caption)}</button>`;
   }
   const markerGroups = [];
+  const keyIntervals = [];
+  function keyMoments(lane) {
+    const width = Math.max(100,(root.clientWidth || 800)-(options.embedded ? 0 : 176));
+    const ordered = [...lane.markers];
+    const flags = ordered.map(m=>{
+      const x=(m.start-zero)/range*width, size=Math.min(170,width);
+      return {x,left:Math.max(0,Math.min(width-size,x-size/2)),width:size};
+    });
+    const close = flags.length>1 && Math.abs(flags[1].left-flags[0].left)<flags[0].width+8;
+    const checkpoints=ordered.map((m,i)=>{
+      const index=points.indexOf(m);markerGroups[index]=[m];const f=flags[i];
+      const caption=`${m.label} · ${((m.start-timeZero)/1e9).toFixed(3)} s`;
+      return `<button type="button" class="key-checkpoint pair-endpoint ${i===0?'pair-start':'pair-end'}" data-marker-index="${index}" data-time-seconds="${(m.start-timeZero)/1e9}" aria-label="${esc(title(m))}" title="${esc(title(m))}" style="left:${(m.start-zero)/range*100}%;--point-offset:${f.left-f.x}px;--point-width:${f.width}px;--point-top:${close&&i===1?43:0}px"><i aria-hidden="true"></i><span>${esc(caption)}</span></button>`;
+    }).join('');
+    const dimensions=(lane.intervals||[]).map(m=>{
+      const id=keyIntervals.push(m)-1, low=Math.min(m.start_ns,m.end_ns), high=Math.max(m.start_ns,m.end_ns);
+      const caption=keyDuration(m), description=`${m.from_label} → ${m.to_label} · ${caption} · ${m.note}${intervalOrderNote(m)}`;
+      const wide=(high-low)/range*width>135;
+      return `<button type="button" class="pair-line ${m.clock_basis==='monotonic'?'':'unaligned'}" data-key-interval="${id}" style="left:${(low-zero)/range*100}%;width:${(high-low)/range*100}%" aria-label="${esc(description)}" title="${esc(description)}">${wide?'<span>'+esc(caption)+'</span>':''}</button>`;
+    }).join('');
+    return `<div class="key-pair" style="height:${close?65:46}px">${dimensions}${checkpoints}</div>${lane.missing?.length?'<div class="key-notes">未采集：'+esc(lane.missing.join('、'))+'</div>':''}`;
+  }
   function markers(lane, laneIndex) {
     const width = Math.max(100, (root.clientWidth || 800)-(options.embedded ? 0 : 176));
     const ordered = [...(lane.markers || [])].sort((a,b)=>a.start-b.start);
@@ -128,19 +177,34 @@ function timeline(id, lanes, clock = {}, options = {}) {
     }
   }
   function laneContent(lane,index) {
+    if (lane.category === 'key_moments') return keyMoments(lane);
     const segments = lane.segments || [lane];
-    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key">${segments.filter(item => item.end != null).map(item => `<span><i style="background:${item.color || '#407d77'}"></i>${item.segment_number ? '#' + item.segment_number + ' · ' : ''}${sec(durationSeconds(item))} s</span>`).join('')}</div>`;
+    const keys=segments.filter(item => item.end != null).map(item => {
+      const prefix=`<i style="background:${item.color || '#407d77'}"></i>${item.segment_number ? '#' + item.segment_number + ' · ' : ''}${sec(durationSeconds(item))} s`;
+      if (!item.tts_evidence) return `<span>${prefix}</span>`;
+      const text=item.tts_evidence.status==='matched'?item.tts_evidence.text:'文本未关联';
+      return `<button type="button" class="sentence-key" data-sentence-index="${all.indexOf(item)}" title="${esc(title(item)+'\n'+ttsTextDetails(item))}" aria-label="${esc('第 '+item.segment_number+' 段 · '+ttsTextDetails(item))}">${prefix}<span class="sentence-preview">${esc(text)}</span></button>`;
+    }).join('');
+    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key${segments.some(item=>item.tts_evidence)?' has-tts-text':''}">${keys}</div>`;
   }
   const axis = clock.mode === 'wall' ? [0,range/2,range].map(offset=>`<span>${beijingTime(clock.origin_wall_time_ms+(zero+offset)/1e6)}<small>+${sec(offset/1e9)} s</small></span>`).join('') : `<span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span>`;
   root.innerHTML = `<div class="timeline-plot">${options.embedded ? '' : '<div class="axis">'+axis+'</div>'}` + lanes.map((lane,index) => {
-    return `<div class="lane" data-lane-index="${index}" data-expanded="${expandedLanes.has(index)}" data-turn-index="${lane.turn_index ?? ''}" data-source="${lane.source === 'client' ? 'client' : 'server'}">${options.embedded ? '' : '<button type="button" class="lane-label lane-toggle" data-lane-toggle="'+index+'" aria-expanded="'+expandedLanes.has(index)+'"><span class="lane-chevron" aria-hidden="true">'+(expandedLanes.has(index)?'▾':'▸')+'</span>'+traceLabel(lane)+'</button>'}<div class="lane-content">${laneContent(lane,index)}</div></div>`;
+    return `<div class="lane" data-category="${lane.category || ''}" data-lane-index="${index}" data-expanded="${expandedLanes.has(index)}" data-turn-index="${lane.turn_index ?? ''}" data-source="${lane.source === 'client' ? 'client' : 'server'}">${options.embedded ? '' : '<button type="button" class="lane-label lane-toggle" data-lane-toggle="'+index+'" aria-expanded="'+expandedLanes.has(index)+'"><span class="lane-chevron" aria-hidden="true">'+(expandedLanes.has(index)?'▾':'▸')+'</span>'+traceLabel(lane)+'</button>'}<div class="lane-content">${laneContent(lane,index)}</div></div>`;
   }).join('') + '</div>' + (options.detail ? '' : '<div class="span-detail" role="status" hidden></div>');
   if (!options.embedded) enableTimelineMeasurement(root, range/1e9, bounds.flatMap(item=>[{time:(item.start-zero)/1e9,label:item.label}, ...(item.end != null ? [{time:(item.end-zero)/1e9,label:item.label+"结束"}] : [])]));
   function activate(element) {
-    const button = element.closest('[data-event-index], [data-marker-index], [data-lane-toggle]');
+    const button = element.closest('[data-event-index], [data-marker-index], [data-lane-toggle], [data-sentence-index], [data-key-interval]');
     if (!button || !root.contains(button)) return false;
     if (button.dataset.laneToggle != null) {toggleLane(Number(button.dataset.laneToggle));return true;}
     const detail = options.detail || root.querySelector('.span-detail');
+    if (button.dataset.keyInterval != null) {
+      const m=keyIntervals[Number(button.dataset.keyInterval)];
+      const duration=m.duration_seconds == null?'不可比较':m.duration_seconds.toFixed(3)+' s';
+      detail.textContent=`${m.from_label} → ${m.to_label} · ${duration}\n${m.note}${intervalOrderNote(m)}`;
+      detail.hidden=false;
+      if(m.clock_basis!=='unavailable') options.onInterval?.(Math.min(m.start_ns,m.end_ns)/1e9,Math.max(m.start_ns,m.end_ns)/1e9);
+      return true;
+    }
     if (button.dataset.markerIndex != null) {
       const group = markerGroups[Number(button.dataset.markerIndex)];
       if (['image','video'].includes(group[0].kind)) {
@@ -151,13 +215,16 @@ function timeline(id, lanes, clock = {}, options = {}) {
       detail.textContent = group.map(item => {
         const data = item.data || {};
         const extra = [];
+        if (item.evidence_note) extra.push(item.evidence_note);
         if (item.position_note) extra.push(item.position_note);
         if (item.severity) extra.push({info:"Info · 信息",warning:"Warning · 警告",error:"Error · 错误"}[item.severity]);
         if (item.since_request_seconds != null) extra.push(`距本次请求提交 ${item.since_request_seconds.toFixed(3)} s`);
         if (data.delta_kind) extra.push(data.delta_kind === 'tool' ? '工具增量' : '正文增量');
         if (data.punctuation) extra.push(`分句标点 ${data.punctuation}`);
         if (data.trigger && data.trigger !== 'punctuation') extra.push(data.trigger === 'stream_end' ? '流结束提交' : '请求边界观测');
-        if (data.text_received_ns != null) extra.push(`触发文本入队后 ${(((item.monotonic_start_ns ?? item.start)-data.text_received_ns)/1e9).toFixed(3)} s`);
+        if (data.text_received_ns != null) extra.push(`${item.event==='tts_segment_ready'?'对应文本块入队后':'触发文本入队后'} ${(((item.monotonic_start_ns ?? item.start)-data.text_received_ns)/1e9).toFixed(3)} s`);
+        if (item.event==='tts_segment_ready') extra.push('此点记录 TTS 消费线程完成分段，不是 LLM 该句完整可用的准确时刻');
+        if (item.tts_evidence) extra.push(ttsTextDetails(item));
         if (data.http_status != null) extra.push(`HTTP ${data.http_status}`);
         if (data.http_request_id) extra.push(`请求 ${data.llm_request_seq ?? '未知'} · HTTP 尝试 ${data.http_request_seq ?? '未知'} · 重试 ${data.retry_count ?? '未知'} · ID ${data.http_request_id}`);
         if (data.connection_state) extra.push(`连接 ${{new:'新建',reused:'复用',unknown:'未知'}[data.connection_state] || '未知'}`);
@@ -170,12 +237,12 @@ function timeline(id, lanes, clock = {}, options = {}) {
         return [title(item), ...extra].join(' · ');
       }).join('\n');
     } else {
-      const item = all[Number(button.dataset.eventIndex)];
+      const item = all[Number(button.dataset.sentenceIndex ?? button.dataset.eventIndex)];
       const laneIndex = lanes.findIndex(lane=>(lane.segments || [lane]).includes(item));
       const restoreFocus = document.activeElement === button;
-      toggleLane(laneIndex);
-      if (restoreFocus) root.querySelector(`[data-event-index="${button.dataset.eventIndex}"]`)?.focus({preventScroll:true});
-      detail.textContent = [title(item), configDetails(item.data), item.data?.purpose === 'rules' ? '规则向量' : item.data?.purpose === 'query' ? '用户问题向量' : '', item.data?.error_type || ''].filter(Boolean).join(' · ');
+      if (button.dataset.sentenceIndex == null) toggleLane(laneIndex);
+      if (restoreFocus && button.dataset.sentenceIndex == null) root.querySelector(`[data-event-index="${button.dataset.eventIndex}"]`)?.focus({preventScroll:true});
+      detail.textContent = [title(item), configDetails(item.data), ttsTextDetails(item), item.data?.purpose === 'rules' ? '规则向量' : item.data?.purpose === 'query' ? '用户问题向量' : '', item.data?.error_type || ''].filter(Boolean).join(' · ');
     }
     detail.hidden = false;
     return true;

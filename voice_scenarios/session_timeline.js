@@ -1,3 +1,27 @@
+function sessionInputRanges(row, markers = []) {
+  const segments = (row.input_segments || []).filter(s=>Number.isFinite(s.start_seconds) && Number.isFinite(s.end_seconds) && s.end_seconds > s.start_seconds);
+  if (!segments.length) return [];
+  const first = Math.min(...segments.map(s=>s.start_seconds));
+  const last = Math.max(...segments.map(s=>s.end_seconds));
+  const ptt = kind=>markers.find(m=>m.turn_index === row.index && m.kind === kind && Number.isFinite(m.at_seconds))?.at_seconds;
+  const start = ptt('ptt_start'), stop = ptt('ptt_stop');
+  // This is the recorded input interval, not a reconstruction of packet pacing.
+  // Keep packet-level data untouched for drill-down and audio reconstruction.
+  if (start != null || stop != null) {
+    const begin = start ?? first, end = stop ?? last;
+    return end > begin ? [{kind:'speech',start_seconds:begin,end_seconds:end,input_scope:'ptt',stop_recorded:stop != null}] : [];
+  }
+  const speech = segments.filter(s=>s.kind !== 'background');
+  if (!speech.length) return [{kind:'background',start_seconds:first,end_seconds:last}];
+  const begin = Math.min(...speech.map(s=>s.start_seconds));
+  const end = Math.max(begin,row.input_end_seconds ?? Math.max(...speech.map(s=>s.end_seconds)));
+  return [
+    ...(first < begin ? [{kind:'background',start_seconds:first,end_seconds:begin}] : []),
+    ...(end > begin ? [{kind:'speech',start_seconds:begin,end_seconds:end,input_scope:'utterance'}] : []),
+    ...(last > end ? [{kind:'background',start_seconds:end,end_seconds:last}] : []),
+  ];
+}
+
 function sessionTimelineScale(session) {
   const duration = Math.max(0,Number(session.duration_seconds) || 0);
   const start = session.view_start_seconds ?? Math.min(0,session.vas_timeline?.axis_start_seconds ?? 0);
@@ -9,6 +33,13 @@ function sessionTimelineScale(session) {
     percent:value=>(clamp(value)-start)/extent*100,
     atFraction:value=>clamp(start+value*extent),
   };
+}
+function timelineLaneVisible(category, mode) {
+  return mode === 'all' || (mode === 'details' ? category !== 'key_moments' : category === 'key_moments');
+}
+function timelineViewMode(preferred, lanes) {
+  const mode = ['key','details','all'].includes(preferred) ? preferred : 'key';
+  return mode === 'key' && !lanes.some(lane=>lane.category==='key_moments') ? 'details' : mode;
 }
 function renderSessionTimeline(target, session = {}) {
   if (!target) return;
@@ -44,8 +75,12 @@ function renderSessionTimeline(target, session = {}) {
   let fullAudioRequest = null, fullAudioUrl = null;
   let selectedTurn = null, looping = false, inspectedTime = null, snapEnabled = true;
   const expandedLanes = new Set();
+  let preferredView = null;
+  try {preferredView = localStorage.getItem('voice-lab.timeline-view');} catch { /* Offline reports can disallow storage. */ }
+  let viewMode = timelineViewMode(preferredView, vasLanes);
   target.querySelector('.session-tools').insertAdjacentHTML('afterend', `<div class="friendly-tools">
     <button data-friendly="expand" aria-pressed="false">展开时间轴</button><button data-friendly="snap" aria-pressed="true">磁吸：开</button><button data-friendly="current">定位当前轮</button>
+    <label class="timeline-view-picker">显示 <select data-timeline-view aria-label="时间轴显示内容"><option value="key">只看关键点</option><option value="details">只看详细环节</option><option value="all">全部显示</option></select></label>
     <button data-friendly="zoom-selection">放大选区</button><button data-friendly="play-selection">播放选区</button>
     <button data-friendly="loop" aria-pressed="false">循环选区</button>
     <label>长等待 ≥ <input data-wait-threshold type="number" min="0" step="0.5" value="3"> s</label>
@@ -75,7 +110,7 @@ function renderSessionTimeline(target, session = {}) {
     const start = row.input_start_seconds ?? row.start_seconds;
     const hasPttStart = (session.markers || []).some(marker=>marker.turn_index===row.index && marker.kind==='ptt_start');
     if (start != null && !hasPttStart) turnLines += `<span class="session-turn-line" style="left:${percent(start)}%"><button type="button" data-session-turn="${row.index}" title="第 ${row.index} 轮 · ${escape(row.text)}">${String(row.index).padStart(2,'0')}</button></span>`;
-    (row.input_segments || []).forEach(segment => {
+    sessionInputRanges(row, session.markers).forEach(segment => {
       if (segment.start_seconds == null || segment.end_seconds == null) return;
       const background = segment.kind === 'background';
       inputBars += itemButton({...segment, turn_index:row.index, text:row.text, label:background ? '持续底噪' : '用户输入', item_type:'input'}, background ? 'range-background' : 'range-input', background ? '底噪' : row.text || `输入 ${row.index}`);
@@ -103,7 +138,7 @@ function renderSessionTimeline(target, session = {}) {
   });
   const pinnedHeight = 150;
   let vasTop = pinnedHeight+26;
-  const vasContent = vasLanes.length ? `<div class="session-vas-heading" style="top:${vasTop-32}px">VAS 内部时序</div><div class="session-vas" id="session-vas" style="top:${vasTop}px"></div>` : '';
+  const vasContent = vasLanes.length ? `<div class="session-vas-heading" style="top:${vasTop-32}px">关键时序 · 每行比较两个点 · 点击连线测量</div><div class="session-vas" id="session-vas" style="top:${vasTop}px"></div>` : '';
   target.style.setProperty('--session-pinned-height', pinnedHeight+'px');
   canvas.innerHTML = `<div class="session-pinned-tracks"><div class="session-ruler" id="session-ruler" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}</div><div class="session-media-markers"></div><div class="session-grid" aria-hidden="true"></div>${vasContent}<div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
   let vasController = null;
@@ -116,8 +151,8 @@ function renderSessionTimeline(target, session = {}) {
     ...(session.markers||[]).map(m=>({time:m.at_seconds,label:markerLabels[m.kind]||m.kind})),
     ...mediaPoints.map(m=>({time:m.at_seconds,label:m.label})),
     ...vasLanes.flatMap(lane=>[
-      ...lane.segments.flatMap(span=>[{time:span.start/1e9,label:lane.label+'开始'},{time:span.end/1e9,label:lane.label+'结束'}]),
-      ...lane.markers.map(m=>({time:m.start/1e9,label:m.label})),
+      ...lane.segments.flatMap(span=>[{time:span.start/1e9,label:lane.label+'开始',category:lane.category},{time:span.end/1e9,label:lane.label+'结束',category:lane.category}]),
+      ...lane.markers.map(m=>({time:m.start/1e9,label:m.label,category:lane.category})),
     ]),
   ].filter(p=>Number.isFinite(p.time)&&p.time>=scale.start&&p.time<=scale.end);
   const overlay = document.getElementById('session-selection');
@@ -200,6 +235,9 @@ function renderSessionTimeline(target, session = {}) {
     const row = turns.find(turn => turn.index === item.turn_index);
     canvas.querySelectorAll('.wait-overlap').forEach(node=>node.classList.remove('wait-overlap'));
     let body = item.text ? `<p>${escape(item.text)}</p>` : '';
+    if (item.item_type === 'input' && item.kind !== 'background') {
+      body += `<small>${item.input_scope === 'ptt' ? '本次按住说话的完整录音区间，包含期间静音。' : '本次语音合并显示，包含句内停顿。'}原始发包时间保持不变。${item.stop_recorded === false ? ' 未记录停止信号，结束位置取最后采集音频。' : ''}</small>`;
+    }
     if (item.item_type === 'wait') {
       const descriptions = {first_reply:'输入结束 → 首句开始播放',first_packet:'输入结束 → 客户端收到首包音频。播放时钟异常，不能据此确定实际首音时间。',interrupted:'输入结束 → 客户端发出打断；这段等待内未收到回复音频。',no_reply:'输入结束 → 本轮最后一个客户端记录；截至该时刻未收到回复音频。',transition:'过渡 / 临时回复播完 → 正式回复开始播放',sentence:'上一段播完 → 下一段开始播放'};
       selection=[item.start_seconds,item.end_seconds];drawSelection();
@@ -253,7 +291,7 @@ function renderSessionTimeline(target, session = {}) {
   function timeAt(event) {
     const bounds = canvas.getBoundingClientRect();
     const raw=scale.atFraction((event.clientX-bounds.left)/bounds.width);
-    const hit=timelineSnap(raw,snapPoints,bounds.width/extent,event.altKey||!snapEnabled);
+    const hit=timelineSnap(raw,snapPoints.filter(p=>!p.category||timelineLaneVisible(p.category,viewMode)),bounds.width/extent,event.altKey||!snapEnabled);
     target.querySelector('.snap-status').textContent=hit.point ? '已吸附 · '+hit.point.label+' · '+seconds(hit.time) : '';
     playhead.classList.toggle('is-snapped',Boolean(hit.point));
     return hit.time;
@@ -331,7 +369,7 @@ function renderSessionTimeline(target, session = {}) {
     mediaGroups = groupMediaMarkers(mediaPoints, extent, width*zoom);
     const mediaLayout=layoutTimelineFlags(mediaGroups.map(group=>({x:percent(group[0].at_seconds)/100*width*zoom,width:28})),width*zoom);
     vasTop=pinnedHeight+26+(mediaGroups.length?mediaLayout.rows*30+8:0);
-    if(vasLanes.length){canvas.querySelector('.session-vas-heading').style.top=(vasTop-26)+'px';canvas.querySelector('#session-vas').style.top=vasTop+'px';labelRoot.querySelector('.session-vas-labels').style.top=vasTop+'px';}
+    if(vasLanes.length){const heading=canvas.querySelector('.session-vas-heading');heading.style.top=(vasTop-26)+'px';heading.textContent=viewMode==='key'?'关键时序 · 每行比较两个点 · 点击连线测量':viewMode==='details'?'详细环节 · 点击时间条展开事件':'关键点与详细环节';canvas.querySelector('#session-vas').style.top=vasTop+'px';labelRoot.querySelector('.session-vas-labels').style.top=vasTop+'px';}
     canvas.querySelector('.session-media-markers').innerHTML = mediaGroups.map((group,index)=> {
       const caption = group.map(marker=>`第 ${marker.turn_index} 轮期间 · ${marker.label} · ${seconds(marker.at_seconds)}`).join(' / ');
       return `<button type="button" class="session-media-marker" data-session-media="${index}" style="left:${percent(group[0].at_seconds)}%;top:${mediaLayout.items[index].row*30}px" title="${escape(caption)}" aria-label="${escape(caption)}">${mediaMarkerIcon(group)}</button>`;
@@ -346,16 +384,22 @@ function renderSessionTimeline(target, session = {}) {
     canvas.style.setProperty('--grid-step',step/extent*100+'%');
     canvas.style.setProperty('--grid-offset',percent(Math.ceil(scale.start/step)*step)+'%');
     if (vasLanes.length) {
-      vasController = timeline('session-vas',vasLanes,trace,{embedded:true,start_ns:scale.start*1e9,end_ns:scale.end*1e9,time_zero_ns:0,detail,expandedLanes,onLaneToggle:()=>redrawScale()});
+      vasController = timeline('session-vas',vasLanes,trace,{embedded:true,start_ns:scale.start*1e9,end_ns:scale.end*1e9,time_zero_ns:0,detail,expandedLanes,onLaneToggle:()=>redrawScale(),onInterval:(start,end)=>{selection=[start,end];drawSelection();}});
       const labels = [...labelRoot.querySelectorAll('.session-vas-label')];
       const rows = [...canvas.querySelectorAll('#session-vas .lane')];
       labels.forEach((label,index)=>{
+        label.hidden=rows[index].hidden=!timelineLaneVisible(vasLanes[index].category,viewMode);
         label.style.minHeight='';
         const button=label.querySelector('[data-lane-toggle]');
+        if(vasLanes[index].category==='key_moments') {
+          button.disabled=true;button.classList.add('key-lane-label');
+          button.removeAttribute('aria-expanded');button.setAttribute('aria-label',vasLanes[index].label+' · 始终展开');
+          button.querySelector('.lane-chevron').textContent='◆';return;
+        }
         button.setAttribute('aria-expanded',String(expandedLanes.has(index)));
         button.querySelector('.lane-chevron').textContent=expandedLanes.has(index)?'▾':'▸';
       });
-      const heights = rows.map((row,index)=>Math.max(58,row.getBoundingClientRect().height,labels[index].getBoundingClientRect().height));
+      const heights = rows.map((row,index)=>row.hidden?0:Math.max(58,row.getBoundingClientRect().height,labels[index].getBoundingClientRect().height));
       rows.forEach((row,index)=>{row.style.minHeight=labels[index].style.minHeight=heights[index]+'px';});
       canvas.style.height = vasTop+heights.reduce((sum,value)=>sum+value,0)+24+'px';
       labelRoot.style.height=canvas.style.height;
@@ -423,7 +467,17 @@ function renderSessionTimeline(target, session = {}) {
       if(wait){viewport.scrollTop=0;selection=[wait.start_seconds,wait.end_seconds];drawSelection();showItem({...wait,item_type:'wait',label:waitLabels[wait.kind]});seek(wait.start_seconds);}else detail.textContent='没有达到该阈值的等待区间';
     }
   }));
-  target.addEventListener('click',event=>{const button=event.target.closest('[data-wait-lane]');if(!button)return;const row=canvas.querySelectorAll('#session-vas .lane')[Number(button.dataset.waitLane)];if(row){viewport.scrollTop=Math.max(0,vasTop+row.offsetTop-pinnedHeight-8);row.classList.add('wait-overlap');}});
+  const viewPicker=target.querySelector('[data-timeline-view]');
+  viewPicker.value=viewMode;
+  function changeView(mode) {
+    viewMode=timelineViewMode(mode,vasLanes);
+    viewPicker.value=viewMode;
+    try {localStorage.setItem('voice-lab.timeline-view',viewMode);} catch { /* Switching still works without storage. */ }
+    viewport.scrollTop=0;
+    redrawScale();
+  }
+  viewPicker.addEventListener('change',()=>changeView(viewPicker.value));
+  target.addEventListener('click',event=>{const button=event.target.closest('[data-wait-lane]');if(!button)return;if(viewMode==='key')changeView('details');const row=canvas.querySelectorAll('#session-vas .lane')[Number(button.dataset.waitLane)];if(row){viewport.scrollTop=Math.max(0,vasTop+row.offsetTop-pinnedHeight-8);row.classList.add('wait-overlap');}});
   labelRoot.addEventListener('click',event=>{
     const button=event.target.closest('[data-lane-toggle]');
     if(button)vasController?.toggleLane(Number(button.dataset.laneToggle));

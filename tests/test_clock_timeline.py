@@ -198,6 +198,8 @@ def test_overview_contains_all_turn_traces_but_detail_keeps_only_its_own(tmp_pat
             event["listen_turn_id"] = index
             event["span_id"] = f"request-{index}"
             event["data"].update(provider="OpenAI", model=f"model-{index}")
+            if event["event"] == "llm_first_token":
+                event["data"]["delta_kind"] = "text"
             vas_events.append(event)
     report = evaluate(source, vas_events)
     original = copy.deepcopy(report)
@@ -218,8 +220,9 @@ def test_overview_contains_all_turn_traces_but_detail_keeps_only_its_own(tmp_pat
     assert "会话起点 = 0 s" in overview
     assert "客户端开始发送 = 0 s" not in overview
     assert trace["mode"] == "wall"
-    assert [lane["turn_index"] for lane in trace["lanes"]] == [1, 2]
-    assert [lane["segments"][0]["plot_start_ns"] for lane in trace["lanes"]] == [
+    assert [lane["turn_index"] for lane in trace["lanes"]] == [1, 1, 1, 2, 2, 2]
+    ordinary = [lane for lane in trace["lanes"] if lane["category"] != "key_moments"]
+    assert [lane["segments"][0]["plot_start_ns"] for lane in ordinary] == [
         3 * SECOND,
         23 * SECOND,
     ]
@@ -228,7 +231,20 @@ def test_overview_contains_all_turn_traces_but_detail_keeps_only_its_own(tmp_pat
         assert [
             lane["turn_index"]
             for lane in detail["session_playback"]["vas_timeline"]["lanes"]
-        ] == [index]
+        ] == [index, index, index]
+        detail_keys = [
+            lane
+            for lane in detail["session_playback"]["vas_timeline"]["lanes"]
+            if lane["category"] == "key_moments"
+        ]
+        overview_keys = [
+            lane
+            for lane in trace["lanes"]
+            if lane["category"] == "key_moments" and lane["turn_index"] == index
+        ]
+        assert detail_keys == overview_keys
+        llm_key = next(lane for lane in detail_keys if lane["key_id"] == "llm_first")
+        assert llm_key["markers"][1]["event"] == "llm_first_token"
         assert html.count("<audio ") == 1
         assert 'id="session-viewport"' in html
         assert 'data-session-zoom="fit">本轮' in html
@@ -238,7 +254,7 @@ def test_overview_contains_all_turn_traces_but_detail_keeps_only_its_own(tmp_pat
             for lane in detail["turn"]["combined_timeline"]["lanes"]
             if lane["source"] == "server"
         )
-        overview_lane = trace["lanes"][index - 1]
+        overview_lane = ordinary[index - 1]
         assert overview_lane["segments"][0]["data"] == server["segments"][0]["data"]
         assert overview_lane["segments"][0]["data"]["model"] == f"model-{index}"
         assert [m["event"] for m in overview_lane["markers"]] == [

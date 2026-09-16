@@ -14,6 +14,16 @@ turns:
       - name: self_test_rag_query
         arguments: {user_query: 开放时间}
         pre_speech: 再看看知识库。
+  # 新一轮重复同一个问题：必须重新查 Memory，不能沿用上一轮缓存。
+  - text: 查询上海天气，再查知识库里的开放时间。
+    reply: 上海晴天二十六度，开放时间是九点至十七点。
+    tool_rounds:
+      - name: self_test_weather
+        arguments: {city: 上海}
+        pre_speech: 我先查询天气。
+      - name: self_test_rag_query
+        arguments: {user_query: 开放时间}
+        pre_speech: 再看看知识库。
   - text: 请详细介绍这个展馆。
     reply: 这是一段用于打断测试的正式介绍，播放器将在正式回复开始两秒后停止。
   - text: 请播放测试音乐。

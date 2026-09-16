@@ -35,4 +35,8 @@
 .lane-toggle{display:block;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;font:inherit;line-height:inherit;cursor:pointer}
 .lane-toggle:hover{color:var(--accent)}.lane-chevron{display:inline-block;width:15px;color:#506889}.lane-toggle .lane-model{padding-left:15px}
 .lane .track .bar{cursor:pointer}.lane .track .bar:hover{outline:2px solid #6484be;outline-offset:2px}
+.bar.tts-text-bar{text-align:left;text-overflow:ellipsis;padding:0 4px}
+.segment-key .sentence-key{display:inline-flex;align-items:center;gap:4px;max-width:240px;min-width:0;border:0;border-radius:3px;padding:2px 4px;background:transparent;color:var(--muted);font:inherit;white-space:nowrap}
+.segment-key .sentence-key:hover,.segment-key .sentence-key:focus-visible{background:var(--accent-soft);color:var(--accent)}
+.sentence-key i{flex-shrink:0}.sentence-preview{overflow:hidden;text-overflow:ellipsis;min-width:0}
 .event-summary .event-symbol{font-size:11px;font-weight:650;white-space:nowrap;background:#f3f6fb}.lane-content{min-width:0}

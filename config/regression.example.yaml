@@ -15,7 +15,15 @@ turns:
     expect:
       llm_requests: 3
       tools: {self_test_weather: 1, self_test_rag_query: 1}
-      memory_requests_min: 3
+      # 同一用户轮次的工具循环复用 Memory，不重复发请求。
+      memory_requests: 1
+      pre_speech_outputs_min: 1
+  - id: repeated-question-new-turn
+    audio: ../fixtures/input.wav
+    expect:
+      llm_requests: 3
+      tools: {self_test_weather: 1, self_test_rag_query: 1}
+      memory_requests: 1
       pre_speech_outputs_min: 1
   - id: interrupt-answer
     audio: ../fixtures/input.wav

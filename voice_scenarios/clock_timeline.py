@@ -4,6 +4,7 @@ import copy
 
 from .reply_timing import playback_clock
 from .timeline import group_timeline_spans, request_spans
+from .tts_evidence import tts_segment_evidence
 
 CLIENT_LABELS = {
     "connection_started": ("control", "客户端开始尝试连接"),
@@ -171,6 +172,12 @@ def session_trace_timeline(report):
     session_events = report.get("session_events", [])
     if session_events:
         spans, _ = request_spans(session_events)
+        texts = tts_segment_evidence(
+            spans, session_events, report.get("startup", {}).get("events", [])
+        )
+        for span in spans:
+            if span["span_id"] in texts:
+                span["tts_evidence"] = texts[span["span_id"]]
         sources.insert(
             0,
             (

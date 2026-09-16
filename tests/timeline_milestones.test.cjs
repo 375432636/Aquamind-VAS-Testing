@@ -137,6 +137,43 @@ test('overview milestone clicks show request mode and ASR first character',()=>{
   assert.match(detail.textContent,/距本次请求提交 0.300 s/);
 });
 
+test('TTS segments expose complete broadcast text without claiming exact synthesis input',()=>{
+  const {root,render}=renderer();
+  const detail={hidden:true,textContent:''};
+  const expandedLanes=new Set();
+  const controller=render('server',[{label:'LLM #1 的 TTS',segments:[{
+    label:'TTS',segment_number:1,start:2e9,end:2.3e9,color:'#397d75',
+    tts_evidence:{status:'matched',text:'你好 <script> & 再见。',source_label:'播报文本（按句消息顺序关联）'},
+  },{label:'TTS',segment_number:2,start:2.3e9,end:2.6e9,
+    tts_evidence:{status:'unmatched',text:null,reason:'打断前未发送句子消息'},
+  }],markers:[]}],{}, {embedded:true,start_ns:0,end_ns:20e9,detail,expandedLanes,onLaneToggle(){}});
+  assert.match(root.innerHTML,/class="bar[^\"]*"[^>]*>[^<]*#1[^<]*你好 &lt;script&gt; &amp; 再见。/);
+  assert.match(root.innerHTML,/data-sentence-index="0"/);
+  assert.match(root.innerHTML,/文本未关联/);
+  assert.doesNotMatch(root.innerHTML,/<script>/);
+  assert.match(root.innerHTML,/left:10%;width:1\.5/);
+  controller.activate({closest:()=>({dataset:{sentenceIndex:'0'}})});
+  assert.equal(expandedLanes.size,0); // Reading a sentence must not collapse the lane.
+  assert.match(detail.textContent,/播报文本（按句消息顺序关联）.*你好 <script> & 再见。/s);
+  assert.match(detail.textContent,/未采集精确 TTS 请求文本/);
+  controller.activate({closest:()=>({dataset:{eventIndex:'1'}})});
+  assert.match(detail.textContent,/文本未关联.*打断前未发送句子消息/s);
+});
+
+test('TTS consumer-side readiness marker shows the sentence and keeps its original timestamp',()=>{
+  const {render}=renderer();
+  const detail={hidden:true,textContent:''};
+  const controller=render('server',[{label:'TTS',segments:[],markers:[{
+    label:'TTS 分段就绪（消费侧）',event:'tts_segment_ready',segment_number:2,start:5e9,
+    data:{text_received_ns:4e9},tts_evidence:{status:'matched',text:'第二句。',source_label:'播报文本（按音频包关联）'},
+  }]}],{}, {embedded:true,start_ns:0,end_ns:8e9,detail,expandedLanes:new Set([0])});
+  controller.activate({closest:()=>({dataset:{markerIndex:'0'}})});
+  assert.match(detail.textContent,/消费侧.*#2.*开始 5\.000 s/);
+  assert.match(detail.textContent,/第二句。/);
+  assert.match(detail.textContent,/对应文本块入队后 1\.000 s/);
+  assert.match(detail.textContent,/不是 LLM 该句完整可用的准确时刻/);
+});
+
 
 test('lanes collapse all events by default and toggle independently, including VAD and auxiliary events',()=>{
   const {root,detail,render}=renderer();
@@ -173,4 +210,43 @@ test('lanes collapse all events by default and toggle independently, including V
   assert.equal(expandedLanes.has(1),true);
   const resized=render('server',lanes,{},options);
   assert.equal(expandedLanes.has(1),true);
+});
+
+test('critical checkpoints never collapse, show exact labels and measure linked endpoints',()=>{
+  const {render,root}=renderer();const measured=[];const detail={hidden:true,textContent:''};
+  const controller=render('session-vas',[{label:'第 1 轮 · 关键节点',category:'key_moments',turn_index:1,
+    segments:[],missing:['ASR VAD 结束'],markers:[
+      {label:'LLM 文字首包',start:1e9,color:'#3949ab',checkpoint_number:1,turn_index:1},
+      {label:'TTS 首个音频',start:1.001e9,color:'#825319',checkpoint_number:2,turn_index:1},
+    ],intervals:[{from_label:'LLM 文字首包',to_label:'TTS 首个音频',start_ns:1e9,end_ns:1.001e9,duration_seconds:.001,clock_basis:'monotonic',note:'同一时钟的实际时间差'}]}],{},
+    {embedded:true,start_ns:0,end_ns:8e9,detail,onInterval:(a,b)=>measured.push([a,b])});
+  assert.equal((root.innerHTML.match(/data-marker-index=/g)||[]).length,2);
+  assert.doesNotMatch(root.innerHTML,/event-summary/);
+  assert.match(root.innerHTML,/key-checkpoint/);assert.match(root.innerHTML,/1\.001 s/);
+  assert.match(root.innerHTML,/未采集：ASR VAD 结束/);
+  assert.match(root.innerHTML,/data-key-interval="0"/);
+  controller.activate({closest:()=>({dataset:{keyInterval:'0'}})});
+  assert.match(detail.textContent,/LLM 文字首包 → TTS 首个音频.*0\.001 s/s);
+  assert.deepEqual(measured,[[1,1.001]]);
+});
+
+test('missing clock calibration is visible and unavailable intervals cannot be measured',()=>{
+  const {root,render}=renderer();const detail={hidden:true,textContent:''};const measurements=[];
+  const controller=render('session-vas',[{label:'关键节点',category:'key_moments',segments:[],markers:[
+    {label:'ASR 完成',start:1e9,color:'#176879',checkpoint_number:1},
+    {label:'播放开始',start:2e9,color:'#226849',checkpoint_number:2}],intervals:[
+    {from_label:'ASR 完成',to_label:'播放开始',start_ns:1e9,end_ns:2e9,duration_seconds:null,clock_basis:'unavailable',note:'缺少共同墙钟，不计算跨端间隔'}]}],{},
+    {embedded:true,start_ns:0,end_ns:4e9,detail,onInterval:(...args)=>measurements.push(args)});
+  assert.match(root.innerHTML,/不可比较/);
+  controller.activate({closest:()=>({dataset:{keyInterval:'0'}})});
+  assert.equal(measurements.length,0);
+  assert.match(detail.textContent,/缺少共同墙钟/);
+});
+
+test('negative cross-clock differences never claim actual playback preceded synthesis',()=>{
+  const context={document:{getElementById:()=>({textContent:'{"turn":null}'}),addEventListener(){}},window:{addEventListener(){}},renderSessionTimeline(){}};
+  const note=vm.runInNewContext(readFileSync('voice_scenarios/report.js','utf8')+'\nintervalOrderNote;',context);
+  assert.match(note({duration_seconds:-.006,clock_basis:'wall_unaligned'}),/未校时不能判断实际先后/);
+  assert.doesNotMatch(note({duration_seconds:-.006,clock_basis:'wall_unaligned'}),/后者先发生/);
+  assert.match(note({duration_seconds:-.112,clock_basis:'monotonic'}),/后者先发生/);
 });

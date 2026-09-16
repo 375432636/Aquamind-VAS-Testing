@@ -12,6 +12,7 @@ from .clock_timeline import combined_timeline, session_trace_timeline
 from .evaluation import tool_check
 from .excel_report import export_excel
 from .input_control import inspect_input_control, refresh_ptt_markers
+from .key_moments import add_key_moment_lanes
 from .llm_evidence import summarize_llm_requests
 from .reply_timing import (
     analyze_reply_timing,
@@ -20,6 +21,7 @@ from .reply_timing import (
     validated_playback_frames,
 )
 from .timeline import group_timeline_spans, media_timeline_markers, request_spans
+from .tts_evidence import tts_segment_evidence
 from .turn_attribution import attribute_mixed_turns
 
 
@@ -84,6 +86,13 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             if e["event"]
             in {"asr_session_config_requested", "asr_session_config_confirmed"}
         ]
+        spans, span_errors = request_spans(rows)
+        # Match the recorded sentence protocol before legacy packet enrichment
+        # adds inferred output IDs (old live clients can have shifted counters).
+        texts = tts_segment_evidence(spans, rows, turn["events"])
+        for span in spans:
+            if span["span_id"] in texts:
+                span["tts_evidence"] = texts[span["span_id"]]
         for event in turn["events"]:
             audio_seq = event.get("data", {}).get("audio_seq")
             if audio_seq is not None and output_edges:
@@ -115,7 +124,6 @@ def evaluate(result, vas_events, *, artifact_dir=None):
                             f"{turn['id']}: 播放了属于其他轮次的迟到音频 seq={audio_seq}"
                         )
                         failure_groups["functional"].append(failures[-1])
-        spans, span_errors = request_spans(rows)
         failures.extend(span_errors)
         failure_groups["diagnostic_missing"].extend(span_errors)
         turn["spans"] = spans
@@ -1185,6 +1193,7 @@ def build_report(report, path):
         )
         turn["combined_timeline"] = combined_timeline(turn, display.get("client_clock"))
     playback["vas_timeline"] = session_trace_timeline(display)
+    add_key_moment_lanes(display)
     environment = display.get("run_metadata", {}).get("environment", "本地报告")
 
     def page(index):
