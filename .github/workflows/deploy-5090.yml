@@ -1,0 +1,67 @@
+name: Deploy Voice Lab to 5090
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-vas-testing-5090
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.repository == 'deepedge-ai-tech/Aquamind-VAS-Testing' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: [self-hosted, Linux, X64, aquamind-vas-testing-5090]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: 跳过已过期的 main 版本
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          request = urllib.request.Request(
+              'https://api.github.com/repos/deepedge-ai-tech/Aquamind-VAS-Testing/git/ref/heads/main',
+              headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              current = json.load(response)['object']['sha']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('current=' + str(current == os.environ['EXPECTED_SHA']).lower() + '\n')
+          PY
+      - name: 构建、更新服务并检查健康状态
+        if: steps.version.outputs.current == 'true'
+        env:
+          APP_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: bash scripts/deploy_5090.sh
+      - name: 部署结果
+        if: always()
+        env:
+          REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RESULT: ${{ job.status }}
+          CURRENT: ${{ steps.version.outputs.current }}
+        run: |
+          {
+            echo '## Aquamind Voice Lab · 5090'
+            echo "状态：$RESULT · 当前 main：$CURRENT"
+            echo "版本：$REVISION"
+            echo '[打开测试工具](https://aquamind-vas-testing.cpolar.cn/)'
+            echo '报告保存在 5090 的独立数据目录，更新服务不会删除报告。'
+          } >> "$GITHUB_STEP_SUMMARY"
