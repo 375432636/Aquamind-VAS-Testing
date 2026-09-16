@@ -86,3 +86,54 @@ def test_deployment_auto_enables_live_ui_and_keeps_recording_authenticated(tmp_p
             await ws.close()
 
     asyncio.run(check())
+
+
+def test_recording_uses_signed_cookie_when_tunnel_strips_basic_auth(
+    tmp_path, monkeypatch
+):
+    async def check():
+        server = load_server()
+        app = server.create_app(tmp_path, "tester", "test-only", "live123")
+        auth = {
+            "Authorization": "Basic " + base64.b64encode(b"tester:test-only").decode()
+        }
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/api/sessions",
+                json={"environment": "dev", "device_id": "00:00:00:00:00:21"},
+                headers=auth,
+            )
+            session = await response.json()
+            cookie = response.cookies["voice_lab_recording"]
+            assert cookie["secure"] and cookie["httponly"]
+            assert cookie["samesite"] == "Strict"
+            headers = {
+                "Cookie": f"voice_lab_recording={cookie.value}",
+                "Origin": str(client.make_url("/")).rstrip("/"),
+            }
+            # This credential is limited to same-origin WebSocket recording.
+            assert (await client.get("/api/config", headers=headers)).status == 401
+            for bad in [
+                {**headers, "Origin": "https://other.example"},
+                {**headers, "Cookie": "voice_lab_recording=invalid"},
+            ]:
+                response = await client.get(
+                    session["record_url"], headers={**bad, "Upgrade": "websocket"}
+                )
+                assert response.status in (401, 403)
+            now = server.time.time()
+            monkeypatch.setattr(server.time, "time", lambda: now + 9 * 3600)
+            assert (
+                await client.get(
+                    session["record_url"], headers={**headers, "Upgrade": "websocket"}
+                )
+            ).status == 401
+            monkeypatch.setattr(server.time, "time", lambda: now)
+            ws = await client.ws_connect(session["record_url"], headers=headers)
+            await ws.send_json({"action": "finish"})
+            result = await ws.receive_json()
+            assert result["state"] == "finished"
+            assert (await client.get(result["report"], headers=auth)).status == 200
+            await ws.close()
+
+    asyncio.run(check())
