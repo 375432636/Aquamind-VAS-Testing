@@ -16,7 +16,12 @@ if [[ -f "$previous" ]]; then
   old_revision=$(sed -n 's/^APP_REVISION=//p' "$previous")
 fi
 # Docker's local layer cache is retained; no global image/container cleanup.
-docker build --network host --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY -t "$APP_IMAGE" .
+# Debian and PyPI are reachable directly on 5090; the proxy can fail or stall
+# package downloads. Scope the bypass to this build and preserve other proxies.
+build_no_proxy="${NO_PROXY:-${no_proxy:-localhost,127.0.0.1}},deb.debian.org,pypi.org,files.pythonhosted.org"
+docker build --network host --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
+  --build-arg "NO_PROXY=$build_no_proxy" --build-arg "no_proxy=$build_no_proxy" \
+  -t "$APP_IMAGE" .
 compose=(docker compose -f deploy/compose.yaml)
 if ! "${compose[@]}" up -d --wait --wait-timeout 120; then
   echo 'New service did not become healthy.'

@@ -41,6 +41,7 @@ if [ "$1" = compose ] && [ "$APP_REVISION" = "$NEW_REVISION" ] && [ "$FAILURE" =
         FAILURE=failure,
         CALL_LOG=str(log),
         PATH=f"{fake}:{os.environ['PATH']}",
+        NO_PROXY="localhost,127.0.0.1,internal.example",
     )
     result = subprocess.run(
         ["bash", "scripts/deploy_5090.sh"],
@@ -50,6 +51,15 @@ if [ "$1" = compose ] && [ "$APP_REVISION" = "$NEW_REVISION" ] && [ "$FAILURE" =
         text=True,
     )
     calls = log.read_text()
+    assert "--build-arg HTTP_PROXY --build-arg HTTPS_PROXY" in calls
+    assert (
+        "--build-arg NO_PROXY=localhost,127.0.0.1,internal.example,deb.debian.org,pypi.org,files.pythonhosted.org"
+        in calls
+    )
+    assert (
+        "--build-arg no_proxy=localhost,127.0.0.1,internal.example,deb.debian.org,pypi.org,files.pythonhosted.org"
+        in calls
+    )
     if failure:
         assert result.returncode != 0
         assert (root / "current.env").read_text() == previous
