@@ -63,10 +63,11 @@ function traceLanes(lanes, includeTurn = false) {
   const colors = {asr_request:'#318494', memory_request:'#9074af', llm_request:'#5070bf', tool_call:'#b1833e', guardrail_embedding:'#b27552'};
   const ttsColors = ['#397d75','#5b80ad','#9273a4','#ac843d','#ad7187','#528488'];
   return lanes.map(lane => ({
-    source:lane.source,
+    source:lane.source, turn_index:lane.turn_index, category:lane.category,
     label:(includeTurn ? (lane.turn_index == null ? '会话级 · ' : `第 ${lane.turn_index} 轮 · `) : '') + (lane.source === 'client' ? '客户端 · ' : 'VAS · ') + (lane.label === 'memory_request' ? 'Memory' : lane.label),
     segments:lane.segments.map((span,index)=>({...span,label:lane.label,segment_number:index+1,start:span.plot_start_ns,end:span.plot_end_ns,color:span.name==='tts_request'?ttsColors[index%ttsColors.length]:colors[span.name]})),
-    markers:(lane.markers || []).map(marker=>({...marker,start:marker.plot_start_ns,monotonic_start_ns:marker.start_ns})),
+    markers:(lane.markers || []).map(marker=>({...marker,start:marker.plot_start_ns,monotonic_start_ns:marker.start_ns,
+      color:lane.category === 'tts_request' ? ttsColors[Math.max(0,lane.segments.findIndex(s=>s.span_id===marker.span_id))%ttsColors.length] : colors[lane.category] || '#64748b'})),
   }));
 }
 function traceLabel(lane) {
@@ -75,6 +76,7 @@ function traceLabel(lane) {
 }
 function timeline(id, lanes, clock = {}, options = {}) {
   const root = $(id);
+  const expandedLanes = options.expandedLanes || new Set();
   const all = lanes.flatMap(lane => lane.segments || [lane]);
   const points = lanes.flatMap(lane => lane.markers || []);
   const bounds = [...all, ...points].filter(item => Number.isFinite(item.start));
@@ -85,37 +87,59 @@ function timeline(id, lanes, clock = {}, options = {}) {
   const range = Math.max(100000000, end-zero);
   const durationSeconds = item => item.duration_ms != null ? item.duration_ms/1000 : (item.end-item.start)/1e9;
   const title = item => `${options.embedded ? (item.turn_index == null ? '会话级 · ' : '第 '+item.turn_index+' 轮 · ') : ''}${item.label}${item.thinking_mode && !item.label.includes(item.thinking_mode) ? ' · ' + item.thinking_mode : ''}${item.segment_number ? ' #' + item.segment_number : ''}${item.wall_time_ms != null ? ' · 北京时间 ' + beijingTime(item.wall_time_ms,true) : ''} · 开始 ${((item.start-timeZero)/1e9).toFixed(3)} s${item.end != null ? ' · 结束 ' + sec((item.end-timeZero)/1e9) + ' s · 耗时 ' + sec(durationSeconds(item)) + ' s' : ''}${item.status && item.status !== 'ok' ? ' · ' + item.status : ''}`;
-  function bar(item) {
+  function bar(item, laneIndex) {
     const index = all.indexOf(item);
     const duration = item.end != null;
-    return `<button type="button" class="${duration ? 'bar' : 'point'}" data-event-index="${index}" aria-label="${esc(title(item))}" title="${esc(title(item))}" style="left:${(item.start-zero)/range*100}%;${duration ? 'width:' + Math.max(.25,(item.end-item.start)/range*100) + '%;' : ''}background:${item.color || '#407d77'}">${duration && item.segment_number && (item.end-item.start)/range>.04 ? '#' + item.segment_number : ''}</button>`;
+    return `<button type="button" class="${duration ? 'bar' : 'point'}" data-event-index="${index}" aria-expanded="${expandedLanes.has(laneIndex)}" aria-label="${esc(title(item))} · 点击${expandedLanes.has(laneIndex)?'折叠':'展开'}事件" title="${esc(title(item))} · 点击${expandedLanes.has(laneIndex)?'折叠':'展开'}事件" style="left:${(item.start-zero)/range*100}%;${duration ? 'width:' + Math.max(.25,(item.end-item.start)/range*100) + '%;' : ''}background:${item.color || '#407d77'}">${duration && item.segment_number && (item.end-item.start)/range>.04 ? '#' + item.segment_number : ''}</button>`;
   }
   const markerGroups = [];
-  function markers(lane) {
-    const groups = [];
-    const width = Math.max(300, (root.clientWidth || 800)-(options.embedded ? 0 : 176));
-    for (const marker of [...(lane.markers || [])].sort((a,b)=>a.start-b.start)) {
-      const previous = groups[groups.length-1];
-      if (previous && (marker.start-previous[0].start)/range*width < (['image','video'].includes(marker.kind) ? 56 : 28)) previous.push(marker);
-      else groups.push([marker]);
-    }
-    if (!groups.length) return '';
-    return '<div class="milestone-track">' + groups.map(group => {
-      const index = markerGroups.push(group)-1;
-      const caption = group.map(title).join(' / ');
-      const media = ['image','video'].includes(group[0].kind);
-      return `<button type="button" class="timeline-marker${media ? ' media-marker' : ''}" data-marker-index="${index}" aria-label="${esc(caption)}" title="${esc(caption)}" style="left:${(group[0].start-zero)/range*100}%">${media ? mediaMarkerIcon(group) : '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 11 6 6 11 1 6Z" fill="currentColor"/></svg>'}${group.length>1 ? '<span>'+group.length+'</span>' : ''}</button>`;
+  function markers(lane, laneIndex) {
+    const width = Math.max(100, (root.clientWidth || 800)-(options.embedded ? 0 : 176));
+    const ordered = [...(lane.markers || [])].sort((a,b)=>a.start-b.start);
+    if (!ordered.length) return '';
+    const expanded = expandedLanes.has(laneIndex);
+    const groups = expanded ? ordered.map(marker=>[marker]) : [ordered];
+    const captions = groups.map(group=>group.length>1 ? group.length+' 个事件 · 点击查看' : conciseMilestone(group[0]));
+    const layout = layoutTimelineFlags(groups.map(group=>({x:(group[0].start-zero)/range*width,width:group.length>1?42:24})),width);
+    return '<div class="milestone-track primary-track" style="height:'+layout.rows*25+'px">' + groups.map((group,i) => {
+      const index = points.indexOf(group[0]);
+      markerGroups[index] = group;
+      const summary = group.length>1;
+      const caption = summary ? `${group.length} 个事件 · ${((group[0].start-timeZero)/1e9).toFixed(3)} → ${((group.at(-1).start-timeZero)/1e9).toFixed(3)} s · 点击查看全部时间` : title(group[0]);
+      const media = !summary && ['image','video'].includes(group[0].kind);
+      const flag = layout.items[i];
+      const name=group[0].event||'';
+      const symbol= /first|partial/.test(name)||/First Token/.test(group[0].label)?'◇': /finished|final|closed|endpoint|last_voice/.test(name)?'□': /started|opened/.test(name)?'○':'·';
+      return `<button type="button" class="timeline-marker${media ? ' media-marker' : ''} primary-marker compact-milestone${summary?' event-summary':''} severity-${group.some(m=>m.severity==='error')?'error':group.some(m=>m.severity==='warning')?'warning':'info'}" data-marker-index="${index}" data-time-seconds="${(group[0].start-timeZero)/1e9}" aria-label="${esc(caption)}" title="${esc(caption)}" style="left:${(group[0].start-zero)/range*100}%;top:${flag.row*25}px;--flag-offset:${flag.left-flag.x}px;--flag-width:${flag.width}px;color:${group[0].color || '#405ca3'}"><i class="milestone-anchor" aria-hidden="true"></i><span class="event-symbol" aria-hidden="true">${summary?'◇ '+group.length:media?mediaMarkerIcon(group):symbol}</span><span class="milestone-label">${esc(captions[i])}</span></button>`;
     }).join('') + '</div>';
   }
-  const axis = clock.mode === 'wall' ? [0,range/2,range].map(offset=>`<span>${beijingTime(clock.origin_wall_time_ms+(zero+offset)/1e6)}<small>+${sec(offset/1e9)} s</small></span>`).join('') : `<span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span>`;
-  root.innerHTML = `<div class="timeline-plot">${options.embedded ? '' : '<div class="axis">'+axis+'</div>'}` + lanes.map(lane => {
+  function toggleLane(index) {
+    if (!Number.isInteger(index) || !lanes[index]) return;
+    expandedLanes.has(index) ? expandedLanes.delete(index) : expandedLanes.add(index);
+    if (options.onLaneToggle) options.onLaneToggle(index, expandedLanes.has(index));
+    else {
+      // Keep the plot itself (and its measurement handlers/selection) alive.
+      const lane = lanes[index], row = root.querySelector(`[data-lane-index="${index}"]`);
+      row.querySelector('.lane-content').innerHTML = laneContent(lane,index);
+      row.dataset.expanded=String(expandedLanes.has(index));
+      const toggle = row.querySelector('[data-lane-toggle]');
+      toggle.setAttribute('aria-expanded',String(expandedLanes.has(index)));
+      toggle.querySelector('.lane-chevron').textContent=expandedLanes.has(index)?'▾':'▸';
+    }
+  }
+  function laneContent(lane,index) {
     const segments = lane.segments || [lane];
-    return `<div class="lane" data-source="${lane.source === 'client' ? 'client' : 'server'}">${options.embedded ? '' : '<span class="lane-label">'+traceLabel(lane)+'</span>'}<div><div class="track">${segments.map(bar).join('')}</div>${markers(lane)}<div class="segment-key">${segments.filter(item => item.end != null).map(item => `<span><i style="background:${item.color || '#407d77'}"></i>${item.segment_number ? '#' + item.segment_number + ' · ' : ''}${sec(durationSeconds(item))} s</span>`).join('')}</div></div></div>`;
+    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key">${segments.filter(item => item.end != null).map(item => `<span><i style="background:${item.color || '#407d77'}"></i>${item.segment_number ? '#' + item.segment_number + ' · ' : ''}${sec(durationSeconds(item))} s</span>`).join('')}</div>`;
+  }
+  const axis = clock.mode === 'wall' ? [0,range/2,range].map(offset=>`<span>${beijingTime(clock.origin_wall_time_ms+(zero+offset)/1e6)}<small>+${sec(offset/1e9)} s</small></span>`).join('') : `<span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span>`;
+  root.innerHTML = `<div class="timeline-plot">${options.embedded ? '' : '<div class="axis">'+axis+'</div>'}` + lanes.map((lane,index) => {
+    return `<div class="lane" data-lane-index="${index}" data-expanded="${expandedLanes.has(index)}" data-turn-index="${lane.turn_index ?? ''}" data-source="${lane.source === 'client' ? 'client' : 'server'}">${options.embedded ? '' : '<button type="button" class="lane-label lane-toggle" data-lane-toggle="'+index+'" aria-expanded="'+expandedLanes.has(index)+'"><span class="lane-chevron" aria-hidden="true">'+(expandedLanes.has(index)?'▾':'▸')+'</span>'+traceLabel(lane)+'</button>'}<div class="lane-content">${laneContent(lane,index)}</div></div>`;
   }).join('') + '</div>' + (options.detail ? '' : '<div class="span-detail" role="status" hidden></div>');
-  if (!options.embedded) enableTimelineMeasurement(root, range/1e9);
+  if (!options.embedded) enableTimelineMeasurement(root, range/1e9, bounds.flatMap(item=>[{time:(item.start-zero)/1e9,label:item.label}, ...(item.end != null ? [{time:(item.end-zero)/1e9,label:item.label+"结束"}] : [])]));
   function activate(element) {
-    const button = element.closest('[data-event-index], [data-marker-index]');
+    const button = element.closest('[data-event-index], [data-marker-index], [data-lane-toggle]');
     if (!button || !root.contains(button)) return false;
+    if (button.dataset.laneToggle != null) {toggleLane(Number(button.dataset.laneToggle));return true;}
     const detail = options.detail || root.querySelector('.span-detail');
     if (button.dataset.markerIndex != null) {
       const group = markerGroups[Number(button.dataset.markerIndex)];
@@ -127,6 +151,8 @@ function timeline(id, lanes, clock = {}, options = {}) {
       detail.textContent = group.map(item => {
         const data = item.data || {};
         const extra = [];
+        if (item.position_note) extra.push(item.position_note);
+        if (item.severity) extra.push({info:"Info · 信息",warning:"Warning · 警告",error:"Error · 错误"}[item.severity]);
         if (item.since_request_seconds != null) extra.push(`距本次请求提交 ${item.since_request_seconds.toFixed(3)} s`);
         if (data.delta_kind) extra.push(data.delta_kind === 'tool' ? '工具增量' : '正文增量');
         if (data.punctuation) extra.push(`分句标点 ${data.punctuation}`);
@@ -138,20 +164,24 @@ function timeline(id, lanes, clock = {}, options = {}) {
         if ('transport_retry_count' in data) extra.push(`传输重试 ${data.transport_retry_count ?? '未知'}`);
         if (data.phase) extra.push(data.phase);
         if (['input_tokens','cached_tokens','output_tokens'].some(key=>key in data)) extra.push(`输入 / 缓存 / 输出 Token ${data.input_tokens ?? '未知'} / ${data.cached_tokens ?? '未知'} / ${data.output_tokens ?? '未知'}`);
-        if ('requested_silence_duration_ms' in data) extra.push(`请求静音阈值 ${data.requested_silence_duration_ms == null ? '未知 / 不启用' : data.requested_silence_duration_ms + ' ms'}`);
-        if ('confirmed_silence_duration_ms' in data) extra.push(`服务端确认阈值 ${data.confirmed_silence_duration_ms == null ? '未知' : data.confirmed_silence_duration_ms + ' ms'}`);
+        if ('requested_silence_duration_ms' in data) extra.push(`请求静音阈值 ${data.requested_silence_duration_ms == null ? '未知 / 不启用' : data.requested_silence_duration_ms /1000 + ' s'}`);
+        if ('confirmed_silence_duration_ms' in data) extra.push(`服务端确认阈值 ${data.confirmed_silence_duration_ms == null ? '未知' : data.confirmed_silence_duration_ms /1000 + ' s'}`);
         if (data.error_type) extra.push(data.error_type);
         return [title(item), ...extra].join(' · ');
       }).join('\n');
     } else {
       const item = all[Number(button.dataset.eventIndex)];
+      const laneIndex = lanes.findIndex(lane=>(lane.segments || [lane]).includes(item));
+      const restoreFocus = document.activeElement === button;
+      toggleLane(laneIndex);
+      if (restoreFocus) root.querySelector(`[data-event-index="${button.dataset.eventIndex}"]`)?.focus({preventScroll:true});
       detail.textContent = [title(item), configDetails(item.data), item.data?.purpose === 'rules' ? '规则向量' : item.data?.purpose === 'query' ? '用户问题向量' : '', item.data?.error_type || ''].filter(Boolean).join(' · ');
     }
     detail.hidden = false;
     return true;
   }
   if (!options.embedded) root.onclick = event=>activate(event.target);
-  return {activate};
+  return {activate,toggleLane};
 }
 if (!turn) renderSessionTimeline($('session-timeline'), report.session_playback);
 if (turn) {
@@ -159,11 +189,7 @@ if (turn) {
   const events = turn.events || [], vas = turn.vas_events || [];
   const vadLabels = {local_vad_speech_started:'本地 VAD · 语音开始', local_vad_last_voice:'本地 VAD · 最后语音帧', local_vad_endpoint_detected:'本地 VAD · 结束', asr_speech_started:'ASR VAD · 语音开始', asr_endpoint_detected:'ASR VAD · 结束', asr_final:'ASR · 最终识别结果'};
   const stageLabels = {memory_request:'Memory', listen_stop_received:'VAS 收到停止', listen_stop_enqueued:'停止消息入队', listen_stop_dequeued:'停止消息出队', listen_finalize_started:'开始处理语音结束', audio_input_completed:'上行音频接收完成', asr_commit_sent:'ASR 提交结束', ...vadLabels};
-  const clock = turn.combined_timeline;
-  $('clock-label').textContent = clock.mode === 'wall'
-    ? `北京时间 ${beijingTime(clock.origin_wall_time_ms,true).slice(0,10)}（UTC+8）· 两端系统时间，未校准偏移`
-    : `${clock.reason === 'clock_discontinuity' ? '绝对时间记录不连续' : '旧记录缺少绝对时间'} · 各来源独立从 0 s 开始，不能跨来源相减`;
-  timeline('combined', traceLanes(clock.lanes), clock);
+  renderSessionTimeline($('session-timeline'), report.session_playback);
   const handoff = vas.filter(event => stageLabels[event.event] && event.event !== 'memory_request').sort((a,b) => a.monotonic_ns-b.monotonic_ns);
   const isVad = turn.input_settings?.mode === 'vad';
   const base = handoff.find(event => event.event === (isVad ? 'asr_endpoint_detected' : 'listen_stop_received'))?.monotonic_ns;

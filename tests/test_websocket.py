@@ -117,7 +117,8 @@ def test_real_websocket_opus_round_trip_and_timed_abort(tmp_path):
     assert result["session"]["session_id"] == "wire-session"
     assert observed.count(("hello", None)) == 1
     assert observed.count(("abort", None)) == 1
-    assert observed.count(("input_audio", 1920)) == 4
+    # Each 120 ms source needs a third packet to drain the Opus lookahead.
+    assert observed.count(("input_audio", 1920)) == 6
     assert all(t["received_frames"] == 8 for t in result["turns"])
 
 

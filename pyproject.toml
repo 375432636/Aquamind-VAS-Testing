@@ -7,7 +7,7 @@ name = "voice-scenario-tests"
 version = "0.1.0"
 description = "Reusable audio conversation scenarios with timed interruptions"
 requires-python = ">=3.11"
-dependencies = ["websockets>=14,<16", "PyYAML>=6,<7", "opuslib-next>=1.1,<2", "aiohttp>=3.13,<4"]
+dependencies = ["websockets>=14,<16", "PyYAML>=6,<7", "opuslib-next>=1.1,<2", "aiohttp>=3.13,<4", "piper-tts==1.8.0"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<9", "pytest-cov>=5,<7", "black>=25,<26", "isort>=6,<7"]
@@ -26,4 +26,4 @@ pythonpath = ["."]
 profile = "black"
 
 [tool.setuptools.package-data]
-voice_scenarios = ["*.html", "*.js", "*.css", "*.xlsx"]
+voice_scenarios = ["*.html", "*.js", "*.css", "*.xlsx", "live/*"]

@@ -2,9 +2,12 @@
 
 import copy
 
+from .reply_timing import playback_clock
 from .timeline import group_timeline_spans, request_spans
 
 CLIENT_LABELS = {
+    "connection_started": ("control", "客户端开始尝试连接"),
+    "connection_opened": ("control", "WebSocket 连接成功"),
     "sensor_sent": ("control", "传感器指令发出"),
     "input_started": ("input", "开始发送输入"),
     "first_audio_sent": ("input", "第一帧音频发出"),
@@ -32,11 +35,32 @@ def client_wall_time(at_ns, clock):
     return clock["wall_time_ns"] + at_ns - clock["monotonic_ns"]
 
 
+def vad_display_times(events):
+    """Derive historical VAD wall position from its own endpoint clock only."""
+    result = {}
+    pending = {}
+    for event in sorted(events, key=lambda e: e.get("monotonic_ns", 0)):
+        key = (event.get("clock_id"), event.get("listen_turn_id"))
+        if event.get("event") == "local_vad_last_voice":
+            pending[key] = event
+        elif event.get("event") == "local_vad_endpoint_detected" and key in pending:
+            last = pending.pop(key)
+            delta = event["monotonic_ns"] - last["monotonic_ns"]
+            if 0 <= delta and isinstance(event.get("wall_time_ns"), int):
+                derived = event["wall_time_ns"] - delta
+                if abs(derived - last.get("wall_time_ns", derived)) > 1_000_000:
+                    result[(key[0], last["monotonic_ns"])] = derived
+    return result
+
+
 def combined_timeline(turn, client_clock):
     client = {}
+    unreliable_playback = playback_clock(turn)["status"] in {"invalid", "estimated"}
     group_labels = {"input": "发送音频", "playback": "回复播放", "control": "控制指令"}
     for event in turn.get("events", []):
         if event["event"] not in CLIENT_LABELS:
+            continue
+        if unreliable_playback and event["event"] == "playback_started":
             continue
         group, label = CLIENT_LABELS[event["event"]]
         lane = client.setdefault(
@@ -67,10 +91,16 @@ def combined_timeline(turn, client_clock):
         (event.get("clock_id"), event.get("monotonic_ns")): event.get("wall_time_ns")
         for event in turn.get("vas_events", [])
     }
+    derived_times = vad_display_times(turn.get("vas_events", []))
+    server_times.update(derived_times)
     items = []
     for lane in lanes:
         for item in lane["segments"] + lane["markers"]:
             domain = (lane["source"], item.get("clock_id"))
+            if domain[0] == "server" and (domain[1], item["start_ns"]) in derived_times:
+                item["position_note"] = (
+                    "位置经过换算：使用同一 VAS 时钟的结束事件与时间差，原始数据未改动"
+                )
 
             def wall(at):
                 if lane["source"] == "client":

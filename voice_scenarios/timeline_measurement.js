@@ -1,5 +1,5 @@
 // Measures the displayed axis only (uncalibrated across sources). Never seeks audio.
-function enableTimelineMeasurement(root, duration) {
+function enableTimelineMeasurement(root, duration, snapPoints = []) {
   const extent = Number(duration);
   if (!(extent > 0)) return;
   const plot = root.querySelector('.timeline-plot');
@@ -27,7 +27,7 @@ function enableTimelineMeasurement(root, duration) {
   }
   function at(event) {
     const bounds = axis.getBoundingClientRect();
-    return clamp((event.clientX-bounds.left)/Math.max(1,bounds.width)*extent);
+    return timelineSnap(clamp((event.clientX-bounds.left)/Math.max(1,bounds.width)*extent),snapPoints,bounds.width/extent,event.altKey).time;
   }
   function release() {
     const id = gesture?.pointerId;

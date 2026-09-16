@@ -11,8 +11,14 @@ from .assertions import evaluate_business_assertions
 from .clock_timeline import combined_timeline, session_trace_timeline
 from .evaluation import tool_check
 from .excel_report import export_excel
+from .input_control import inspect_input_control, refresh_ptt_markers
 from .llm_evidence import summarize_llm_requests
-from .reply_timing import analyze_reply_timing, input_end_event
+from .reply_timing import (
+    analyze_reply_timing,
+    input_end_event,
+    playback_clock,
+    validated_playback_frames,
+)
 from .timeline import group_timeline_spans, media_timeline_markers, request_spans
 from .turn_attribution import attribute_mixed_turns
 
@@ -70,6 +76,7 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             )
         ]
         turn["vas_events"] = rows
+        turn["input_control"] = inspect_input_control(turn)
         turn["llm_requests"] = summarize_llm_requests(rows)
         turn["asr_settings"] = [
             e
@@ -119,6 +126,25 @@ def evaluate(result, vas_events, *, artifact_dir=None):
         media_counts = Counter(
             marker["kind"] for marker in media_timeline_markers(turn["events"])
         )
+        turn["playback_clock"] = playback_clock(turn)
+        played_frames = validated_playback_frames(turn)
+        playback_events = turn["events"]
+        if turn["playback_clock"]["status"] in {"invalid", "estimated"}:
+            playback_events = []
+            report["metric_limitations"].append(
+                f"{turn['id']}：浏览器播放时钟无效或仅有估计值，首音和播放分段时间不可用；首包等待仍使用原始客户端记录。"
+            )
+        elif turn.get("playback_source") == "browser_audio_context":
+            playback_events = [
+                e for e in turn["events"] if e["event"] != "playback_started"
+            ]
+            if played_frames:
+                playback_events.append(
+                    {
+                        "event": "playback_started",
+                        "at_ns": min(e["at_ns"] for e in played_frames),
+                    }
+                )
         metrics = {
             "image_items": media_counts["image"],
             "video_items": media_counts["video"],
@@ -131,7 +157,7 @@ def evaluate(result, vas_events, *, artifact_dir=None):
                 None,
             ),
             "first_playback_ms": delta(
-                turn["events"], input_end_event(turn), "playback_started", "at_ns"
+                playback_events, input_end_event(turn), "playback_started", "at_ns"
             ),
             "stop_queue_ms": delta(
                 rows, "listen_stop_enqueued", "listen_stop_dequeued", "monotonic_ns"
@@ -183,11 +209,7 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             turn["server_input_text"] = metrics["asr_text"]
             metrics["asr_text"] = None
         outputs = [e for e in rows if e["event"] == "audio_output_started"]
-        played = {
-            e["data"].get("audio_seq"): e["at_ns"]
-            for e in turn["events"]
-            if e["event"] == "playback_frame_started"
-        }
+        played = {e["data"].get("audio_seq"): e["at_ns"] for e in played_frames}
         answer_ns = next(
             (
                 played[e["data"]["audio_seq"]]
@@ -202,7 +224,7 @@ def evaluate(result, vas_events, *, artifact_dir=None):
         )
         metrics["first_answer_playback_ms"] = (
             (answer_ns - stop_ns) / 1e6
-            if answer_ns is not None and stop_ns is not None
+            if answer_ns is not None and stop_ns is not None and answer_ns >= stop_ns
             else None
         )
         if tts_capabilities.get("request_timing") is False:
@@ -460,6 +482,28 @@ def _navigation(report, active):
 
 def _notices(report, turn=None):
     messages = [report[key] for key in ("error", "close_error") if report.get(key)]
+    unreliable = [
+        str(index)
+        for index, item in enumerate(report.get("turns", []), 1)
+        if (turn is None or item is turn)
+        and playback_clock(item)["status"] in {"invalid", "estimated"}
+    ]
+    if unreliable:
+        messages.insert(
+            0,
+            f"第 {'、'.join(unreliable)} 轮缺少可靠播放时钟，无法还原真实首音。首包等待不等于首音等待；整段回听未包含无法对齐的回复，可在单轮页面回听原始回复音频。",
+        )
+    partial = [
+        str(index)
+        for index, item in enumerate(report.get("turns", []), 1)
+        if (turn is None or item is turn)
+        and playback_clock(item)["status"] == "partial"
+    ]
+    if partial:
+        messages.insert(
+            0,
+            f"第 {'、'.join(partial)} 轮已保留确认的首音时间；打断附近的尾部缺少可靠播放时刻，未放入时间轴和整段回听，原始完整回复可在单轮页面回听。",
+        )
     if report.get("data_source") == "mock":
         messages.insert(
             0,
@@ -467,7 +511,12 @@ def _notices(report, turn=None):
         )
     if report.get("diagnostics") and not report["diagnostics"].get("complete"):
         messages.append("诊断数据不完整，部分阶段的时间可能缺失。")
-    messages.extend(report.get("metric_limitations", []))
+    # Clock failures are summarized once above; keep per-turn detail in JSON.
+    messages.extend(
+        message
+        for message in report.get("metric_limitations", [])
+        if "浏览器播放时钟无效或仅有估计值" not in message
+    )
     if turn is not None:
         if turn.get("error"):
             messages.append(turn["error"])
@@ -502,6 +551,59 @@ def _notices(report, turn=None):
     )
 
 
+def _input_control_panel(turns):
+    rows = []
+    for index, turn in enumerate(turns, 1):
+        if turn.get("input_type") != "audio" and turn.get("input_settings", {}).get(
+            "mode"
+        ) not in {"manual", "vad"}:
+            continue
+        state = inspect_input_control(turn)
+        mode = {"manual": "按住说话 · 松开结束", "vad": "VAD 自动结束"}.get(
+            state["mode"], "未记录"
+        )
+        requested = {"off": "请求关闭", "on": "请求开启", "unknown": "未记录"}[
+            state["requested_vad"]
+        ]
+        confirmed = {"off": "已确认关闭", "on": "已确认开启", "unknown": "未明确回显"}[
+            state["confirmed_vad"]
+        ]
+        local = (
+            f'仍在运行 · {state["local_vad_events"]} 个事件'
+            if state["local_vad"] == "observed"
+            else "未观察到，不能确认关闭"
+        )
+        finalization = {
+            "manual_commit": "收到 stop → 提交 ASR → 最终结果",
+            "early_final": "注意：收到 stop 前已有最终结果",
+            "unknown": "未确认",
+        }[state["finalization"]]
+        rows.append(
+            "<tr>"
+            + "".join(
+                f"<td>{_text(value)}</td>"
+                for value in (
+                    turn.get("id", str(index)),
+                    mode,
+                    f'已发 {state["stop_sent"]} 次 / VAS 已收 {state["stop_received"]} 次',
+                    requested + " · " + confirmed,
+                    local,
+                    finalization,
+                )
+            )
+            + "</tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        '<section class="panel input-control-panel"><div class="section-heading"><h2>录音结束控制</h2></div>'
+        '<div class="table-scroll"><table><thead><tr>'
+        "<th>轮次</th><th>输入模式</th><th>结束信号 stop</th><th>ASR 自动断句</th><th>VAS 本地 VAD</th><th>实际结束顺序</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+        '<p class="measurement-hint">手动模式按下发 start，松开发 stop。关闭 ASR 自动断句不等于停止 VAS 本地 VAD；未回显或未观察到均不视为已关闭。</p></section>'
+    )
+
+
 def _overview(report):
     turns = report["turns"]
     values = [_timing_values(turn) for turn in turns]
@@ -533,6 +635,7 @@ def _overview(report):
             ]
         )
         + _session_panel(report)
+        + _input_control_panel(turns)
         + '<section class="panel"><div class="section-heading"><div><h2>逐轮结果</h2>'
         '<p>上方查看全会话时序，详细页聚焦单轮。</p></div><span class="unit-label">时间单位 · 秒</span></div>'
         '<div class="table-scroll"><table class="turn-table"><thead><tr>'
@@ -577,6 +680,83 @@ def _session_start(report, index):
     return row.get("input_start_seconds") or row.get("start_seconds") or 0
 
 
+def _turn_playback(playback, turn, index):
+    """A single turn's view onto the original session clock and audio file."""
+    view = {
+        key: value
+        for key, value in playback.items()
+        if key
+        not in {
+            "turns",
+            "segments",
+            "waits",
+            "markers",
+            "media_markers",
+            "vas_timeline",
+        }
+    }
+    view["view_turn_index"] = index
+    for key in ("turns", "segments", "waits", "markers", "media_markers"):
+        field = "index" if key == "turns" else "turn_index"
+        view[key] = [row for row in playback.get(key, []) if row.get(field) == index]
+    trace = playback.get("vas_timeline", {})
+    view["vas_timeline"] = dict(
+        trace,
+        lanes=[
+            lane for lane in trace.get("lanes", []) if lane.get("turn_index") == index
+        ],
+    )
+    bounds = []
+
+    def collect(row):
+        for key in (
+            "start_seconds",
+            "input_start_seconds",
+            "input_end_seconds",
+            "end_seconds",
+            "at_seconds",
+        ):
+            if isinstance(row.get(key), (int, float)):
+                bounds.append(row[key])
+        for segment in row.get("input_segments", []):
+            collect(segment)
+
+    for key in ("turns", "segments", "waits", "markers", "media_markers"):
+        for row in view[key]:
+            collect(row)
+    zero = playback.get("zero_at_ns")
+    if zero is not None:
+        for key in ("started_at_ns", "ended_at_ns"):
+            if turn.get(key) is not None:
+                bounds.append((turn[key] - zero) / 1e9)
+    for lane in view["vas_timeline"]["lanes"]:
+        for item in lane.get("segments", []) + lane.get("markers", []):
+            for key in ("plot_start_ns", "plot_end_ns"):
+                if isinstance(item.get(key), (int, float)):
+                    bounds.append(item[key] / 1e9)
+    start, end = (min(bounds), max(bounds)) if bounds else (0, 1)
+    if end <= start:
+        later = [
+            row["start_seconds"]
+            for row in playback.get("turns", [])
+            if row.get("start_seconds", start) > start
+        ]
+        end = (
+            min(later) if later else max(start + 1, playback.get("duration_seconds", 0))
+        )
+    padding = min(0.5, (end - start) * 0.025)
+    view.update(
+        view_start_seconds=start - padding if start > 0 else start,
+        view_end_seconds=end + padding,
+    )
+    if view["turns"]:
+        row = view["turns"][0]
+        view["initial_time_seconds"] = row.get(
+            "input_start_seconds", row.get("start_seconds", max(0, start))
+        )
+    return view
+
+
 def _session_panel(report):
     playback = report.get("session_playback", {})
     trace = playback.get("vas_timeline", {})
@@ -591,12 +771,16 @@ def _session_panel(report):
     )
     path = playback.get("playback_path") or playback.get("path")
     duration = playback.get("duration_seconds", 0)
+    turn_index = playback.get("view_turn_index")
+    title = f"第 {turn_index} 轮全链路时序" if turn_index else "会话全链路时序"
     content = (
         '<section class="panel session-panel" id="session-timeline"><div class="section-heading">'
-        '<div><div class="eyebrow">SESSION TIMELINE</div><h2>会话全链路时序</h2>'
+        f'<div><div class="eyebrow">SESSION TIMELINE</div><h2>{title}</h2>'
         f"<p>{clock_label}</p></div>"
         f'<span class="unit-label">全程 {_seconds(duration)} s</span></div>'
     )
+    if report.get("playback_reconstruction"):
+        content += '<p class="session-capture-notice">模拟播放重建 · 按音频就绪时间恢复连续播放，原始录制保持不变。</p>'
     if path:
         content += (
             '<div class="session-player-row"><audio id="session-player" controls preload="metadata" '
@@ -610,8 +794,21 @@ def _session_panel(report):
         and item.get("code") in {"approximate_input_timing", "input_packet_overlap"}
         for item in playback.get("limitations", [])
     )
+    unreliable_reply = any(
+        isinstance(item, dict)
+        and item.get("code")
+        in {
+            "invalid_playback_clock",
+            "estimated_playback_clock",
+            "reply_audio_unavailable",
+            "greeting_audio_unavailable",
+        }
+        for item in playback.get("limitations", [])
+    )
+    if unreliable_reply:
+        content += '<p class="session-capture-notice">整段回听未包含无法对齐的回复；原始回复音频可在单轮页面单独回听。首包等待不等于首音等待。</p>'
     if adjusted_input:
-        content += '<p class="session-capture-notice">输入回放含近似对齐；回复按客户端播放记录还原。</p>'
+        content += '<p class="session-capture-notice">输入回听为保留全部采样可能有微小顺延；时间轴显示原始发送时刻，历史缺帧时刻的输入另标为近似。</p>'
     content += (
         '<div class="session-toolbar"><div class="session-legend">'
         '<span><i class="legend-input"></i>用户输入</span><span><i class="legend-temporary"></i>过渡 / 临时</span>'
@@ -627,28 +824,32 @@ def _session_panel(report):
         + "</div>"
         '<div class="session-zoom" role="group" aria-label="时间轴缩放">'
         '<button type="button" data-session-zoom="out" aria-label="缩小时间轴">−</button>'
-        '<button type="button" data-session-zoom="fit">全会话</button>'
+        f'<button type="button" data-session-zoom="fit">{"本轮" if turn_index else "全会话"}</button>'
         '<button type="button" data-session-zoom="in" aria-label="放大时间轴">+</button></div></div>'
-        '<div class="session-tools"><span class="measurement-hint">音频点击定位 · VAS 点击详情 · 拖动划线测量</span>'
+        '<div class="session-tools"><span class="measurement-hint">点击查看 · 拖动测量 · 双指捏合缩放 · 双指平移滚动</span>'
         '<div class="measurement-controls" role="group" aria-label="时间区间测量">'
         '<label>起点 <input id="measure-start" type="number" min="0" step="0.01" placeholder="—" aria-label="测量起点，秒"> s</label>'
         '<span aria-hidden="true">→</span>'
         '<label>终点 <input id="measure-end" type="number" min="0" step="0.01" placeholder="—" aria-label="测量终点，秒"> s</label>'
         '<output id="measure-duration" aria-live="polite">Δ — s</output>'
         '<button type="button" id="measure-clear">清除</button></div></div>'
-        '<div id="session-detail" class="session-detail" aria-live="polite">'
-        '<span class="detail-placeholder">选择语音、回复或 VAS 节点，查看内容与时间。</span></div>'
-        '<div class="session-chart-layout"><div class="session-track-labels" id="session-track-labels" aria-hidden="true">'
-        '<span>用户语音</span><span>回复播放</span></div><div class="session-viewport" id="session-viewport">'
+        '<div class="session-chart-layout"><div class="session-label-viewport"><div class="session-track-labels" id="session-track-labels">'
+        '<span>用户语音</span><span>回复播放</span></div></div><div class="session-viewport" id="session-viewport">'
         '<div class="session-canvas" id="session-canvas" tabindex="0" role="group" '
         'aria-label="会话全链路时间轴，上方用户语音和回复，下方 VAS；拖动测量，也可输入起止秒数"></div></div></div>'
+        '<div id="session-detail" class="session-detail" aria-live="polite">'
+        '<span class="detail-placeholder">选择语音、回复或 VAS 节点，查看内容与时间。</span></div>'
         '<details class="inline-disclosure"><summary>播放与计时口径</summary><div class="detail-body">'
         "<p>按客户端记录的发送、播放时间还原整段会话，保留句间与轮间空档。"
-        "播放记录来自 Python 软件播放器，不代表设备扬声器的实测出声时刻。</p>"
-        "<p>VAS 展示所有轮次及欢迎语等会话级阶段，维度与详细页一致。"
-        "两端尚未校时，跨来源间距可能包含时钟误差；旧记录缺少绝对时间时，各来源独立归零。"
+        "自动测试记录来自 Python 模拟播放器；网页对话记录来自浏览器音频时钟，均不代表扬声器声学实测。</p>"
+        + (
+            "<p>本页仅展示当前轮，时间与完整会话一致，回听仍使用同一音频文件。"
+            if turn_index
+            else "<p>VAS 展示所有轮次及欢迎语等会话级阶段，维度与详细页一致。"
+        )
+        + "两端尚未校时，跨来源间距可能包含时钟误差；旧记录缺少绝对时间时，各来源独立归零。"
         "超出音频长度的 VAS 记录仍显示，音频回听长度不变。</p>"
-        "<p>语音输入结束是 WAV 素材发送结束，VAD 模式随后继续发送底噪。传感器以指令发出作为输入时刻，不生成输入音频。</p>"
+        "<p>自动测试以 WAV 语音内容发送结束计时；网页 VAD 以客户端能量估计语音结束，单独标明，非服务端 VAD 事件。传感器以指令发出作为输入时刻，不生成输入音频。</p>"
     )
     if playback.get("playback_path"):
         content += "<p>默认回听混合用户与 VAS 的声音；分轨文件保留用户左声道、回复右声道的原始音频。</p>"
@@ -698,6 +899,34 @@ def _turn_page(report, index):
         if turn.get("server_input_text"):
             content += f'<div class="asr-text"><span>服务端事件回显</span>{_text(turn["server_input_text"])}</div>'
     content += "</section>"
+    playback_row = next(
+        (
+            row
+            for row in report.get("session_playback", {}).get("turns", [])
+            if row["index"] == index + 1
+        ),
+        {},
+    )
+    unaligned = playback_row.get("unaligned_audio", {})
+    if not unaligned and playback_clock(turn)["status"] in {
+        "invalid",
+        "estimated",
+        "partial",
+    }:
+        unaligned = turn.get("audio", {})
+    raw_reply = unaligned.get("played") or unaligned.get("received")
+    if raw_reply:
+        source_label = (
+            "已播放音频采样"
+            if unaligned.get("played")
+            else "已接收音频采样（不代表已播放）"
+        )
+        content += (
+            '<section class="panel"><h2>原始回复回听（未对齐）</h2>'
+            f"<p>{source_label}按原始文件顺序回听；缺少可靠播放时刻，不能据此测量首音等待或与整段时间轴对齐。</p>"
+            f'<audio controls preload="metadata" aria-label="原始回复回听，未对齐" src="{_text(raw_reply)}"></audio>'
+            f'<p><a href="{_text(raw_reply)}" download>下载原始回复 WAV</a></p></section>'
+        )
     content += _cards(
         [
             ("首句声音", _seconds(values[0]), "s", "输入结束 → 开始播放"),
@@ -726,9 +955,17 @@ def _turn_page(report, index):
             f'<div><span>TTS 停止信号</span><strong>{"已观察到" if interruption.get("tts_abort_observed") else "未观察到"}</strong></div>'
             "</div></section>"
         )
+    content += _session_panel(
+        dict(
+            report,
+            session_playback=_turn_playback(
+                report.get("session_playback", {}), turn, index + 1
+            ),
+        )
+    )
+    content += _input_control_panel([turn])
     content += (
-        '<section class="panel"><div class="section-heading"><div><h2>链路时序</h2>'
-        '<p id="clock-label"></p></div>'
+        '<section class="panel"><div class="section-heading"><div><h2>请求明细</h2></div>'
         '<span class="badge">客户端 + VAS · 未校时</span></div>'
         '<div class="request-counts">'
     )
@@ -745,7 +982,7 @@ def _turn_page(report, index):
         )
         content += f"<span>{label}<b>{_text(value)}</b></span>"
     content += (
-        '</div><div class="timeline-scroll"><div id="combined" class="timeline"></div></div>'
+        "</div>"
         '<details class="inline-disclosure"><summary>请求明细与计时口径</summary><div class="detail-body">'
         "<p>绝对时刻统一显示北京时间（UTC+8）；客户端以会话开始时的本机系统时间换算。"
         "两端未做时钟偏移校准，跨端间隔可能包含时钟误差。耗时统计仍使用各端单调时钟。"
@@ -915,8 +1152,11 @@ def build_report(report, path):
     script = "\n".join(
         (assets / name).read_text()
         for name in (
+            "report_navigation.js",
             "media_markers.js",
             "reply_timing.js",
+            "timeline_gestures.js",
+            "timeline_navigation.js",
             "session_timeline.js",
             "timeline_measurement.js",
             "report.js",
@@ -924,6 +1164,7 @@ def build_report(report, path):
     )
     display = copy.deepcopy(report)
     playback = display.setdefault("session_playback", {})
+    refresh_ptt_markers(playback, display["turns"])
     playback["media_markers"] = []
     zero = playback.get("zero_at_ns")
     for index, turn in enumerate(display["turns"], 1):
@@ -950,21 +1191,7 @@ def build_report(report, path):
         turn = display["turns"][index] if index is not None else None
         playback = display.get("session_playback", {})
         if index is not None:
-            # Detail pages only link back to the master player. Avoid copying every
-            # session's packet intervals into every turn page.
-            playback = {
-                "clock": playback.get("clock"),
-                "zero_at_ns": playback.get("zero_at_ns"),
-                "segments": [
-                    {
-                        key: value
-                        for key, value in segment.items()
-                        if key not in {"intervals", "audio_seqs"}
-                    }
-                    for segment in playback.get("segments", [])
-                    if segment.get("turn_index") == index + 1
-                ],
-            }
+            playback = _turn_playback(playback, turn, index + 1)
         encoded = (
             json.dumps(
                 {

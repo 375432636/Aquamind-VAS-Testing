@@ -3,7 +3,7 @@
 import wave
 from pathlib import Path
 
-from .reply_timing import analyze_reply_timing
+from .reply_timing import analyze_reply_timing, ordered_playback_frames
 
 
 def _read_pcm(path):
@@ -56,11 +56,7 @@ def _source(turn, directory, kind, packets, received_ranges, received_bytes):
         if received_bytes != len(pcm):
             raise ValueError("wav_packet_mismatch")
         return rate, pcm, received_ranges
-    starts = [
-        e["data"].get("audio_seq")
-        for e in turn.get("events", [])
-        if e["event"] == "playback_frame_started"
-    ]
+    starts = [e["data"].get("audio_seq") for e in ordered_playback_frames(turn)]
     if len(set(starts)) != len(starts) or any(seq not in packets for seq in starts):
         raise ValueError("invalid_playback_index")
     lengths = [packets[seq]["bytes"] for seq in starts]

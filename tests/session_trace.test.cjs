@@ -21,3 +21,10 @@ test('one session scale includes early and late VAS events without changing audi
   assert.equal(legacy.atFraction(.5),10);
   assert.ok(scale({}).extent>0);
 });
+
+
+test('single-turn viewport keeps session seconds and original audio offsets',()=>{
+ const scale=vm.runInNewContext(readFileSync('voice_scenarios/session_timeline.js','utf8')+'\nsessionTimelineScale;');
+ const view=scale({duration_seconds:100,view_start_seconds:30,view_end_seconds:55,vas_timeline:{axis_start_seconds:0,axis_end_seconds:100}});
+ assert.equal(view.start,30);assert.equal(view.end,55);assert.equal(view.atFraction(.5),42.5);assert.equal(view.audioTime(42.5),42.5);
+});

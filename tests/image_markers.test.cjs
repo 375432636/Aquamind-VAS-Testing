@@ -21,8 +21,8 @@ test('mixed display items keep video and image icons and explicit links without 
     {kind:'video',at_seconds:8,url:'javascript:alert(1)'},
   ];
   const groups=helpers.group(markers,10,1000);
-  assert.deepEqual(Array.from(groups,g=>g.length),[3,1]);
-  assert.equal((helpers.icon(groups[0]).match(/<svg /g)||[]).length,2);
+  assert.deepEqual(Array.from(groups,g=>g.length),[1,1,1,1]);
+  assert.equal((helpers.icon(groups[0]).match(/<svg /g)||[]).length,1);
   const html=helpers.details(markers,marker=>marker.kind);
   assert.equal((html.match(/查看视频/g)||[]).length,2);
   assert.equal((html.match(/查看图片/g)||[]).length,1);
@@ -31,8 +31,8 @@ test('mixed display items keep video and image icons and explicit links without 
   assert.doesNotMatch(html,/<video|<iframe|<img|href="javascript:|autoplay/);
 });
 
-test('nearby images are grouped without deduplication and separate when zoomed',()=>{
+test('nearby and simultaneous images are never merged at any zoom',()=>{
   const images=[{at_seconds:2,url:'a'},{at_seconds:2.1,url:'a'},{at_seconds:8,url:'b'}];
-  assert.deepEqual(Array.from(helpers.group(images,10,1000),g=>g.length),[2,1]);
+  assert.deepEqual(Array.from(helpers.group(images,10,1000),g=>g.length),[1,1,1]);
   assert.deepEqual(Array.from(helpers.group(images,10,64000),g=>g.length),[1,1,1]);
 });

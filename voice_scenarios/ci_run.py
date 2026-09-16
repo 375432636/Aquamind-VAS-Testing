@@ -9,8 +9,6 @@ import math
 import os
 import re
 import shutil
-import subprocess
-import tempfile
 import wave
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -23,6 +21,7 @@ from .evaluation import validate_evaluation, validate_tool
 from .failure_summary import failure_reasons
 from .model import SENSOR_COMMANDS, Scenario, sensor_command
 from .runner import run_scenario, save_result
+from .speech import SPEECH_ENGINE, synthesize
 from .websocket import WebSocketTransport
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -143,7 +142,7 @@ def settings_from_env(env):
         "input_mode": mode,
         "diagnostics": diagnostics,
         "turn_timeout_seconds": timeout,
-        "speech_engine": "espeak-ng/cmn",
+        "speech_engine": SPEECH_ENGINE,
         "greeting_wait_seconds": _number(
             env.get("VAS_GREETING_WAIT_SECONDS", "5"), "greeting wait", 0, 30
         ),
@@ -243,54 +242,6 @@ def validate_turns(raw, settings):
             item["expect"] = turn["expect"]
         normalized.append(item)
     return normalized
-
-
-def synthesize(text, target):
-    """Write real Mandarin speech; text goes over stdin, never into shell code."""
-    if not shutil.which("espeak-ng") or not shutil.which("ffmpeg"):
-        raise RuntimeError("Install espeak-ng and ffmpeg before generating speech")
-    with tempfile.TemporaryDirectory(prefix="vas-speech-") as temporary:
-        intermediate = Path(temporary) / "speech.wav"
-        subprocess.run(
-            [
-                "espeak-ng",
-                "-v",
-                "cmn",
-                "-s",
-                "165",
-                "-b",
-                "1",
-                "-w",
-                str(intermediate),
-                "--stdin",
-            ],
-            input=text,
-            text=True,
-            check=True,
-            capture_output=True,
-            timeout=60,
-        )
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-nostdin",
-                "-v",
-                "error",
-                "-y",
-                "-i",
-                str(intermediate),
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-c:a",
-                "pcm_s16le",
-                str(target),
-            ],
-            check=True,
-            capture_output=True,
-            timeout=60,
-        )
 
 
 def validate_audio(path, timeout):

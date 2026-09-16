@@ -49,6 +49,8 @@ async def run_scenario(
     journal = (output_dir / "client-events.jsonl").open("w")
 
     def emit(event):
+        if event.kind == "connection_started":
+            result["connection_started_at_ns"] = event.at_ns
         if collector:
             if event.kind == "diagnostics_started":
                 collector.bind_session(event.data["server_session_id"])

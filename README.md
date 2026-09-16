@@ -26,7 +26,7 @@ VAS 发送 `type: image` 消息或 `type: display` 中的 `items`（`kind: image
 
 批量测试和临时对话 Action 仍可手动运行。批量测试只需维护 [`scenarios/`](scenarios/) 中的文件，运行时无需重复粘贴对话。
 
-三个 Action（含 CI）共用 Docker 测试环境。首次构建安装系统与 Python 依赖，之后通过 GitHub BuildKit 缓存复用镜像层；修改场景或业务代码不会重新安装依赖，修改 `pyproject.toml` 或基础环境时才重建对应层。缓存受 GitHub 分支可见性和回收规则限制，缓存失效时会正常重建。设备认证只在运行容器时传入，报告和生成音频不进入构建缓存。
+三个 Action（含 CI）共用 Docker 测试环境。首次构建安装系统与 Python 依赖，并将 Piper 中文模型预下载到 `/opt/piper`，之后通过 GitHub BuildKit 缓存复用依赖和模型镜像层；修改场景或业务代码不会重新安装依赖或下载模型，修改 `pyproject.toml` 或基础环境时才重建对应层。缓存受 GitHub 分支可见性和回收规则限制，缓存失效时会正常重建。设备认证只在运行容器时传入，报告和生成音频不进入构建缓存。
 
 | 场景目录 | 内容 |
 | --- | --- |
@@ -105,9 +105,11 @@ turns:
 
 每个 session 支持 1–30 个 turn，单轮超时范围为 5–120 秒。批量入口支持 1–100 个文件；Actions 整批 job 最长 120 分钟。Actions 与本地使用同一流程：先统一静态校验全部场景，再逐会话准备音频、连接 VAS、生成报告。静态错误会在合成和联网前终止整批；运行时失败只终止当前会话，后面的会话继续。超大批次请拆分目录运行。
 
-Actions 使用 **eSpeak NG 中文语音**把文本转为 WAV，再实时发送音频。这是离线合成，声音较机械，适合跑通链路和比较时序；识别准确率回归建议使用固定的真人录音。客户端按音频时长模拟播放，不依赖 runner 的扬声器。
+Actions 和本地文本用例使用 **Piper（`piper-tts==1.8.0`）**，默认中文模型 `zh_CN-huayan-medium`，将测试文本离线合成为输入 WAV，再实时发送音频给 VAS。模型下载完成后，合成过程在本机或容器内运行；VAS 回复仍由 VAS 自身的 TTS 生成。识别准确率回归建议使用固定的真人录音。客户端按音频时长模拟播放，不依赖 runner 的扬声器。
 
-镜像使用 Debian Trixie 的 eSpeak NG 1.52。Ubuntu 24.04 自带的 1.51 在这些中文输入上会读出拼音字母和声调数字，不能用于本测试的中文合成。连接后的欢迎语保留在 session 回放中，但不计作第一问的回答，不触发第一问的播放计时或定时打断。第一问等待欢迎语的 `tts_stop`、客户端播放排空和 `settle_seconds` 后才发送；欢迎语超时会使测试失败，第一问不会发出。
+模型来自公开的 [rhasspy/piper-voices 中文 Huayan medium 目录](https://huggingface.co/rhasspy/piper-voices/tree/main/zh/zh_CN/huayan/medium)；该声音的[模型卡](https://huggingface.co/rhasspy/piper-voices/blob/main/zh/zh_CN/huayan/medium/MODEL_CARD)将训练数据集许可标为 `Unknown`。
+
+连接后的欢迎语保留在 session 回放中，但不计作第一问的回答，不触发第一问的播放计时或定时打断。第一问等待欢迎语的 `tts_stop`、客户端播放排空和 `settle_seconds` 后才发送；欢迎语超时会使测试失败，第一问不会发出。
 
 普通场景的 `greeting_wait_seconds` 默认为 0.5 秒，CI 准备器默认为 5 秒（`VAS_GREETING_WAIT_SECONDS` 可配置）；这是没有观察到欢迎语时的等待窗口。观察到欢迎语生成或音频后，等待其播完，最长由 `greeting_timeout_seconds` 控制，默认 60 秒（CI 可用 `VAS_GREETING_TIMEOUT_SECONDS` 配置）。
 
@@ -172,18 +174,18 @@ bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run \
   --scenarios scenarios/smoke --output artifacts/docker-batch
 ```
 
-在仓库目录运行上述命令，结果保存在主机的 `artifacts/docker-batch/`。临时对话可设置 `VAS_TURNS_JSON`，将入口换成 `python -m voice_scenarios.ci_run --output artifacts/docker-inline`。本地重复构建使用 Docker 本地层缓存，GitHub 缓存由 Actions 自动配置。
+在仓库目录运行上述命令，结果保存在主机的 `artifacts/docker-batch/`。临时对话可设置 `VAS_TURNS_JSON`，将入口换成 `python -m voice_scenarios.ci_run --output artifacts/docker-inline`。本地重复构建使用 Docker 本地层缓存，GitHub 缓存由 Actions 自动配置。镜像中的 `/opt/piper` 已包含默认模型和配置，非 root 运行用户也可读取；容器启动后无需再次联网下载模型。运行脚本会传入调用方设置的 `PIPER_DATA_DIR`，覆盖时请使用容器内可访问的目录，例如已挂载仓库中的 `/app/artifacts/piper`。
 
 也可以直接从源码运行：
 
 要求 Python 3.11+。先安装系统依赖：
 
 ```bash
-# Debian Trixie；其他发行版须确认 espeak-ng --version >= 1.52
-sudo apt-get install -y espeak-ng ffmpeg libopus0
+# Debian / Ubuntu
+sudo apt-get install -y ffmpeg libopus0
 
 # macOS
-brew install espeak-ng ffmpeg opus
+brew install ffmpeg opus
 ```
 
 从源码安装：
@@ -194,7 +196,10 @@ cd Aquamind-VAS-Testing
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[test]'
+python -m voice_scenarios.speech --download
 ```
+
+Linux 和 macOS 使用同一 Piper 合成流程，无需另装系统 eSpeak。首次下载模型需要联网，默认缓存目录为 `~/.cache/aquamind-vas-testing/piper`；可在下载和运行前设置 `PIPER_DATA_DIR` 指向其他目录。缓存同时包含 `zh_CN-huayan-medium.onnx` 与 `zh_CN-huayan-medium.onnx.json` 后即可离线合成输入语音；运行 VAS 对话仍需连接目标服务。
 
 使用保存的场景运行与 Actions 相同的批量流程：
 
@@ -252,7 +257,10 @@ python main.py report artifacts/my-run
 python -m pytest --cov-config=.coveragerc-client --cov=voice_scenarios --cov-fail-under=80
 python -m black --check main.py voice_scenarios tests
 python -m isort --check-only main.py voice_scenarios tests
+node --test tests/*.test.cjs
 ```
+
+客户端计时专项覆盖三轮连续播放、首句与过渡等待、PTT、打断、旧时钟错误，以及 HTML/Excel/音频重新导出的一致性。运行方法与验收项见[客户端时间轴回归](docs/client-timeline-regression.md)；CI 的 `python-test-results` 增加三轮模拟示例报告 `timeline-clock-example/`。
 
 提交和 PR 自动运行独立 CI：场景解析、WebSocket 协议、Fake 服务、计时、打断、会话回放、报告和 Actions 输入处理。批量测试通过本地 WebSocket 验证每个文件建立独立连接、同文件各轮共享连接、失败后继续，以及全部场景在联网前校验。CI artifact 包含单会话和批量示例报告；新增回归检查压缩前后 PCM 一致、音频去重、会话隔离、失败报告保留、还原后重新分析和 Actions 会话列表校验。客户端覆盖率门槛为 80%，只排除需要 VAS checkout 的两个启动模块。真实 VAS 的本地集成测试通过 `VAS_TEST_ROOT` 显式开启，使用包含全部模块的覆盖率配置，见[开发文档](docs/scenarios.md#本地-vas--fake-服务)。
 
@@ -266,4 +274,45 @@ GitHub 官方参考：[手动运行工作流](https://docs.github.com/en/actions
 - 准备或渲染失败仍生成 `result.json`、`report.json` 和简洁的 `report.html`；已有音频与诊断数据保留。
 - 压缩失败的会话放在下载包的 `raw-fallback/<session-id>/`；其他会话继续无损压缩。原始运行目录不变。
 - `continue-on-error` 仅用于允许后续报告上传。最后检查原始与下载包的批量状态、完整轮数和各步骤结果；有失败、缺失报告或上传失败，Action 仍然失败。
-- 第一阶段保留 eSpeak NG、串行连接和现有 BuildKit 缓存；没有增加音频缓存、预构建镜像或 macOS runner。减少的是重复环境准备，VAS 实际回复耗时不变。
+- 输入语音使用 Piper；串行连接和现有 BuildKit 缓存继续保留，模型随依赖层缓存。生成音频不缓存，VAS 实际回复耗时不变。
+
+### 独立网页实时对话
+
+```bash
+python -m voice_scenarios web --port 19225 --output artifacts/live
+```
+
+打开 `http://127.0.0.1:19225/live/`，选择 MAIN/DEV、填写 MAC，点击“连接并开始记录”。在同一个连接中发送文字，或按住空格说话、松开结束（输入框内的空格仍正常输入）；VAD 模式持续发送录音和底噪，由 VAS 返回识别结果后停止本轮收音，回复播放完成后继续聆听。可用“打断回复”取消正在播放的回答，再发送下一轮。结束后生成独立静态 HTML、Excel、完整会话音频和原始事件。
+
+手动模式：按下发送 `listen/start`（`mode: manual`），持续传送音频，松开后先发送录音尾帧，再发一次 `listen/stop`。客户端静音检测只用于标记时间，不会自动停录。报告“录音结束控制”分别核对 stop 发送与接收、ASR 自动断句请求与供应商回显、VAS 本地 VAD 活动；没有 VAD 事件不等于已经关闭。完全停止 VAS 本地 VAD 计算需要服务端支持，本工具不会将手动模式标成“所有 VAD 已关闭”。
+
+总览和单轮时间轴的“用户语音”轨道常驻显示 **PTT 语音开始（空心圆）**、**PTT 语音结束（实心方块）**，分别对应客户端实际发送 `listen/start` 和 `listen/stop` 的时刻；点击查看精确秒数和北京时间，可作为磁吸与区间测量端点。停止发送失败时不会生成结束标记。已有录音重新生成报告也可补上这两个标记。
+
+客户端收发时间使用 `performance.now()`，浏览器播放用近期的 Web Audio 输出时钟映射到同一时间基准，重新连接、播放间隔和音频时钟暂停后均重新采样，不复用整个会话的固定偏移。播放记录保留输出时钟快照、调度时间与独立回调观察时间，便于核查。浏览器未提供可靠输出时钟时明确标为估计。历史数据若出现“播放早于同包接收”，不据此计算首音或移动回复条；报告显示真实的停止到首包等待，原始回复音频单独回听，需重新录音才能取得可信的完整播放时序。输入时间轴保留实际发包时间，音频合成回放为保留样本作的排队不改变图上时间。
+
+首次使用可先点击“检测麦克风”，选择输入设备并说话，再点击“停止检测并回听”。这段检测音频只保留在当前页面，不发送给 VAS。正式录音等麦克风就绪后才创建对话轮次；准备期间松开空格会取消，不产生空轮次。麦克风全零静音会在页面提示，并在导出报告中标记该轮失败。结束会话使用现有 VAS 的 `diagnostics/finish` 控制消息，收到最后一批诊断数据后导出。
+
+网页是独立客户端，不嵌入报告。浏览器直连 VAS；本地 Python 只提供页面、OTA 校验和记录/导出服务。沿用 Aquamind Console 的 Opus 编解码、AudioWorklet 采音、Web Audio 连续调度；不改 Console 或 VAS。使用 Chrome 的 localhost 页面可访问麦克风；远程网页需要 HTTPS。设备 Token 仅用于本次连接，不写入报告或本地存储。关闭页面或断线会保存已接收记录，并标记采集未完成。
+
+自动化测试的播放时间来自 Python 模拟播放器；网页对话来自浏览器 AudioContext 时钟映射，包含初始缓冲，不等同于扬声器的声学实测。网页 VAD 的“用户说完”以客户端能量估计标识，服务端 VAD 标记仍使用服务器事件；两端时间转换为北京时间显示，不做跨主机校时。精确 TTS 请求文本仍需服务端提供，本版不新增相关埋点。
+
+开发期间修改报告生成 Python 代码或新增前端公共脚本后，需要重启本地 `web` 服务；该命令不热重载 Python 模块。已有静态报告需重新生成后刷新页面，避免旧进程与新资源混用。
+
+### 时间轴与历史音频
+
+- 总览最上方显示用户语音和回复，下面显示各轮 VAS 阶段。连接尝试为会话起点；旧记录缺失时保留原始基准。
+- 每条 VAS 时间轴默认折叠，聚合显示事件数。单击时间条或左侧箭头展开全部事件，再次点击折叠；每行独立，缩放保留展开状态。VAD 与其他事件使用同样的标记，点选查看名称和精确时间。聚合标记保留异常提示。
+- 滚动 VAS 阶段时，时间尺、用户语音、回复播放及对应标签固定在图表顶部。触控板双指捏合缩放、双指平移滚动；触摸屏双指捏合缩放、单指平移。缩放围绕手势位置，保留测量选区。
+- Turn 页复用同一时间轴，默认显示本轮范围；沿用会话的时间与音频，不重新归零。点击“本轮”恢复完整本轮视图。
+- 鼠标拖动或输入起止秒数测量，支持放大选区、播放选区、循环选区、定位当前轮及长等待。时间轴获得焦点后：空格播放、左右键定位、`+/-` 缩放、`0` 恢复全程（Turn 页恢复本轮）、`Esc` 清除。
+- Python 模拟播放器改用样本游标连续计时，缓冲中的帧不会因调度迟到而产生零样本碎缝；真实音频迟到的等待保留。
+
+旧报告需要**在新目录重建**，不要覆盖原始数据：
+
+```bash
+python -m voice_scenarios rebuild artifacts/old-session --output artifacts/rebuilt-session
+```
+
+仅当旧模拟播放拥有完整 PCM 就绪证据时重建；浏览器实播、缺失证据和旧打断片段不会重新计时。重建版明确标注“模拟播放重建”，保存 `result.original.json`，原目录保持不变。
+
+本地无云端验收页面：`PYTHONPATH=. python tests/live_preview.py`，打开 `http://127.0.0.1:19226/live/` 并取消 OTA 校验。该模拟端返回固定测试音，不代表真实 VAS 性能。

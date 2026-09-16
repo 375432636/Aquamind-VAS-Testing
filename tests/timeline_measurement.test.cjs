@@ -2,7 +2,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {readFileSync} = require('node:fs');
 const vm = require('node:vm');
-const enable = vm.runInNewContext(readFileSync('voice_scenarios/timeline_measurement.js', 'utf8') + '\nenableTimelineMeasurement;');
+const enable = vm.runInNewContext(readFileSync('voice_scenarios/timeline_navigation.js', 'utf8') + '\n' + readFileSync('voice_scenarios/timeline_measurement.js', 'utf8') + '\nenableTimelineMeasurement;');
 
 class Element {
   constructor() { this.listeners = {}; this.style = {}; this.value = ''; this.dataset = {}; this.hidden = true; this.capture = null; }

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import platform
+import shutil
 import statistics
 from datetime import datetime
 from pathlib import Path
@@ -185,11 +186,53 @@ def main():
     stack.add_argument("--base-port", type=int, default=19080)
     reportp = sub.add_parser("report")
     reportp.add_argument("directory", type=Path)
+    rebuild = sub.add_parser("rebuild")
+    rebuild.add_argument("directory", type=Path)
+    rebuild.add_argument("--output", type=Path, required=True)
+    webp = sub.add_parser("web")
+    webp.add_argument("--output", type=Path, default=ROOT / "artifacts/live")
+    webp.add_argument("--host", default="127.0.0.1")
+    webp.add_argument("--port", type=int, default=19225)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
-        if args.command == "stack":
+        if args.command == "web":
+            from .web_server import serve
+
+            serve(args.output, args.host, args.port)
+            code = 0
+        elif args.command == "stack":
             asyncio.run(serve_stack(args.vas_root, args.script, args.base_port))
+            code = 0
+        elif args.command == "rebuild":
+            from .excel_report import export_excel
+            from .replay_clock import reconstruct_simulated_playback
+
+            if (
+                args.output.resolve() == args.directory.resolve()
+                or args.output.exists()
+            ):
+                raise ValueError("Rebuild requires a new output directory")
+            shutil.copytree(args.directory, args.output)
+            result = json.loads((args.output / "result.json").read_text())
+            journal = [
+                json.loads(line)
+                for line in (args.output / "client-events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            changed = reconstruct_simulated_playback(result, journal)
+            shutil.copy2(
+                args.output / "result.json", args.output / "result.original.json"
+            )
+            (args.output / "result.json").write_text(
+                json.dumps(result, ensure_ascii=False)
+            )
+            report = create_report(args.output)
+            export_excel([report], args.output / "evaluation.xlsx")
+            logging.warning(
+                "Rebuilt %s frames | %s", changed, args.output / "report.html"
+            )
             code = 0
         elif args.command == "report":
             report = create_report(args.directory)

@@ -14,8 +14,15 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
+from .input_control import refresh_ptt_markers
 from .reply_audio import _packet_index
-from .reply_timing import analyze_reply_timing, input_end_event
+from .reply_timing import (
+    analyze_reply_timing,
+    input_end_event,
+    ordered_playback_frames,
+    playback_clock,
+    validated_playback_frames,
+)
 
 SAMPLE_RATE = 16000
 MAX_SESSION_SECONDS = 7200
@@ -73,7 +80,28 @@ def _time(events, kind):
     return next((e["at_ns"] for e in events if e["event"] == kind), None)
 
 
+def _input_start(events):
+    return next(
+        (
+            value
+            for kind in (
+                "text_sent",
+                "sensor_sent",
+                "speech_input_started",
+                "first_audio_sent",
+                "input_started",
+                "input_audio_frame_sent",
+                "input_speech_started",
+            )
+            if (value := _time(events, kind)) is not None
+        ),
+        None,
+    )
+
+
 def _input(turn, directory, frames, not_before):
+    if turn.get("input_type") == "text":
+        return [], [], "text", 0, 0
     if turn.get("sensor"):
         return [], [], "event", 0, 0
     events = turn.get("events", [])
@@ -126,6 +154,8 @@ def _input(turn, directory, frames, not_before):
     kind = "uplink" if vad and turn.get("audio", {}).get("uplink") else "input"
     source = _source(turn, directory, kind)
     anchor = _time(events, "first_audio_sent")
+    if anchor is None:
+        anchor = _input_start(events)
     if vad and kind == "input":
         anchor = _time(events, "speech_input_started")
     if anchor is None:
@@ -153,8 +183,12 @@ def _input(turn, directory, frames, not_before):
 
 
 def _reply(turn, directory):
-    events = turn.get("events", [])
-    starts = [e for e in events if e["event"] == "playback_frame_started"]
+    clock = playback_clock(turn)
+    if clock["status"] == "invalid":
+        raise ValueError("invalid_playback_clock")
+    if clock["status"] == "estimated":
+        raise ValueError("estimated_playback_clock")
+    starts = ordered_playback_frames(turn)
     if not starts:
         return [], {}
     source = _source(turn, directory, "played")
@@ -178,7 +212,9 @@ def _reply(turn, directory):
         raise ValueError("wav_playback_mismatch")
     clips, intervals, position = [], {}, 0
     previous_end = None
-    for event, seq, size in zip(starts, seqs, sizes):
+    for event, seq, size in list(zip(starts, seqs, sizes))[
+        : clock["trusted_frame_count"]
+    ]:
         count = min(size, source.samples - position)
         if (
             previous_end is not None
@@ -340,7 +376,7 @@ def prepare_session_playback(report, directory):
         "duration_seconds": 0,
         "zero_at_ns": None,
         "clock": "client_monotonic",
-        "source": "client_recorded_simulated_playback",
+        "source": report.get("playback_source", "client_recorded_simulated_playback"),
         "limitations": [],
         "turns": [],
         "segments": [],
@@ -355,15 +391,20 @@ def prepare_session_playback(report, directory):
         )
         return result
     anchors = [
-        _time(
-            t.get("events", []),
-            "sensor_sent" if t.get("sensor") else "first_audio_sent",
-        )
+        e["at_ns"]
         for t in turns
+        for e in t.get("events", [])
+        if e["event"]
+        in {
+            "sensor_sent",
+            "text_sent",
+            "first_audio_sent",
+            "input_started",
+            "input_audio_frame_sent",
+        }
     ]
-    anchors = [value for value in anchors if value is not None]
     if report.get("connection_started_at_ns") is not None:
-        anchors.append(report["connection_started_at_ns"])
+        anchors = [report["connection_started_at_ns"]]
     if not anchors:
         result["limitations"].append(
             {
@@ -387,6 +428,18 @@ def prepare_session_playback(report, directory):
     if startup.get("received_frames"):
         try:
             greeting_clips, greeting_intervals = _reply(startup, directory)
+            if playback_clock(startup)["status"] == "partial":
+                incomplete = True
+                limitation(
+                    "partial_playback_clock",
+                    0,
+                    "欢迎语仅对齐浏览器输出时钟确认的连续前缀；未确认尾部未放入整段回听，原始完整音频仍保留。",
+                )
+                result["startup_unaligned_audio"] = {
+                    kind: filename
+                    for kind, filename in startup.get("audio", {}).items()
+                    if kind in {"played", "received"}
+                }
             clips.extend(greeting_clips)
             if greeting_clips:
                 latest = max(latest, max(clip.end_ns for clip in greeting_clips))
@@ -415,7 +468,19 @@ def prepare_session_playback(report, directory):
                 )
         except (OSError, EOFError, wave.Error, ValueError) as exc:
             incomplete = True
-            limitation("greeting_audio_unavailable", 0, f"首次问候音频无法重建：{exc}")
+            code = (
+                str(exc)
+                if str(exc) in {"invalid_playback_clock", "estimated_playback_clock"}
+                else "greeting_audio_unavailable"
+            )
+            limitation(
+                code, 0, f"首次问候音频无法按真实时刻对齐，原始音频仍可回听：{exc}"
+            )
+            result["startup_unaligned_audio"] = {
+                kind: filename
+                for kind, filename in startup.get("audio", {}).items()
+                if kind in {"played", "received"}
+            }
     input_cursor = zero
     input_error = None
     try:
@@ -424,9 +489,17 @@ def prepare_session_playback(report, directory):
         routed_inputs, input_error = {}, exc
     for index, turn in enumerate(turns, 1):
         events = turn.get("events", [])
+        clock = playback_clock(turn)
         endpoint = max(
-            [zero, turn.get("ended_at_ns", zero)] + [e["at_ns"] for e in events]
+            [zero, turn.get("ended_at_ns", zero)]
+            + [
+                e["at_ns"]
+                for e in events
+                if clock["status"] not in {"invalid", "estimated", "partial"}
+                or e["event"] not in {"playback_started", "playback_frame_started"}
+            ]
         )
+        observed_endpoint = endpoint
         input_spans, input_clips, reply_clips, intervals = [], [], [], {}
         timing = "unavailable"
         try:
@@ -443,7 +516,7 @@ def prepare_session_playback(report, directory):
                 limitation(
                     "input_packet_overlap",
                     index,
-                    f"输入发包间隔短于音频时长，回放按顺序排队保留全部采样，最大顺延 {max_shift / 1e9:.3f} 秒；结束指令与回复仍使用原始客户端时刻。",
+                    f"输入发包间隔短于音频时长，仅回听音频按顺序排队保留全部采样，最大顺延 {max_shift / 1e9:.3f} 秒；时间轴仍使用原始客户端发送时刻。",
                 )
                 result["limitations"][-1]["max_shift_seconds"] = max_shift / 1e9
             if untimed_samples:
@@ -472,18 +545,34 @@ def prepare_session_playback(report, directory):
         except (OSError, EOFError, wave.Error, ValueError) as exc:
             incomplete = reply_error = True
             limitation(
-                "reply_audio_unavailable",
+                (
+                    str(exc)
+                    if str(exc)
+                    in {"invalid_playback_clock", "estimated_playback_clock"}
+                    else "reply_audio_unavailable"
+                ),
                 index,
-                f"回复音频无法准确重建：{type(exc).__name__}: {exc}",
+                (
+                    "历史浏览器播放时钟无效，无法还原真实首音或对齐回复；等待区间仅表示首包等待，原始音频保留供回听。"
+                    if str(exc) == "invalid_playback_clock"
+                    else (
+                        "浏览器仅记录了估计播放时刻，缺少可靠输出时钟；等待区间仅表示首包等待，原始音频保留供回听。"
+                        if str(exc) == "estimated_playback_clock"
+                        else f"回复音频无法准确重建：{type(exc).__name__}: {exc}；原始音频保留供回听。"
+                    )
+                ),
+            )
+        if clock["status"] == "partial":
+            incomplete = True
+            limitation(
+                "partial_playback_clock",
+                index,
+                "已保留浏览器输出时钟确认的首音和连续播放前缀；未确认尾部未放入整段回听，原始完整回复可单独回听。",
             )
         clips.extend(input_clips + reply_clips)
         endpoint = max([endpoint] + [clip.end_ns for clip in input_clips + reply_clips])
         latest = max(latest, endpoint)
-        input_start = (
-            _time(events, "sensor_sent")
-            or _time(events, "speech_input_started")
-            or _time(events, "first_audio_sent")
-        )
+        input_start = _input_start(events)
         input_end = _time(events, input_end_event(turn))
         reply_events = [
             event
@@ -493,7 +582,15 @@ def prepare_session_playback(report, directory):
         first_received = _time(reply_events, "audio_packet_received") or _time(
             reply_events, "audio_received"
         )
-        first_playback = _time(reply_events, "playback_frame_started")
+        valid_frames = validated_playback_frames(turn)
+        first_playback = min(
+            (
+                e["at_ns"]
+                for e in valid_frames
+                if not e.get("data", {}).get("is_session_output")
+            ),
+            default=None,
+        )
         row = {
             "index": index,
             "id": turn.get("id", str(index)),
@@ -508,17 +605,27 @@ def prepare_session_playback(report, directory):
             "input_end_seconds": seconds(input_end),
             "first_received_seconds": seconds(first_received),
             "first_playback_seconds": seconds(first_playback),
+            "playback_clock": clock,
             "end_seconds": seconds(endpoint),
             "input_segments": [],
         }
+        if reply_error or clock["status"] == "partial":
+            row["unaligned_audio"] = {
+                kind: filename
+                for kind, filename in turn.get("audio", {}).items()
+                if kind in {"played", "received"}
+            }
         for start, end, speech, sent_start, sent_end in input_spans:
             item = {
-                "start_seconds": seconds(start),
-                "end_seconds": seconds(end),
+                "start_seconds": seconds(sent_start),
+                "end_seconds": seconds(sent_end),
                 "kind": "speech" if speech else "background",
-                "timing": timing,
+                "timing": "approximate" if timing == "approximate" else "recorded",
                 "sent_start_seconds": seconds(sent_start),
                 "sent_end_seconds": seconds(sent_end),
+                "replay_start_seconds": seconds(start),
+                "replay_end_seconds": seconds(end),
+                "replay_timing": timing,
             }
             previous = row["input_segments"][-1] if row["input_segments"] else None
             if (
@@ -532,14 +639,18 @@ def prepare_session_playback(report, directory):
                 previous["sent_end_seconds"] = max(
                     previous["sent_end_seconds"], item["sent_end_seconds"]
                 )
+                previous["replay_end_seconds"] = max(
+                    previous["replay_end_seconds"], item["replay_end_seconds"]
+                )
             else:
                 row["input_segments"].append(item)
         result["turns"].append(row)
         for kind, anchor in (
+            ("input_started", input_start),
             ("sensor_sent" if turn.get("sensor") else "input_end", input_end),
             ("first_received", first_received),
             ("first_playback", first_playback),
-            ("abort", _time(events, "abort_requested")),
+            ("abort", _time(events, "abort_sent") or _time(events, "abort_requested")),
         ):
             if anchor is not None:
                 result["markers"].append(
@@ -601,8 +712,32 @@ def prepare_session_playback(report, directory):
                 spoken.append(segment)
         spoken.sort(key=lambda segment: segment["start_seconds"])
         waits = []
-        if input_end is not None and first_playback is not None:
-            waits.append(("first_reply", seconds(input_end), seconds(first_playback)))
+        if input_end is not None and (
+            first_playback is None or first_playback >= input_end
+        ):
+            interruption = min(
+                (
+                    e["at_ns"]
+                    for e in events
+                    if e["event"]
+                    in {"abort_sent", "abort_requested", "playback_stopped"}
+                    and e["at_ns"] >= input_end
+                ),
+                default=None,
+            )
+            if first_playback is not None and first_playback >= input_end:
+                kind, wait_end = "first_reply", first_playback
+            elif first_received is not None and first_received >= input_end:
+                kind, wait_end = "first_packet", first_received
+            elif first_received is not None:
+                # Audio was already received before release; there is no
+                # post-release first-packet wait, even if playback is unknown.
+                kind, wait_end = "first_packet", input_end
+            else:
+                kind, wait_end = "no_reply", observed_endpoint
+            if interruption is not None and interruption < wait_end:
+                kind, wait_end = "interrupted", interruption
+            waits.append((kind, seconds(input_end), seconds(wait_end)))
         for previous, current in zip(spoken, spoken[1:]):
             kind = (
                 "transition"
@@ -624,6 +759,7 @@ def prepare_session_playback(report, directory):
         )
     duration = seconds(latest)
     result["duration_seconds"] = duration
+    refresh_ptt_markers(result, turns)
     if duration > MAX_SESSION_SECONDS:
         result["limitations"].append(
             {

@@ -20,6 +20,7 @@ class ClockedPlayer:
         self.finished = False
         self.started = False
         self.queued_seconds = 0.0
+        self.cursor_ns = None
 
     def feed(self, pcm, sample_rate, metadata=None):
         if self.finished:
@@ -37,7 +38,7 @@ class ClockedPlayer:
             self.writer.setparams((1, 2, sample_rate, 0, "NONE", "not compressed"))
             self.task = asyncio.create_task(self._play())
         self.queued_seconds += duration
-        self.queue.put_nowait((pcm, metadata or {}))
+        self.queue.put_nowait((pcm, dict(metadata or {}), time.monotonic_ns()))
 
     def finish(self):
         if not self.finished:
@@ -50,8 +51,24 @@ class ClockedPlayer:
             if pcm is None:
                 self.emit(Event("playback_drained", {"source": self.source}))
                 return
-            pcm, metadata = pcm
-            started_at = time.monotonic_ns()
+            pcm, metadata, ready_at = pcm
+            callback_at = time.monotonic_ns()
+            started_at = (
+                max(self.cursor_ns, ready_at)
+                if self.cursor_ns is not None
+                else callback_at
+            )
+            samples = len(pcm) // 2
+            end_at = started_at + round(samples / self.sample_rate * 1e9)
+            metadata.update(
+                pcm_ready_at_ns=ready_at,
+                callback_at_ns=callback_at,
+                scheduled_end_ns=end_at,
+                sample_count=samples,
+                sample_rate=self.sample_rate,
+                timing_model="sample_clock_v1",
+            )
+            self.cursor_ns = end_at
             if metadata.get("audio_seq") is not None:
                 self.emit(
                     Event(
@@ -67,11 +84,16 @@ class ClockedPlayer:
                 )
             duration = len(pcm) / (self.sample_rate * 2)
             try:
-                await asyncio.sleep(duration)
+                await asyncio.sleep(max(0, (end_at - time.monotonic_ns()) / 1e9))
             except asyncio.CancelledError:
                 played = min(
                     len(pcm) // 2,
-                    int((time.monotonic_ns() - started_at) / 1e9 * self.sample_rate),
+                    max(
+                        0,
+                        int(
+                            (time.monotonic_ns() - started_at) / 1e9 * self.sample_rate
+                        ),
+                    ),
                 )
                 self.writer.writeframes(pcm[: played * 2])
                 raise

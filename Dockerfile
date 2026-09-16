@@ -3,13 +3,12 @@ FROM python:3.11-slim-trixie@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b7
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    ORT_DISABLE_TELEMETRY=1 \
+    PIPER_DATA_DIR=/opt/piper
 
-# Trixie supplies eSpeak NG 1.52. Ubuntu 24.04's 1.51 has broken cmn
-# pronunciation for these Mandarin text fixtures.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates espeak-ng ffmpeg libopus0 \
-    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' espeak-ng)" ge 1.52 \
+    && apt-get install --no-install-recommends -y ca-certificates ffmpeg libopus0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -32,6 +31,11 @@ requirements = [
 ]
 subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *requirements], check=True)
 PY
+
+# Keep the public voice model in the dependency cache, before changing source
+# files. Actions run with the caller's uid/gid, so the cache must be readable.
+RUN python -m piper.download_voices zh_CN-huayan-medium --data-dir /opt/piper \
+    && chmod -R a+rX /opt/piper
 
 COPY pyproject.toml main.py .coveragerc .coveragerc-client ./
 COPY voice_scenarios/ ./voice_scenarios/

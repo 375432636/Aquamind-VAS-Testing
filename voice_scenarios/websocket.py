@@ -295,6 +295,10 @@ class WebSocketTransport:
                 raise ValueError("input must be nonempty mono PCM16 WAV at 16000 Hz")
             samples = audio.getnframes()
             encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
+            # Opus delays the final source samples by its lookahead. Existing
+            # last-frame padding may drain them; otherwise send one more frame
+            # before listen/stop so the ASR receives the end of the utterance.
+            encoded_samples = samples + encoder.lookahead
             self.turn_sequence += 1
             self.listen_sequence += 1
             await self._send_json(
@@ -305,26 +309,28 @@ class WebSocketTransport:
             )
             started = time.monotonic()
             count = 0
-            while pcm := audio.readframes(960):
+            while count * 960 < encoded_samples:
+                pcm = audio.readframes(960)
                 await asyncio.sleep(max(0, started + count * 0.06 - time.monotonic()))
                 packet = encoder.encode(pcm.ljust(1920, b"\0"), 960)
                 await self.ws.send(packet)
                 count += 1
                 last_sent = time.monotonic_ns()
-                self.emit(
-                    Event(
-                        "input_audio_frame_sent",
-                        {
-                            "pcm_offset_samples": (count - 1) * 960,
-                            "samples": len(pcm) // 2,
-                            "sample_rate": 16000,
-                            "stream": "input",
-                            "is_speech": True,
-                            "listen_turn_id": self.turn_sequence,
-                        },
-                        last_sent,
+                if pcm:
+                    self.emit(
+                        Event(
+                            "input_audio_frame_sent",
+                            {
+                                "pcm_offset_samples": (count - 1) * 960,
+                                "samples": len(pcm) // 2,
+                                "sample_rate": 16000,
+                                "stream": "input",
+                                "is_speech": True,
+                                "listen_turn_id": self.turn_sequence,
+                            },
+                            last_sent,
+                        )
                     )
-                )
                 if count == 1:
                     self.emit(
                         Event(
@@ -348,7 +354,9 @@ class WebSocketTransport:
                 "server_listen_turn_id": self.listen_sequence,
             }
             self.emit(Event("audio_send_completed", metadata, last_sent))
-            await asyncio.sleep(max(0, started + samples / 16000 - time.monotonic()))
+            await asyncio.sleep(
+                max(0, started + encoded_samples / 16000 - time.monotonic())
+            )
             await self._send_json({"type": "listen", "state": "stop"})
             self.emit(Event("listen_stop_sent", metadata))
             return metadata

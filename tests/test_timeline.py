@@ -140,3 +140,22 @@ def test_nonstream_asr_is_not_labelled_as_upload_time():
     request = span("asr_request", "local", 0, 10)
     request["data"]["mode"] = "NON_STREAM"
     assert group_timeline_spans([request], [])[0]["label"] == "ASR 识别请求"
+
+
+def test_vad_has_a_distinct_role_on_asr_lane():
+    from voice_scenarios.timeline import group_timeline_spans
+
+    lanes = group_timeline_spans(
+        [],
+        [
+            {
+                "event": "local_vad_endpoint_detected",
+                "monotonic_ns": 100,
+                "clock_id": "s",
+                "data": {},
+                "status": "ok",
+            }
+        ],
+    )
+    assert lanes[0]["category"] == "asr_request"
+    assert lanes[0]["markers"][0]["role"] == "vad"

@@ -1,7 +1,117 @@
 """Derive spoken-segment timing from ordered wire boundaries and played frames."""
 
 
+def ordered_playback_frames(turn):
+    """Recover v2 PCM append order from observation evidence, never estimated at_ns."""
+    frames = [
+        e for e in turn.get("events", []) if e["event"] == "playback_frame_started"
+    ]
+    if frames and all(
+        e.get("data", {}).get("timing_model") == "browser_audio_context_v2"
+        and isinstance(e["data"].get("playback_observed_at_ns"), int)
+        and isinstance(e["data"].get("audio_seq"), int)
+        for e in frames
+    ):
+        return sorted(
+            frames,
+            key=lambda e: (
+                e["data"]["playback_observed_at_ns"],
+                e["data"]["audio_seq"],
+            ),
+        )
+    return frames
+
+
+def playback_clock(turn):
+    """Validate browser playback against packet receipt in the same client clock.
+
+    A legacy AudioContext mapping can run behind performance.now() after a
+    suspension. Neither its derived wall time nor packet arrival can recover the
+    actual playback instant. Keep raw events unchanged and never replace an
+    unknown first frame with a later valid-looking one. New v2 observation
+    evidence can retain a confirmed prefix when only its tail is uncertain.
+    """
+    events = turn.get("events", [])
+    frames = ordered_playback_frames(turn)
+    received = {}
+    for event in events:
+        if event["event"] in {"audio_received", "audio_packet_received"}:
+            seq = event.get("data", {}).get("audio_seq")
+            if seq is not None:
+                # Decoded audio receipt is the stronger causal boundary.
+                received[seq] = max(received.get(seq, event["at_ns"]), event["at_ns"])
+    issues, estimated, prefix = [], 0, 0
+    prefix_open = bool(frames) and all(
+        e.get("data", {}).get("timing_model") == "browser_audio_context_v2"
+        and isinstance(e["data"].get("playback_observed_at_ns"), int)
+        and isinstance(e["data"].get("audio_seq"), int)
+        for e in frames
+    )
+    for frame in frames:
+        data = frame.get("data", {})
+        browser = turn.get("playback_source") == "browser_audio_context" or (
+            data.get("source") == "browser_audio_context"
+            or data.get("timing_model", "").startswith("browser_audio_context")
+        )
+        if not browser:
+            continue
+        confirmed = (
+            data.get("timing_model") == "browser_audio_context_v2"
+            and data.get("timing_method") == "output_timestamp"
+            and data.get("output_start_confirmed") is True
+            and data.get("output_end_confirmed") is True
+        )
+        if data.get("timing_method") == "context_clock_estimate" or (
+            data.get("timing_model") == "browser_audio_context_v2" and not confirmed
+        ):
+            estimated += 1
+        seq = data.get("audio_seq")
+        arrived = received.get(seq)
+        if arrived is None or frame["at_ns"] < arrived:
+            prefix_open = False
+            issues.append(
+                {
+                    "code": (
+                        "missing_playback_receipt"
+                        if arrived is None
+                        else "playback_before_receipt"
+                    ),
+                    "audio_seq": seq,
+                    "playback_at_ns": frame["at_ns"],
+                    "received_at_ns": arrived,
+                }
+            )
+        if prefix_open and confirmed:
+            prefix += 1
+        else:
+            prefix_open = False
+    partial = bool(prefix and estimated)
+    trusted = prefix if partial else 0 if issues or estimated else len(frames)
+    return {
+        "status": (
+            "partial"
+            if partial
+            else (
+                "invalid"
+                if issues
+                else "estimated" if estimated else "valid" if frames else "unavailable"
+            )
+        ),
+        "invalid_frame_count": len(issues),
+        "estimated_frame_count": estimated,
+        "trusted_frame_count": trusted,
+        "unlocated_frame_count": len(frames) - trusted,
+        "issues": issues[:5],
+    }
+
+
+def validated_playback_frames(turn):
+    return ordered_playback_frames(turn)[: playback_clock(turn)["trusted_frame_count"]]
+
+
 def input_end_event(turn):
+    if turn.get("input_type") == "text":
+        return "text_sent"
     if turn.get("sensor"):
         return "sensor_sent"
     return (
@@ -13,12 +123,17 @@ def input_end_event(turn):
 
 def analyze_reply_timing(turn):
     events = turn.get("events", [])
+    clock = playback_clock(turn)
     zero_event = input_end_event(turn)
     zero = next((e["at_ns"] for e in events if e["event"] == zero_event), None)
     stopped = next(
         (e["at_ns"] for e in events if e["event"] == "playback_stopped"), None
     )
-    sentences, received, played = [], {}, {}
+    sentences, received = [], {}
+    played = {
+        e.get("data", {}).get("audio_seq"): e["at_ns"]
+        for e in validated_playback_frames(turn)
+    }
     active = None
     for event in events:
         name, data = event["event"], event.get("data", {})
@@ -42,8 +157,6 @@ def analyze_reply_timing(turn):
             active["seqs"].append(seq)
         if name == "audio_received" and seq is not None:
             received[seq] = data
-        elif name == "playback_frame_started" and seq is not None:
-            played.setdefault(seq, event["at_ns"])
 
     def relative(value):
         return (value - zero) / 1e9 if value is not None and zero is not None else None
@@ -85,12 +198,17 @@ def analyze_reply_timing(turn):
             and not clipped
         )
         status = (
-            "completed"
-            if complete
+            "timing_unavailable"
+            if clock["status"] in {"invalid", "estimated"}
+            or (clock["status"] == "partial" and not intervals)
             else (
-                "not_played"
-                if not intervals
-                else "interrupted" if stopped is not None else "incomplete"
+                "completed"
+                if complete
+                else (
+                    "not_played"
+                    if not intervals
+                    else "interrupted" if stopped is not None else "incomplete"
+                )
             )
         )
         rows.append(
@@ -143,10 +261,23 @@ def analyze_reply_timing(turn):
         limitations.append("缺少输入结束时间，不能计算说完后的等待。")
     if not sentences:
         limitations.append("缺少播报分段消息，不能从 TTS 请求耗时推断每句播放时间。")
+    if clock["status"] == "invalid":
+        limitations.append(
+            "历史浏览器播放时钟无效：播放帧早于对应收包，或缺少对应收包记录；无法还原真实首音与句间时间，保留原始音频供回听。"
+        )
+    elif clock["status"] == "estimated":
+        limitations.append(
+            "浏览器未提供可靠输出时钟，仅有 AudioContext 估计值；不将估计值作为真实首音或句间时间，保留原始音频供回听。"
+        )
+    elif clock["status"] == "partial":
+        limitations.append(
+            "首音与连续已确认播放帧使用浏览器输出时钟；后续未确认尾帧不定位，原始完整回复保留供回听。"
+        )
     return dict(
         zero_at_ns=zero,
         zero_event=zero_event,
-        source="client_simulated_playback",
+        source=turn.get("playback_source", "client_simulated_playback"),
+        playback_clock=clock,
         sentences=rows,
         max_gap_seconds=max(
             (r["gap_seconds"] for r in rows if r["gap_seconds"] is not None),

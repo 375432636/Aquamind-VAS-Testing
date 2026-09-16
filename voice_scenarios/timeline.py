@@ -85,7 +85,14 @@ def media_timeline_markers(events):
 
 MILESTONE_LABELS = {
     "llm_request_started": "LLM 请求提交",
-    "llm_first_token": "First Token",
+    "llm_request_finished": "LLM 请求结束",
+    "tts_request_finished": "TTS 请求结束",
+    "asr_request_finished": "ASR 请求结束",
+    "memory_request_started": "Memory 请求开始",
+    "memory_request_finished": "Memory 请求结束",
+    "tool_call_started": "工具调用开始",
+    "tool_call_finished": "工具调用结束",
+    "llm_first_token": "LLM 首个有效增量（First Token）",
     "llm_first_sse": "首个完整 SSE 数据块",
     "llm_first_output": "首个有效 SSE 增量",
     "llm_usage": "Token / 缓存用量",
@@ -101,7 +108,7 @@ MILESTONE_LABELS = {
     "tts_text_complete": "文本结束提交",
     "tts_segment_ready": "片段可合成",
     "tts_request_started": "TTS 请求开始",
-    "tts_first_pcm": "首个有效音频",
+    "tts_first_pcm": "VAS 收到 TTS 首个可解码音频",
     "http_session_created": "HTTP 会话创建",
     "http_request_started": "HTTP 请求开始",
     "http_pool_wait_started": "等待连接池",
@@ -340,6 +347,37 @@ def group_timeline_spans(spans, events):
             marker["label"] = "ASR 首个中间结果（字数未采集）"
         if request and at >= request["start_ns"]:
             marker["since_request_seconds"] = (at - request["start_ns"]) / 1e9
+        marker["role"] = (
+            "vad"
+            if name.startswith("local_vad_")
+            or name in {"asr_speech_started", "asr_endpoint_detected"}
+            else (
+                "primary"
+                if name.endswith(("_request_started", "_request_finished"))
+                or name
+                in {
+                    "llm_first_token",
+                    "tts_first_pcm",
+                    "tts_segment_ready",
+                    "asr_final",
+                    "asr_partial",
+                    "tool_call_started",
+                    "tool_call_finished",
+                }
+                else "secondary"
+            )
+        )
+        marker["severity"] = (
+            "error"
+            if event.get("status") == "error"
+            else (
+                "warning"
+                if event.get("status") in {"cancelled", "closed_early"}
+                or "retry" in name
+                else "info"
+            )
+        )
+        marker["turn_id"] = event.get("listen_turn_id")
         lane["markers"].append(marker)
     for lane in lanes.values():
         if lane["category"] == "tts_request":

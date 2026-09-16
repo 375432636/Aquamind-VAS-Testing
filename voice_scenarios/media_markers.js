@@ -20,12 +20,7 @@ function mediaMarkerDetails(markers, caption) {
     return `<div class="media-marker-detail"><strong>${escape(caption(marker))}</strong>${href ? `<a href="${escape(href)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">查看${label} ↗</a>` : `<span>${label}地址缺失或不支持打开</span>`}<code>${escape(marker.url || `未提供${label}地址`)}</code></div>`;
   }).join('');
 }
-function groupMediaMarkers(markers, extent, width) {
-  const groups = [];
-  for (const marker of [...markers].sort((a,b)=>a.at_seconds-b.at_seconds)) {
-    const previous = groups[groups.length-1];
-    if (previous && (marker.at_seconds-previous[0].at_seconds)/extent*width < 56) previous.push(marker);
-    else groups.push([marker]);
-  }
-  return groups;
+function groupMediaMarkers(markers) {
+  // Keep one event per button, including identical timestamps and duplicate URLs.
+  return [...markers].sort((a,b)=>a.at_seconds-b.at_seconds).map(marker=>[marker]);
 }

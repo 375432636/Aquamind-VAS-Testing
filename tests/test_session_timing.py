@@ -574,8 +574,9 @@ def test_overlapping_send_packets_are_queued_without_erasing_pcm_or_moving_reply
     assert [e["at_ns"] for e in item["events"]] == original_times
     assert playback["status"] == "ready"
     assert playback["turns"][0]["input_end_seconds"] == 0.15
-    assert playback["turns"][0]["input_segments"][-1]["end_seconds"] == 0.2
+    assert playback["turns"][0]["input_segments"][-1]["end_seconds"] == 0.15
     assert playback["turns"][0]["input_segments"][-1]["sent_end_seconds"] == 0.15
+    assert playback["turns"][0]["input_segments"][-1]["replay_end_seconds"] == 0.2
     assert any(
         limit["code"] == "input_packet_overlap" and limit["max_shift_seconds"] == 0.05
         for limit in playback["limitations"]

@@ -1,7 +1,7 @@
 function sessionTimelineScale(session) {
   const duration = Math.max(0,Number(session.duration_seconds) || 0);
-  const start = Math.min(0,session.vas_timeline?.axis_start_seconds ?? 0);
-  const end = Math.max(duration,session.vas_timeline?.axis_end_seconds ?? duration);
+  const start = session.view_start_seconds ?? Math.min(0,session.vas_timeline?.axis_start_seconds ?? 0);
+  const end = Math.max(start+.01,session.view_end_seconds ?? Math.max(duration,session.vas_timeline?.axis_end_seconds ?? duration));
   const extent = Math.max(.01,end-start);
   const clamp = value=>Math.max(start,Math.min(end,Number(value) || 0));
   return {duration,start,end,extent,clamp,
@@ -24,20 +24,44 @@ function renderSessionTimeline(target, session = {}) {
   const scale = sessionTimelineScale(session);
   const {duration,extent,percent,clamp} = scale;
   const trace = session.vas_timeline || {lanes:[]};
-  const vasLanes = traceLanes(trace.lanes || [],true);
+  const vasLanes = traceLanes(trace.lanes || [], !session.view_turn_index);
   const clockCaption = time=>trace.mode === 'wall' ? ' · 北京时间 '+beijingTime(trace.origin_wall_time_ms+time*1000,true) : '';
   const kindLabels = {greeting:'欢迎语',answer:'正式回复',pre_speech:'过渡语',filler:'临时回复',unknown:'类型未关联',mixed:'混合回复'};
-  const waitLabels = {first_reply:'等待首句',transition:'等待正式回复',sentence:'句间等待'};
-  const markerLabels = {sensor_sent:'传感器触发',input_end:'输入结束',first_received:'首包到达',first_playback:'开始播放',abort:'打断'};
+  const waitLabels = {first_reply:'等待首句',first_packet:'等待首包',interrupted:'等待中打断',no_reply:'未收到回复',transition:'等待正式回复',sentence:'句间等待'};
+  const markerLabels = {sensor_sent:'传感器触发',input_end:'输入结束',ptt_start:'PTT 语音开始',ptt_stop:'PTT 语音结束',first_received:'首包到达',first_playback:'开始播放',abort:'打断'};
+  const pttDetails = {
+    ptt_start:'客户端已发送 listen/start（manual），开始本轮语音输入。此点记录开始指令的发送时刻。',
+    ptt_stop:'客户端已发送 listen/stop，结束本轮语音输入。此点记录停止指令的发送时刻，不代表 VAS 已完成识别。',
+  };
   const items = [];
   const turns = session.turns || [];
   const mediaPoints = (session.media_markers || []).filter(row=>Number.isFinite(row.at_seconds) && row.at_seconds >= scale.start && row.at_seconds <= scale.end);
   let mediaGroups = [];
   canvas.classList.toggle('has-media-markers', mediaPoints.length > 0);
   target.classList.toggle('has-vas',vasLanes.length > 0);
-  let zoom = Math.max(1,Math.min(64,extent*18/Math.max(1,viewport.clientWidth))), selection = null, gesture = null, pendingSeek = null;
+  let zoom = session.view_turn_index ? 1 : Math.max(1,Math.min(64,extent*18/Math.max(1,viewport.clientWidth))), selection = null, gesture = null, pendingSeek = null;
   let animation = null, lastAutoScroll = 0;
   let fullAudioRequest = null, fullAudioUrl = null;
+  let selectedTurn = null, looping = false, inspectedTime = null, snapEnabled = true;
+  const expandedLanes = new Set();
+  target.querySelector('.session-tools').insertAdjacentHTML('afterend', `<div class="friendly-tools">
+    <button data-friendly="expand" aria-pressed="false">展开时间轴</button><button data-friendly="snap" aria-pressed="true">磁吸：开</button><button data-friendly="current">定位当前轮</button>
+    <button data-friendly="zoom-selection">放大选区</button><button data-friendly="play-selection">播放选区</button>
+    <button data-friendly="loop" aria-pressed="false">循环选区</button>
+    <label>长等待 ≥ <input data-wait-threshold type="number" min="0" step="0.5" value="3"> s</label>
+    <button data-friendly="next-wait">下一处长等待</button>
+    <span>Alt 暂停磁吸 · 空格播放 · +/− 缩放 · Esc 清除</span><span class="event-legend">单击时间条展开 / 折叠事件 · ○ 开始 · ◇ 首个输出 · □ 结束</span><output class="snap-status" aria-live="polite"></output></div>
+    <div class="wait-shortcuts" aria-label="等待区间"></div>`);
+
+  function highlightTurn(index) {
+    selectedTurn = index;
+    canvas.querySelectorAll('[data-turn-index], [data-session-item]').forEach(node=> {
+      const turnIndex = node.dataset.turnIndex || items[Number(node.dataset.sessionItem)]?.turn_index;
+      node.classList.toggle('is-muted-turn', Boolean(index && turnIndex && Number(turnIndex)!==index));
+    });
+    target.querySelectorAll('.session-vas-label').forEach((node,i)=>node.classList.toggle('is-muted-turn',Boolean(index && vasLanes[i]?.turn_index && vasLanes[i].turn_index!==index)));
+  }
+
   startInput.min = endInput.min = String(scale.start);
   startInput.max = endInput.max = String(scale.end);
   function itemButton(item, className, caption, contents = '') {
@@ -46,10 +70,11 @@ function renderSessionTimeline(target, session = {}) {
     const label = `第 ${item.turn_index} 轮 · ${item.label} · ${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} · ${seconds(span)}${clockCaption(item.start_seconds)}${item.text ? ' · ' + item.text : ''}`;
     return `<button type="button" class="session-range ${className}" data-session-item="${id}" style="left:${percent(item.start_seconds)}%;width:${Math.max(0, span/extent*100)}%" title="${escape(label)}" aria-label="${escape(label)}">${contents}<span>${escape(caption)}</span></button>`;
   }
-  let inputBars = '', replyBars = '', turnLines = '', markers = '';
+  let inputBars = '', replyBars = '', turnLines = '', markers = scale.start <= 0 && scale.end >= 0 ? '<span class="connection-flag" style="left:'+percent(0)+'%" title="客户端开始尝试连接 · 0 s">连接开始</span>' : '';
   turns.forEach(row => {
     const start = row.input_start_seconds ?? row.start_seconds;
-    if (start != null) turnLines += `<span class="session-turn-line" style="left:${percent(start)}%"><button type="button" data-session-turn="${row.index}" title="第 ${row.index} 轮 · ${escape(row.text)}">${String(row.index).padStart(2,'0')}</button></span>`;
+    const hasPttStart = (session.markers || []).some(marker=>marker.turn_index===row.index && marker.kind==='ptt_start');
+    if (start != null && !hasPttStart) turnLines += `<span class="session-turn-line" style="left:${percent(start)}%"><button type="button" data-session-turn="${row.index}" title="第 ${row.index} 轮 · ${escape(row.text)}">${String(row.index).padStart(2,'0')}</button></span>`;
     (row.input_segments || []).forEach(segment => {
       if (segment.start_seconds == null || segment.end_seconds == null) return;
       const background = segment.kind === 'background';
@@ -71,17 +96,30 @@ function renderSessionTimeline(target, session = {}) {
   });
   (session.markers || []).forEach(row => {
     if (row.at_seconds == null) return;
-    const label = `第 ${row.turn_index} 轮 · ${markerLabels[row.kind] || row.kind} · ${seconds(row.at_seconds)}`;
-    markers += `<button type="button" class="session-marker marker-${escape(row.kind)}" data-session-marker="${escape(row.kind)}" data-session-time="${Number(row.at_seconds)}" data-session-turn-index="${row.turn_index}" style="left:${percent(row.at_seconds)}%" title="${escape(label)}" aria-label="${escape(label)}"><i></i><span>${escape(markerLabels[row.kind] || row.kind)}</span></button>`;
+    const isPtt = Boolean(pttDetails[row.kind]);
+    const label = `第 ${row.turn_index} 轮 · ${markerLabels[row.kind] || row.kind} · ${Number(row.at_seconds).toFixed(isPtt ? 3 : 2)} s${clockCaption(row.at_seconds)}`;
+    const caption = (isPtt ? `${String(row.turn_index).padStart(2,'0')} · ` : '') + (markerLabels[row.kind] || row.kind);
+    markers += `<button type="button" class="session-marker marker-${escape(row.kind)}" data-session-marker="${escape(row.kind)}" data-session-time="${Number(row.at_seconds)}" data-session-turn-index="${row.turn_index}" style="left:${percent(row.at_seconds)}%" title="${escape(label)}" aria-label="${escape(label)}"><i></i><span>${escape(caption)}</span></button>`;
   });
-  const vasTop = mediaPoints.length ? 294 : 252;
-  const vasContent = vasLanes.length ? `<div class="session-vas-heading" style="top:${vasTop-32}px">VAS 内部时序 · 与详细页相同维度</div><div class="session-vas" id="session-vas" style="top:${vasTop}px"></div>` : '';
-  canvas.innerHTML = `<div class="session-ruler" id="session-ruler" aria-hidden="true"></div><div class="session-grid" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}<div class="session-media-markers"></div>${vasContent}<div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
+  const pinnedHeight = 150;
+  let vasTop = pinnedHeight+26;
+  const vasContent = vasLanes.length ? `<div class="session-vas-heading" style="top:${vasTop-32}px">VAS 内部时序</div><div class="session-vas" id="session-vas" style="top:${vasTop}px"></div>` : '';
+  target.style.setProperty('--session-pinned-height', pinnedHeight+'px');
+  canvas.innerHTML = `<div class="session-pinned-tracks"><div class="session-ruler" id="session-ruler" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}</div><div class="session-media-markers"></div><div class="session-grid" aria-hidden="true"></div>${vasContent}<div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
   let vasController = null;
   const labelRoot = document.getElementById('session-track-labels');
-  if (vasLanes.length) {
-    labelRoot.innerHTML = `<span>用户语音</span><span>回复播放</span><div class="session-vas-labels" style="top:${vasTop}px">${vasLanes.map(lane=>'<div class="session-vas-label">'+traceLabel(lane)+'</div>').join('')}</div>`;
+  {
+    labelRoot.innerHTML = `<div class="session-pinned-labels"><span>用户语音</span><span>回复播放</span></div><div class="session-vas-labels" style="top:${vasTop}px">${vasLanes.map((lane,index)=>'<div class="session-vas-label"><button class="lane-toggle" data-lane-toggle="'+index+'" aria-label="'+escape(lane.label)+' · 展开或折叠事件" aria-expanded="false"><span class="lane-chevron" aria-hidden="true">▸</span>'+traceLabel(lane)+'</button></div>').join('')}</div>`;
   }
+  const snapPoints = [
+    ...items.flatMap(item=>[{time:item.start_seconds,label:item.label+'开始'},{time:item.end_seconds,label:item.label+'结束'}]),
+    ...(session.markers||[]).map(m=>({time:m.at_seconds,label:markerLabels[m.kind]||m.kind})),
+    ...mediaPoints.map(m=>({time:m.at_seconds,label:m.label})),
+    ...vasLanes.flatMap(lane=>[
+      ...lane.segments.flatMap(span=>[{time:span.start/1e9,label:lane.label+'开始'},{time:span.end/1e9,label:lane.label+'结束'}]),
+      ...lane.markers.map(m=>({time:m.start/1e9,label:m.label})),
+    ]),
+  ].filter(p=>Number.isFinite(p.time)&&p.time>=scale.start&&p.time<=scale.end);
   const overlay = document.getElementById('session-selection');
   const caption = document.getElementById('selection-caption');
   const playhead = document.getElementById('session-playhead');
@@ -111,7 +149,7 @@ function renderSessionTimeline(target, session = {}) {
     if (x < viewport.scrollLeft+20 || x > viewport.scrollLeft+viewport.clientWidth-50) viewport.scrollLeft = Math.max(0,x-viewport.clientWidth*.3);
   }
   function positionPlayhead(time, follow = false) {
-    const value = scale.audioTime(time);
+    const value = clamp(time);
     playhead.style.left = percent(value) + '%';
     playhead.querySelector('span').textContent = seconds(value);
     playhead.querySelector('span').style.transform = `translateX(${percent(value) < 1 ? '0' : percent(value) > 99 ? '-100%' : '-50%'})`;
@@ -127,7 +165,7 @@ function renderSessionTimeline(target, session = {}) {
     if (audio && audio.readyState >= 1 && (value === 0 || seekable || fullAudioUrl)) {
       audio.currentTime = Math.min(value, Number.isFinite(audio.duration) ? audio.duration : value);
       pendingSeek = null;
-    } else if (audio && !fullAudioRequest && /^https?:$/.test(location.protocol)) {
+    } else if (audio && audio.readyState >= 1 && !fullAudioRequest && /^https?:$/.test(location.protocol)) {
       const notice = document.createElement('span');
       notice.className = 'audio-preparing';
       notice.setAttribute('role','status');
@@ -135,11 +173,14 @@ function renderSessionTimeline(target, session = {}) {
       target.querySelector('.session-player-row').append(notice);
       // Simple static servers may omit byte ranges. A complete local blob supports
       // reliable seeking while file:// and range-capable servers stay native.
-      const resume = !audio.paused;
       fullAudioRequest = fetch(audio.currentSrc || audio.src).then(response => {
         if (!response.ok) throw new Error('audio_download_failed');
         return response.blob();
       }).then(blob => {
+        // Native metadata/seek events may already have fulfilled a newer seek.
+        // Preserve that position before replacing the source resets the player.
+        pendingSeek = pendingSeek ?? audio.currentTime;
+        const resume = !audio.paused;
         fullAudioUrl = URL.createObjectURL(blob);
         audio.src = fullAudioUrl;
         audio.load();
@@ -154,12 +195,17 @@ function renderSessionTimeline(target, session = {}) {
     revealTime(value);
   }
   function showItem(item) {
+    highlightTurn(item.turn_index);
     canvas.querySelectorAll('[data-session-item]').forEach(button => button.classList.toggle('is-selected', items[Number(button.dataset.sessionItem)] === item));
     const row = turns.find(turn => turn.index === item.turn_index);
+    canvas.querySelectorAll('.wait-overlap').forEach(node=>node.classList.remove('wait-overlap'));
     let body = item.text ? `<p>${escape(item.text)}</p>` : '';
     if (item.item_type === 'wait') {
-      const descriptions = {first_reply:'输入结束 → 首句开始播放',transition:'过渡 / 临时回复播完 → 正式回复开始播放',sentence:'上一段播完 → 下一段开始播放'};
-      body = `<p>${escape(descriptions[item.kind] || '未播放声音的等待区间')}</p>`;
+      const descriptions = {first_reply:'输入结束 → 首句开始播放',first_packet:'输入结束 → 客户端收到首包音频。播放时钟异常，不能据此确定实际首音时间。',interrupted:'输入结束 → 客户端发出打断；这段等待内未收到回复音频。',no_reply:'输入结束 → 本轮最后一个客户端记录；截至该时刻未收到回复音频。',transition:'过渡 / 临时回复播完 → 正式回复开始播放',sentence:'上一段播完 → 下一段开始播放'};
+      selection=[item.start_seconds,item.end_seconds];drawSelection();
+      const evidence=waitEvidence(item,vasLanes);
+      evidence.forEach(stage=>canvas.querySelectorAll('#session-vas .lane')[stage.index]?.classList.add('wait-overlap'));
+      body = `<p>${escape(descriptions[item.kind] || '未播放声音的等待区间')}</p><div class="wait-evidence">${evidence.length ? evidence.map(stage=>`<button data-wait-lane="${stage.index}">${escape(stage.label.replace(/^第 \d+ 轮 · /,''))} · ${seconds(stage.overlap)}</button>`).join('') : '<span>该窗口内没有可对应的 VAS 请求记录。</span>'}</div><small>同窗阶段仅供定位；两端未校时，不能据此判定阻塞原因。</small>`;
     }
     const stats = item.item_type === 'input' && row ? `<div class="selected-turn-metrics"><span>输入结束 <b>${seconds(row.input_end_seconds)}</b></span><span>首包到达 <b>${seconds(row.first_received_seconds)}</b></span><span>首句播放 <b>${seconds(row.first_playback_seconds)}</b></span></div>` : '';
     detail.innerHTML = `<div class="session-detail-heading"><span class="badge">第 ${item.turn_index} 轮</span><strong>${escape(item.label)}</strong><span class="detail-time">${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} <b>· ${seconds(item.end_seconds-item.start_seconds)}</b>${escape(clockCaption(item.start_seconds))}</span><a href="turn-${String(item.turn_index).padStart(3,'0')}.html">内部时序 ↗</a></div>${body}${stats}`;
@@ -167,7 +213,12 @@ function renderSessionTimeline(target, session = {}) {
   function activate(element, time) {
     if (element.closest('#session-vas')) {
       // VAS timestamps are uncalibrated: inspecting them must not seek audio.
+      const exactMarker=element.closest('[data-time-seconds]');
+      if(exactMarker)time=Number(exactMarker.dataset.timeSeconds);
+      const turnIndex=element.closest('[data-turn-index]')?.dataset.turnIndex;
       vasController?.activate(element);
+      if(Number.isFinite(time)){inspectedTime=time;positionPlayhead(time);}
+      if (turnIndex) highlightTurn(Number(turnIndex));
       return;
     }
     const mediaButton = element.closest('[data-session-media]');
@@ -187,7 +238,9 @@ function renderSessionTimeline(target, session = {}) {
     } else if (marker) {
       const row = turns.find(turn => turn.index === Number(marker.dataset.sessionTurnIndex));
       const at = Number(marker.dataset.sessionTime);
-      detail.innerHTML = `<div class="session-detail-heading"><span class="badge">第 ${escape(marker.dataset.sessionTurnIndex)} 轮</span><strong>${escape(markerLabels[marker.dataset.sessionMarker])}</strong><span class="detail-time">${seconds(at)}</span></div>${row?.input_end_seconds != null && ['first_received','first_playback'].includes(marker.dataset.sessionMarker) ? `<p>输入结束后 <strong>${seconds(at-row.input_end_seconds)}</strong></p>` : ''}`;
+      const kind = marker.dataset.sessionMarker;
+      const explanation = pttDetails[kind];
+      detail.innerHTML = `<div class="session-detail-heading"><span class="badge">第 ${escape(marker.dataset.sessionTurnIndex)} 轮</span><strong>${escape(markerLabels[kind])}</strong><span class="detail-time">${explanation ? at.toFixed(3)+' s' : seconds(at)}${escape(clockCaption(at))}</span></div>${explanation ? `<p>${escape(explanation)}</p>` : ''}${row?.input_end_seconds != null && ['first_received','first_playback'].includes(kind) ? `<p>输入结束后 <strong>${seconds(at-row.input_end_seconds)}</strong></p>` : ''}`;
       seek(at);
     } else if (turnButton) {
       const row = turns.find(turn => turn.index === Number(turnButton.dataset.sessionTurn));
@@ -199,10 +252,15 @@ function renderSessionTimeline(target, session = {}) {
   }
   function timeAt(event) {
     const bounds = canvas.getBoundingClientRect();
-    return scale.atFraction((event.clientX-bounds.left)/bounds.width);
+    const raw=scale.atFraction((event.clientX-bounds.left)/bounds.width);
+    const hit=timelineSnap(raw,snapPoints,bounds.width/extent,event.altKey||!snapEnabled);
+    target.querySelector('.snap-status').textContent=hit.point ? '已吸附 · '+hit.point.label+' · '+seconds(hit.time) : '';
+    playhead.classList.toggle('is-snapped',Boolean(hit.point));
+    return hit.time;
   }
   canvas.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || !extent) return;
+    if (event.pointerType === 'touch' || event.button !== 0 || !extent) return;
+    inspectedTime=null;
     const handle = event.target.closest('[data-measure-handle]');
     gesture = {pointerId:event.pointerId,clientX:event.clientX,start:timeAt(event),target:event.target,handle:handle?.dataset.measureHandle,selection:selection?.slice(),dragged:false};
     canvas.setPointerCapture(event.pointerId);
@@ -223,13 +281,20 @@ function renderSessionTimeline(target, session = {}) {
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
     if (!completed.dragged && !completed.handle) activate(completed.target,timeAt(event));
   });
-  canvas.addEventListener('pointercancel', () => {gesture = null;});
+  canvas.addEventListener('pointercancel', () => {if(gesture){selection=gesture.selection;const id=gesture.pointerId;gesture=null;if(canvas.hasPointerCapture(id))canvas.releasePointerCapture(id);drawSelection();}});
   canvas.addEventListener('click', event => {
     if (event.detail !== 0 || event.target.closest('[data-measure-handle]')) return;
     activate(event.target);
   });
-  canvas.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {selection = null;drawSelection();return;}
+  target.addEventListener('keydown', event => {
+    if (event.target.closest('input,textarea,select,[contenteditable="true"]')) return;
+    if (event.code === 'Space' && event.target.tagName !== 'BUTTON' && audio) {
+      event.preventDefault(); audio.paused ? audio.play().catch(()=>{}) : audio.pause(); return;
+    }
+    if (['+','=','-','0'].includes(event.key)) {
+      event.preventDefault(); target.querySelector('[data-session-zoom="'+(event.key==='0'?'fit':event.key==='-'?'out':'in')+'"]').click(); return;
+    }
+    if (event.key === 'Escape') {if(target.classList.contains('timeline-expanded')){target.querySelector('[data-friendly=expand]').click();return;}selection = null;looping=false;highlightTurn(null);drawSelection();return;}
     const handle = event.target.closest('[data-measure-handle]');
     if (handle && selection && ['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {
       event.preventDefault();
@@ -238,7 +303,7 @@ function renderSessionTimeline(target, session = {}) {
       const value = event.key === 'Home' ? scale.start : event.key === 'End' ? scale.end : selection[index]+delta;
       selection[index] = index === 0 ? Math.min(selection[1],clamp(value)) : Math.max(selection[0],clamp(value));
       drawSelection();
-    } else if (event.target === canvas && ['ArrowLeft','ArrowRight'].includes(event.key)) {
+    } else if (['ArrowLeft','ArrowRight'].includes(event.key)) {
       event.preventDefault();
       seek((pendingSeek ?? audio?.currentTime ?? 0)+(event.key === 'ArrowLeft' ? -1 : 1));
     }
@@ -258,10 +323,18 @@ function renderSessionTimeline(target, session = {}) {
   function redrawScale() {
     const width = Math.max(1,viewport.clientWidth);
     canvas.style.width = width*zoom + 'px';
+    canvas.querySelectorAll('.marker-ptt_start,.marker-ptt_stop').forEach(marker=> {
+      const label = marker.querySelector('span');
+      const x = percent(Number(marker.dataset.sessionTime))/100*width*zoom;
+      label.style.left = Math.max(8-x,Math.min(10,width*zoom-x-label.offsetWidth+6))+'px';
+    });
     mediaGroups = groupMediaMarkers(mediaPoints, extent, width*zoom);
+    const mediaLayout=layoutTimelineFlags(mediaGroups.map(group=>({x:percent(group[0].at_seconds)/100*width*zoom,width:28})),width*zoom);
+    vasTop=pinnedHeight+26+(mediaGroups.length?mediaLayout.rows*30+8:0);
+    if(vasLanes.length){canvas.querySelector('.session-vas-heading').style.top=(vasTop-26)+'px';canvas.querySelector('#session-vas').style.top=vasTop+'px';labelRoot.querySelector('.session-vas-labels').style.top=vasTop+'px';}
     canvas.querySelector('.session-media-markers').innerHTML = mediaGroups.map((group,index)=> {
       const caption = group.map(marker=>`第 ${marker.turn_index} 轮期间 · ${marker.label} · ${seconds(marker.at_seconds)}`).join(' / ');
-      return `<button type="button" class="session-media-marker" data-session-media="${index}" style="left:${percent(group[0].at_seconds)}%" title="${escape(caption)}" aria-label="${escape(caption)}">${mediaMarkerIcon(group)}${group.length>1 ? '<span>'+group.length+'</span>' : ''}</button>`;
+      return `<button type="button" class="session-media-marker" data-session-media="${index}" style="left:${percent(group[0].at_seconds)}%;top:${mediaLayout.items[index].row*30}px" title="${escape(caption)}" aria-label="${escape(caption)}">${mediaMarkerIcon(group)}</button>`;
     }).join('');
     const ruler = document.getElementById('session-ruler');
     const desired = extent/(width*zoom/95);
@@ -273,26 +346,52 @@ function renderSessionTimeline(target, session = {}) {
     canvas.style.setProperty('--grid-step',step/extent*100+'%');
     canvas.style.setProperty('--grid-offset',percent(Math.ceil(scale.start/step)*step)+'%');
     if (vasLanes.length) {
-      vasController = timeline('session-vas',vasLanes,trace,{embedded:true,start_ns:scale.start*1e9,end_ns:scale.end*1e9,time_zero_ns:0,detail});
+      vasController = timeline('session-vas',vasLanes,trace,{embedded:true,start_ns:scale.start*1e9,end_ns:scale.end*1e9,time_zero_ns:0,detail,expandedLanes,onLaneToggle:()=>redrawScale()});
       const labels = [...labelRoot.querySelectorAll('.session-vas-label')];
       const rows = [...canvas.querySelectorAll('#session-vas .lane')];
-      labels.forEach(label=>{label.style.minHeight='';});
-      const heights = rows.map((row,index)=>Math.max(76,row.getBoundingClientRect().height,labels[index].getBoundingClientRect().height));
+      labels.forEach((label,index)=>{
+        label.style.minHeight='';
+        const button=label.querySelector('[data-lane-toggle]');
+        button.setAttribute('aria-expanded',String(expandedLanes.has(index)));
+        button.querySelector('.lane-chevron').textContent=expandedLanes.has(index)?'▾':'▸';
+      });
+      const heights = rows.map((row,index)=>Math.max(58,row.getBoundingClientRect().height,labels[index].getBoundingClientRect().height));
       rows.forEach((row,index)=>{row.style.minHeight=labels[index].style.minHeight=heights[index]+'px';});
       canvas.style.height = vasTop+heights.reduce((sum,value)=>sum+value,0)+24+'px';
+      labelRoot.style.height=canvas.style.height;
+      labelRoot.parentElement.style.height=viewport.clientHeight+'px';
     }
+    if(!vasLanes.length){canvas.style.height=(vasTop+16)+'px';labelRoot.style.height=canvas.style.height;}
     canvas.querySelectorAll('.session-range').forEach(button => {
       button.classList.toggle('compact-range',button.clientWidth < 65);
     });
+    highlightTurn(selectedTurn);
     drawSelection(false);
-    positionPlayhead(pendingSeek ?? audio?.currentTime ?? 0);
+    positionPlayhead(inspectedTime ?? pendingSeek ?? audio?.currentTime ?? 0);
     target.querySelector('[data-session-zoom="out"]').disabled = zoom <= 1;
+    target.querySelector('[data-session-zoom="in"]').disabled = zoom >= 64;
+    syncPinnedTracks();
   }
-  target.querySelectorAll('[data-session-zoom]').forEach(button => button.addEventListener('click', () => {
-    const oldCenter = (viewport.scrollLeft+viewport.clientWidth/2)/canvas.clientWidth;
-    zoom = button.dataset.sessionZoom === 'fit' ? 1 : Math.max(1,Math.min(64,zoom*(button.dataset.sessionZoom === 'in' ? 2 : .5)));
+  function applyZoom(value, clientX, fromX = clientX) {
+    const bounds=viewport.getBoundingClientRect();
+    const anchor=Number.isFinite(fromX) ? fromX-bounds.left : viewport.clientWidth/2;
+    const destination=Number.isFinite(clientX) ? clientX-bounds.left : viewport.clientWidth/2;
+    const fraction=(viewport.scrollLeft+anchor)/canvas.clientWidth;
+    zoom=Math.max(1,Math.min(64,value));
     redrawScale();
-    viewport.scrollLeft = Math.max(0,oldCenter*canvas.clientWidth-viewport.clientWidth/2);
+    viewport.scrollLeft=Math.max(0,Math.min(canvas.clientWidth-viewport.clientWidth,fraction*canvas.clientWidth-destination));
+    lastAutoScroll=performance.now()+1000;
+  }
+  bindTimelineGestures(viewport, {
+    getZoom:()=>zoom,zoom:applyZoom,
+    cancelSelection:()=>{
+      if(gesture){selection=gesture.selection;const id=gesture.pointerId;gesture=null;if(canvas.hasPointerCapture(id))canvas.releasePointerCapture(id);drawSelection();}
+      lastAutoScroll=performance.now()+1000;
+    },
+    tap:(element,x)=>activate(element,timeAt({clientX:x})),
+  });
+  target.querySelectorAll('[data-session-zoom]').forEach(button => button.addEventListener('click', () => {
+    applyZoom(button.dataset.sessionZoom === 'fit' ? 1 : zoom*(button.dataset.sessionZoom === 'in' ? 2 : .5));
   }));
   document.querySelectorAll('[data-session-seek]').forEach(link => link.addEventListener('click', event => {
     event.preventDefault();
@@ -302,21 +401,56 @@ function renderSessionTimeline(target, session = {}) {
     if (row) showItem({...row,turn_index:row.index,item_type:'input',label:'用户输入',start_seconds:time,end_seconds:row.input_end_seconds});
     target.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',block:'start'});
   }));
+  const shortcuts = target.querySelector('.wait-shortcuts');
+  (session.waits || []).filter(w=>w.kind!=='sentence').sort((a,b)=>(b.end_seconds-b.start_seconds)-(a.end_seconds-a.start_seconds)).slice(0,session.view_turn_index?2:6).forEach(wait=> {
+    const button = document.createElement('button');
+    button.textContent = `第 ${wait.turn_index} 轮 · ${wait.kind==='first_reply'?'说完 → 首声':wait.kind==='transition'?'临时结束 → 正式开始':waitLabels[wait.kind]} · ${seconds(wait.end_seconds-wait.start_seconds)}`;
+    button.onclick=()=>{viewport.scrollTop=0;selection=[wait.start_seconds,wait.end_seconds];drawSelection();showItem({...wait,label:waitLabels[wait.kind],item_type:'wait'});seek(wait.start_seconds);};
+    shortcuts.append(button);
+  });
+  target.querySelectorAll('[data-friendly]').forEach(button=>button.addEventListener('click',()=> {
+    const action=button.dataset.friendly;
+    if(action==='snap'){snapEnabled=!snapEnabled;button.setAttribute('aria-pressed',String(snapEnabled));button.textContent='磁吸：'+(snapEnabled?'开':'关');target.querySelector('.snap-status').textContent='';}
+    if(action==='expand'){const expanded=target.classList.toggle('timeline-expanded');button.setAttribute('aria-pressed',String(expanded));button.textContent=expanded?'收起时间轴':'展开时间轴';redrawScale();}
+    if(action==='current'){const row=turns.find(t=>t.index===selectedTurn)||turns.find(t=>(t.start_seconds??0)<=(audio?.currentTime??0)&&(t.end_seconds??duration)>=(audio?.currentTime??0));if(row){highlightTurn(row.index);seek(row.input_start_seconds??row.start_seconds);}}
+    if(action==='zoom-selection' && selection && selection[1]>selection[0]){zoom=Math.max(1,Math.min(64,extent/(selection[1]-selection[0])*0.85));redrawScale();viewport.scrollLeft=Math.max(0,percent(selection[0])/100*canvas.clientWidth-30);}
+    if(action==='play-selection' && selection && audio){seek(selection[0]);audio.play().catch(()=>{});}
+    if(action==='loop'){looping=!looping;button.setAttribute('aria-pressed',String(looping));}
+    if(action==='next-wait'){
+      const threshold=Math.max(0,Number(target.querySelector('[data-wait-threshold]').value)||0);
+      const waits=(session.waits||[]).filter(w=>w.end_seconds-w.start_seconds>=threshold).sort((a,b)=>a.start_seconds-b.start_seconds);
+      const wait=waits.find(w=>w.start_seconds>(pendingSeek??audio?.currentTime??0)+.01)||waits[0];
+      if(wait){viewport.scrollTop=0;selection=[wait.start_seconds,wait.end_seconds];drawSelection();showItem({...wait,item_type:'wait',label:waitLabels[wait.kind]});seek(wait.start_seconds);}else detail.textContent='没有达到该阈值的等待区间';
+    }
+  }));
+  target.addEventListener('click',event=>{const button=event.target.closest('[data-wait-lane]');if(!button)return;const row=canvas.querySelectorAll('#session-vas .lane')[Number(button.dataset.waitLane)];if(row){viewport.scrollTop=Math.max(0,vasTop+row.offsetTop-pinnedHeight-8);row.classList.add('wait-overlap');}});
+  labelRoot.addEventListener('click',event=>{
+    const button=event.target.closest('[data-lane-toggle]');
+    if(button)vasController?.toggleLane(Number(button.dataset.laneToggle));
+  });
   if (audio) {
+    audio.addEventListener('timeupdate',()=>{if(selection && audio.currentTime>=selection[1]){if(looping){seek(selection[0]);}else if(!audio.paused && target.dataset.selectionPlaying==='true'){audio.pause();target.dataset.selectionPlaying='false';}}});
+    target.querySelector('[data-friendly="play-selection"]').addEventListener('click',()=>{target.dataset.selectionPlaying='true';});
     audio.addEventListener('loadedmetadata', () => {if (pendingSeek != null) seek(pendingSeek);});
-    audio.addEventListener('timeupdate', () => positionPlayhead(audio.currentTime,!audio.paused));
+    audio.addEventListener('timeupdate', () => {if(!audio.paused)inspectedTime=null;positionPlayhead(inspectedTime ?? audio.currentTime,!audio.paused);});
     const frame = () => {positionPlayhead(audio.currentTime,true);if (!audio.paused) animation = requestAnimationFrame(frame);};
-    audio.addEventListener('play', () => {cancelAnimationFrame(animation);animation = requestAnimationFrame(frame);});
+    audio.addEventListener('play', () => {inspectedTime=null;cancelAnimationFrame(animation);animation = requestAnimationFrame(frame);});
     audio.addEventListener('pause', () => {cancelAnimationFrame(animation);positionPlayhead(audio.currentTime);});
     audio.addEventListener('error', () => {
       detail.innerHTML = '<p class="capture-limitation">会话音频无法读取，请保留完整报告文件夹后重新打开。</p>';
     });
     window.addEventListener('pagehide', event => {if (!event.persisted && fullAudioUrl) URL.revokeObjectURL(fullAudioUrl);});
   }
+  function syncPinnedTracks() {
+    labelRoot.querySelector('.session-vas-labels').style.transform=`translateY(${-viewport.scrollTop}px)`;
+    playhead.style.top=(viewport.scrollTop+32)+'px';
+    overlay.style.top=(viewport.scrollTop+36)+'px';
+  }
+  viewport.addEventListener('scroll',syncPinnedTracks);
   if (window.ResizeObserver) new ResizeObserver(redrawScale).observe(viewport);
   else window.addEventListener('resize',redrawScale);
   redrawScale();
-  const requested = Number(new URLSearchParams(location.search).get('t'));
+  const requested = Number(new URLSearchParams(location.search).get('t') ?? session.initial_time_seconds);
   if (Number.isFinite(requested) && requested > 0) {
     seek(requested);
     const row = items.find(item => item.item_type === 'reply' && requested >= item.start_seconds && requested <= item.end_seconds) || items.find(item => item.item_type === 'input' && requested >= item.start_seconds && requested <= item.end_seconds);

@@ -225,8 +225,14 @@ def test_overview_contains_all_turn_traces_but_detail_keeps_only_its_own(tmp_pat
     ]
     for index in (1, 2):
         html, detail = page_data(f"turn-{index:03d}.html")
-        assert "vas_timeline" not in detail["session_playback"]
-        assert "<audio " not in html
+        assert [
+            lane["turn_index"]
+            for lane in detail["session_playback"]["vas_timeline"]["lanes"]
+        ] == [index]
+        assert html.count("<audio ") == 1
+        assert 'id="session-viewport"' in html
+        assert 'data-session-zoom="fit">本轮' in html
+        assert 'id="combined"' not in html
         server = next(
             lane
             for lane in detail["turn"]["combined_timeline"]["lanes"]
@@ -240,3 +246,29 @@ def test_overview_contains_all_turn_traces_but_detail_keeps_only_its_own(tmp_pat
         ]
         assert f"model-{3-index}" not in html
     assert report == original
+
+
+def test_vad_backfilled_wall_time_is_derived_without_mutating_evidence():
+    from voice_scenarios.clock_timeline import vad_display_times
+
+    events = [
+        dict(
+            event="local_vad_last_voice",
+            clock_id="s",
+            listen_turn_id=1,
+            monotonic_ns=100_000_000_000,
+            wall_time_ns=EPOCH + 350_000_000,
+        ),
+        dict(
+            event="local_vad_endpoint_detected",
+            clock_id="s",
+            listen_turn_id=1,
+            monotonic_ns=100_350_000_000,
+            wall_time_ns=EPOCH + 350_000_000,
+        ),
+    ]
+    original = copy.deepcopy(events)
+    times = vad_display_times(events)
+    assert times[("s", 100_000_000_000)] == EPOCH
+    assert events == original
+    assert vad_display_times(events[:1]) == {}
