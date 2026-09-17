@@ -567,6 +567,8 @@ def test_static_overview_preserves_all_turns_in_one_session(tmp_path):
     embedded = json.loads(
         re.search(r'<script id="data"[^>]*>(.*?)</script>', page, re.S).group(1)
     )
-    assert [turn["id"] for turn in embedded["turns"]] == ["one", "two"]
+    assert embedded["turn"] is None
+    assert 'href="turn-001.html"' in page
+    assert 'href="turn-002.html"' in page
     assert "vas_timeline" in embedded["session_playback"]
     assert page.count('id="session-canvas"') == 1
