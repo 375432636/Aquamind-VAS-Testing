@@ -540,3 +540,35 @@ def test_old_ptt_recording_gains_boundary_markers_in_overview_and_each_turn(tmp_
         assert "PTT 语音开始" in page and "PTT 语音结束" in page
     # Rendering old recordings must not alter their raw evidence.
     assert all(m["kind"] == "input_end" for m in report["session_playback"]["markers"])
+
+
+def test_static_overview_preserves_all_turns_in_one_session(tmp_path):
+    import json
+    import re
+
+    report = evaluate(
+        {
+            "name": "two turns",
+            "status": "passed",
+            "turns": [
+                {"id": "one", "listen_turn_id": 1, "status": "completed", "events": []},
+                {"id": "two", "listen_turn_id": 2, "status": "completed", "events": []},
+            ],
+        },
+        [],
+    )
+    report["session_playback"] = {
+        "status": "ready",
+        "path": "session.played.wav",
+        "duration_seconds": 10,
+    }
+    build_report(report, tmp_path / "report.html")
+    page = (tmp_path / "report.html").read_text()
+    embedded = json.loads(
+        re.search(r'<script id="data"[^>]*>(.*?)</script>', page, re.S).group(1)
+    )
+    assert embedded["turn"] is None
+    assert 'href="turn-001.html"' in page
+    assert 'href="turn-002.html"' in page
+    assert "vas_timeline" in embedded["session_playback"]
+    assert page.count('id="session-canvas"') == 1
