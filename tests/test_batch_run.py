@@ -269,6 +269,9 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
     suites = ET.parse(output / "junit.xml").getroot()
     assert len(suites.findall("testsuite")) == 2
     assert int(suites.get("failures")) == (1 if first_fails else 0)
+    assert len(suites.findall(".//skipped")) == (1 if first_fails else 0)
+    if first_fails:
+        assert reports[0]["turns"][1]["execution_status"] == "not_executed"
     if not first_fails and os.getenv("CI_BATCH_REPORT_DIR"):
         shutil.copytree(
             output, Path(os.environ["CI_BATCH_REPORT_DIR"]), dirs_exist_ok=True

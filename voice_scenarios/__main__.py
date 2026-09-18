@@ -52,7 +52,9 @@ def create_report(directory):
             suite, "testcase", name=turn["id"], classname="voice_scenario"
         )
         failed = [c["name"] for c in turn["checks"] if not c["passed"]]
-        if turn["status"] == "failed" or failed:
+        if turn.get("execution_status") == "not_executed":
+            ET.SubElement(case, "skipped", message=turn["error"])
+        elif turn["status"] == "failed" or failed:
             ET.SubElement(
                 case, "failure", message=turn.get("error") or ", ".join(failed)
             ).text = json.dumps(turn["checks"], ensure_ascii=False)
@@ -67,6 +69,7 @@ def create_report(directory):
             "\n".join(reasons) + "\n详细报告：report.html"
         )
     suite.set("failures", str(len(suite.findall(".//failure"))))
+    suite.set("skipped", str(len(suite.findall(".//skipped"))))
     ET.ElementTree(suite).write(
         directory / "junit.xml", encoding="utf-8", xml_declaration=True
     )

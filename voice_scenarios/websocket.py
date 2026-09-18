@@ -407,6 +407,10 @@ class WebSocketTransport:
             await asyncio.gather(self.microphone_task, return_exceptions=True)
             self.microphone_task = None
 
+    async def stop_input(self):
+        """Stop background VAD audio before recovering a failed turn."""
+        await self._stop_microphone()
+
     async def abort(self):
         await self._send_json({"type": "abort", "reason": "test_interrupt"})
         self.emit(Event("abort_wire_sent"))

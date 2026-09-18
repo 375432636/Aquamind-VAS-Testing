@@ -102,7 +102,17 @@ async def run_scenario(
             result["turns"].append(item)
             save_result(result, output_dir)
             if item["status"] == "failed":
-                break
+                if index < len(scenario.turns):
+                    item["recovery"] = await _recover_turn(
+                        transport,
+                        events,
+                        item,
+                        scenario.settle_seconds,
+                        client_clock=client_clock,
+                    )
+                    save_result(result, output_dir)
+                    if item["recovery"]["status"] != "recovered":
+                        break
         result["status"] = (
             "passed"
             if len(result["turns"]) == len(scenario.turns)
@@ -116,6 +126,21 @@ async def run_scenario(
             error=f"{type(exc).__name__}: {exc}",
         )
     finally:
+        for turn in scenario.turns[len(result["turns"]) :]:
+            result["turns"].append(
+                {
+                    "id": turn.id,
+                    "input_text": turn.input_text,
+                    "tool": turn.tool,
+                    "sensor": turn.sensor,
+                    "expected": turn.expect,
+                    "status": "failed",
+                    "execution_status": "not_executed",
+                    "error": "未执行：会话未能安全恢复；没有重新连接或伪造上下文",
+                    "events": [],
+                    "audio": {},
+                }
+            )
         try:
             await transport.close()
         except Exception as exc:
@@ -127,6 +152,79 @@ async def run_scenario(
         journal.close()
         save_result(result, output_dir)
     return result
+
+
+async def _recover_turn(
+    transport, events, item, settle_seconds, timeout=5, *, client_clock=None
+):
+    """Require a fresh stop and a quiet interval before reusing the connection."""
+    recovery = {"status": "failed", "discarded_events": 0}
+
+    def record(event):
+        recovery["discarded_events"] += 1
+        row = {
+            "event": "recovery_audio_discarded" if event.kind == "pcm" else event.kind,
+            "at_ns": event.at_ns,
+            "data": {
+                **{k: v for k, v in event.data.items() if k != "pcm"},
+                "recovery": True,
+            },
+        }
+        if client_clock:
+            row["wall_time_ns"] = client_wall_time(event.at_ns, client_clock)
+        item["events"].append(row)
+
+    if any(e["event"] == "disconnected" for e in item["events"]):
+        return {**recovery, "error": "connection_lost"}
+    try:
+        async with asyncio.timeout(timeout):
+            # VAD uplink may outlive send_audio(): stop its background producer.
+            if hasattr(transport, "stop_input"):
+                await transport.stop_input()
+            while not events.empty():
+                event = events.get_nowait()
+                record(event)
+                if event.kind == "disconnected":
+                    raise ConnectionError("connection_lost")
+            sent_at = time.monotonic_ns()
+            recovery["abort_requested_at_ns"] = sent_at
+            await transport.abort()
+            quiet_until = None
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        events.get(),
+                        (
+                            None
+                            if quiet_until is None
+                            else max(0, quiet_until - time.monotonic())
+                        ),
+                    )
+                except asyncio.TimeoutError:
+                    return {
+                        **recovery,
+                        "status": "recovered",
+                        "ended_at_ns": time.monotonic_ns(),
+                    }
+                record(event)
+                if event.kind in {"error", "disconnected"}:
+                    raise ConnectionError(event.data.get("message", event.kind))
+                if (
+                    event.kind == "tts_stop"
+                    and event.at_ns >= sent_at
+                    and not event.data.get("is_session_output")
+                    and event.data.get("response_listen_turn_id")
+                    in (None, item["listen_turn_id"])
+                ):
+                    recovery["server_stop_at_ns"] = event.at_ns
+                    quiet_until = time.monotonic() + max(0.25, settle_seconds)
+                elif event.kind in {"pcm", "tts_start"}:
+                    # A response after stop invalidates that boundary. Wait for
+                    # another stop rather than letting late audio enter next turn.
+                    quiet_until = None
+    except Exception as exc:
+        recovery["error"] = f"{type(exc).__name__}: {exc}"
+    return recovery
 
 
 async def _wait_for_greeting(

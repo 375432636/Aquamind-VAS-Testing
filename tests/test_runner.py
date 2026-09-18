@@ -350,3 +350,141 @@ def test_queued_previous_uplink_frame_never_enters_next_turn(tmp_path):
         assert [e["data"]["pcm_offset_samples"] for e in frames] == [0]
     # Raw session evidence is retained even if it arrived between turn consumers.
     assert "17280" in (output / "client-events.jsonl").read_text()
+
+
+def recovery_scenario(tmp_path):
+    return Scenario.from_dict(
+        {
+            "greeting_wait_seconds": 0.01,
+            "settle_seconds": 0.01,
+            "turn_timeout_seconds": 0.15,
+            "turns": [
+                {"id": str(i), "audio": str(audio_fixture(tmp_path))} for i in range(3)
+            ],
+        }
+    )
+
+
+def test_failed_turn_recovers_and_continues_same_session(tmp_path):
+    class TimeoutVAS(ScriptedVAS):
+        async def send_audio(self, path):
+            if not self.inputs:
+                self.inputs.append({"path": str(path)})
+                return {"frames": 1}
+            return await super().send_audio(path)
+
+    peer = TimeoutVAS(replies=(0.01, 0.01, 0.01))
+    result = asyncio.run(
+        run_scenario(recovery_scenario(tmp_path), peer, tmp_path / "run")
+    )
+    assert [t["status"] for t in result["turns"]] == [
+        "failed",
+        "completed",
+        "completed",
+    ]
+    assert result["status"] == "failed"
+    assert result["turns"][0]["recovery"]["status"] == "recovered"
+    assert len(peer.abort_times) == 1
+
+
+def test_disconnected_session_marks_remaining_turns_without_reconnecting(tmp_path):
+    class DisconnectedVAS(ScriptedVAS):
+        async def send_audio(self, path):
+            self.inputs.append(path)
+            self.emit(Event("disconnected", {"message": "connection lost"}))
+            return {}
+
+    peer = DisconnectedVAS()
+    result = asyncio.run(
+        run_scenario(recovery_scenario(tmp_path), peer, tmp_path / "run")
+    )
+    assert len(result["turns"]) == 3
+    assert all(t["execution_status"] == "not_executed" for t in result["turns"][1:])
+    assert len(peer.inputs) == 1
+    assert not peer.abort_times
+
+
+def test_recovery_failure_preserves_report_and_skips_rest(tmp_path):
+    class BrokenAbortVAS(ScriptedVAS):
+        async def send_audio(self, path):
+            self.emit(Event("error", {"message": "bad audio"}))
+            return {}
+
+        async def abort(self):
+            raise ConnectionError("socket closed")
+
+    result = asyncio.run(
+        run_scenario(recovery_scenario(tmp_path), BrokenAbortVAS(), tmp_path / "run")
+    )
+    assert len(result["turns"]) == 3
+    assert result["turns"][0]["error"] == "bad audio"
+    assert result["turns"][0]["recovery"]["status"] == "failed"
+    assert result["turns"][1]["execution_status"] == "not_executed"
+
+
+def test_recovery_does_not_accept_stale_or_wrong_turn_stop(tmp_path):
+    from voice_scenarios.runner import _recover_turn
+
+    async def exercise():
+        events = asyncio.Queue()
+
+        class Peer:
+            async def abort(self):
+                events.put_nowait(Event("tts_stop", {}, 1))
+                events.put_nowait(Event("tts_stop", {"response_listen_turn_id": 2}))
+
+        return await _recover_turn(
+            Peer(), events, {"events": [], "listen_turn_id": 1}, 0, timeout=0.03
+        )
+
+    result = asyncio.run(exercise())
+    assert result["status"] == "failed"
+    assert "TimeoutError" in result["error"]
+
+
+def test_late_audio_is_drained_before_next_turn_and_report_survives(tmp_path):
+    from voice_scenarios.report import build_report, evaluate
+
+    class LateAudioVAS(ScriptedVAS):
+        async def send_audio(self, path):
+            if not self.inputs:
+                self.inputs.append(path)
+                self.emit(Event("error", {"message": "audio_received_after_tts_stop"}))
+                return {}
+            return await super().send_audio(path)
+
+        async def abort(self):
+            self.emit(Event("tts_stop"))
+            self.emit(Event("pcm", {"pcm": b"\x01\x00" * 16000, "sample_rate": 16000}))
+            self.emit(Event("tts_stop"))
+
+    result = asyncio.run(
+        run_scenario(
+            recovery_scenario(tmp_path),
+            LateAudioVAS(replies=(0.01,) * 3),
+            tmp_path / "run",
+        )
+    )
+    assert [t["status"] for t in result["turns"]] == [
+        "failed",
+        "completed",
+        "completed",
+    ]
+    assert result["turns"][1]["received_frames"] == 1
+    build_report(evaluate(result, []), tmp_path / "report.html")
+    assert (tmp_path / "turn-003.html").exists()
+
+
+def test_unexecuted_turns_have_static_report_pages(tmp_path):
+    from voice_scenarios.report import build_report, evaluate
+
+    class Peer(ScriptedVAS):
+        async def connect(self, emit):
+            raise ConnectionError("offline")
+
+    result = asyncio.run(
+        run_scenario(recovery_scenario(tmp_path), Peer(), tmp_path / "run")
+    )
+    assert len(result["turns"]) == 3
+    build_report(evaluate(result, []), tmp_path / "report.html")
+    assert "未执行" in (tmp_path / "turn-003.html").read_text()

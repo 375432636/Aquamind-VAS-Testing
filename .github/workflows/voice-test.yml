@@ -24,7 +24,7 @@ concurrency:
 jobs:
   test:
     name: 全量校验与逐会话测试
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, aquamind-vas-testing-5090]
     timeout-minutes: 120
     steps:
       - name: 获取测试工具
