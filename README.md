@@ -22,7 +22,7 @@ VAS 发送 `type: image` 消息或 `type: display` 中的 `items`（`kind: image
 
 **每天北京时间 07:00 自动运行全部冒烟测试。** [`VAS 批量语音测试`](.github/workflows/voice-test.yml) 使用默认分支 `main` 的最新已合并版本，读取 [`scenarios/smoke/`](scenarios/smoke/) 下的全部场景。当前是 9 个 session、62 轮：原 4 组 DEV 场景，加上 5 个人设、49 问的 Main 场景；各自使用文件中的环境和 MAC，诊断级别为 `frame`。新增到该目录的用例会自动纳入每日测试。
 
-批量测试（定时和手动）运行在 5090 的 `aquamind-vas-testing-5090` 自托管 Runner，复用 Docker 与 GitHub 构建缓存；临时对话工作流保持原执行环境。定时和手动批量测试共用串行执行和报告流程；某个 session 失败后继续后续场景。结果在 **Actions → VAS 批量语音测试 → 对应运行 → Summary** 查看，每个 session 保留独立页面，整批报告与无损压缩音频一次下载，保留 14 天。GitHub 按 UTC 调度（`0 23 * * *`），实际启动可能因队列繁忙延迟。
+批量测试（定时和手动）运行在 GitHub 托管的 `ubuntu-24.04` Runner，复用 Docker 与 GitHub 构建缓存；暂不使用 5090 Runner。定时和手动批量测试共用串行执行和报告流程；某个 session 失败后继续后续场景。结果在 **Actions → VAS 批量语音测试 → 对应运行 → Summary** 查看，每个 session 保留独立页面，整批报告与无损压缩音频一次下载，保留 14 天。GitHub 按 UTC 调度（`0 23 * * *`），实际启动可能因队列繁忙延迟。
 
 批量测试和临时对话 Action 仍可手动运行。批量测试只需维护 [`scenarios/`](scenarios/) 中的文件，运行时无需重复粘贴对话。
 
