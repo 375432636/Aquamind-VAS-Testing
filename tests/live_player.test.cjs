@@ -2,7 +2,7 @@ const test=require('node:test');const assert=require('node:assert/strict');
 const load=()=>import('../voice_scenarios/live/audio.mjs');
 function context(){return {currentTime:1,destination:{},createBuffer:(_c,n,r)=>({duration:n/r,copyToChannel(){}}),createBufferSource:()=>({connect(){},disconnect(){},start(t){this.started=t;},stop(){}})};}
 
-test('the first packet starts without waiting for more audio or a TTS stop signal', async t => {
+test('16 and 24 kHz short replies flush without waiting for more packets', async t => {
   const {Player} = await load();
   t.mock.method(global, 'setTimeout', () => 1);
   t.mock.method(global, 'clearTimeout', () => {});
@@ -13,13 +13,14 @@ test('the first packet starts without waiting for more audio or a TTS stop signa
     p.decoder = {decode:() => new Int16Array(rate * .06)};
     t.after(() => p.stop());
     await p.feed(new Uint8Array([1]), {turn:1, audio_seq:1});
-    assert.equal(p.active.size, 1, 'first decoded packet must already be scheduled');
+    await p.flush(1);
+    assert.equal(p.active.size, 1, 'a completed short reply must not be held');
     assert.equal(p.queue.length, 0);
-    assert.equal([...p.active][0].node.started, 1.02, 'only the 20 ms scheduling lead remains');
+    assert.equal([...p.active][0].node.started, 1.02, 'only the scheduling lead remains after flush');
   }
 });
 
-test('paced packets remain contiguous with bounded arrival jitter after immediate startup', async t => {
+test('paced packets remain contiguous after the small startup cushion', async t => {
   const {Player} = await load();
   t.mock.method(global, 'setTimeout', () => 1);
   t.mock.method(global, 'clearTimeout', () => {});
@@ -36,10 +37,11 @@ test('paced packets remain contiguous with bounded arrival jitter after immediat
   }
   const entries = [...p.active];
   assert.equal(entries.length, arrivals.length);
-  entries.forEach((entry, i) => assert.ok(Math.abs(entry.start - (1.02 + i * .06)) < 1e-9));
+  assert.ok(entries[0].start <= 1.1);
+  entries.forEach((entry, i) => assert.ok(Math.abs(entry.start - (entries[0].start + i * .06)) < 1e-9));
 });
 
-test('after a network gap one packet resumes playback without another startup buffer', async t => {
+test('after a network gap the last packet flushes without waiting for the recovery cushion', async t => {
   const {Player} = await load();
   t.mock.method(global, 'setTimeout', () => 1);
   t.mock.method(global, 'clearTimeout', () => {});
@@ -56,6 +58,7 @@ test('after a network gap one packet resumes playback without another startup bu
   assert.equal(p.active.size, 0);
   p.ctx.currentTime = 1.3;
   await p.feed(new Uint8Array([1]), {turn:1, audio_seq:2});
+  await p.flush(1);
   assert.equal(p.active.size, 1, 'late audio must not wait for four additional packets');
   assert.equal([...p.active][0].node.started, 1.32);
   assert.equal(states[0][0], 'playback_underrun');
@@ -63,7 +66,7 @@ test('after a network gap one packet resumes playback without another startup bu
   assert.deepEqual(played, [960]);
 });
 
-test('interruption clears the old playback cursor and the next reply starts immediately', async t => {
+test('interruption clears the old playback cursor before the next short reply', async t => {
   const {Player} = await load();
   t.mock.method(global, 'setTimeout', () => 1);
   t.mock.method(global, 'clearTimeout', () => {});
@@ -78,6 +81,7 @@ test('interruption clears the old playback cursor and the next reply starts imme
   p.stop();
   assert.equal(p.busy, false);
   await p.feed(new Uint8Array([1]), {turn:2});
+  await p.flush(2);
   assert.equal(p.active.size, 1);
   const entry = [...p.active][0];
   assert.equal(entry.meta.turn, 2);
@@ -141,10 +145,10 @@ test('stop drops queued decode from the cancelled generation',async t=>{
  let count=0;const p=new Player(()=>count++,()=>{},()=>{});p.ctx=context();p.rate=16000;p.decoder={decode:()=>new Int16Array(960)};
  const pending=p.feed(new Uint8Array([1]),{turn:1});p.stop();await pending;assert.equal(count,0);assert.equal(p.busy,false);
 });
-test('short final audio starts before the end signal and drains exactly once',async t=>{
+test('short final audio flushes the startup cushion and drains exactly once',async t=>{
  const {Player}=await load();t.mock.method(global,'setTimeout',()=>1);t.mock.method(global,'clearTimeout',()=>{});
  const drains=[];const p=new Player(()=>{},()=>{},owner=>drains.push(owner));p.ctx=context();p.rate=16000;p.decoder={decode:()=>new Int16Array(960)};
- await p.feed(new Uint8Array([1]),{turn:2});assert.equal(p.active.size,1);assert.deepEqual(drains,[]);await p.flush(2);assert.equal(p.active.size,1);
+ await p.feed(new Uint8Array([1]),{turn:2});assert.deepEqual(drains,[]);await p.flush(2);assert.equal(p.active.size,1);
  [...p.active][0].node.onended();p.pump();assert.deepEqual(drains,[2]);p.stop();
 });
 test('changes in output timestamp snapshots cannot introduce inter-frame overlap',async t=>{

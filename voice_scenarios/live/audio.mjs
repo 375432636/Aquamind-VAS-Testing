@@ -74,7 +74,7 @@ export class Recorder {
     }
 }
 export class Player {
-    constructor(onDecoded, onPlayed, onDrain, onState) { Object.assign(this, { onDecoded, onPlayed, onDrain, onState }); this.queue = []; this.active = new Set(); this.pendingPlayback = new Set(); this.cursor = 0; this.flushing = false; this.chain = Promise.resolve(); this.epoch = 0; }
+    constructor(onDecoded, onPlayed, onDrain, onState) { Object.assign(this, { onDecoded, onPlayed, onDrain, onState }); this.queue = []; this.active = new Set(); this.pendingPlayback = new Set(); this.cursor = 0; this.flushing = false; this.chain = Promise.resolve(); this.epoch = 0; this.buffering = null; this.recoveryBufferSeconds = .12; }
     async prime() { this.ctx ||= new AudioContext({ latencyHint: 'interactive' }); await this.ctx.resume(); this.clockOffset = undefined; }
     async format(rate) {
         if (![8000, 12000, 16000, 24000, 48000].includes(rate))
@@ -199,9 +199,28 @@ export class Player {
     pump() {
         clearTimeout(this.timer);
         this.observePlayback();
-        // Start on the first decoded packet, including after an interruption or
-        // underrun. The 20 ms scheduling lead below covers small arrival jitter;
-        // subsequent packets keep their contiguous sample boundaries.
+        // A small, time-bounded cushion absorbs packet jitter. Do not restart it
+        // between contiguous packets, and never hold a short completed reply.
+        if (this.queue.length && this.cursor <= this.ctx.currentTime && !this.flushing) {
+            if (!this.buffering) {
+                const gap = this.cursor ? this.ctx.currentTime - this.cursor : 0;
+                // Long pauses can be sentence/provider gaps; waiting longer
+                // cannot repair them. Adapt only to short supply interruptions.
+                const recovering = this.cursor > 0 && gap < .25;
+                if (recovering)
+                    this.recoveryBufferSeconds = Math.min(.24, this.recoveryBufferSeconds + .06);
+                this.buffering = {
+                    target: recovering ? this.recoveryBufferSeconds : .12,
+                    deadline: performance.now() + (recovering ? Math.min(.18, this.recoveryBufferSeconds - .06) : .06) * 1000,
+                };
+            }
+            const bufferedSeconds = this.queue.reduce((n, packet) => n + packet.pcm.length / this.rate, 0);
+            if (bufferedSeconds + 1e-9 < this.buffering.target && performance.now() < this.buffering.deadline) {
+                this.timer = setTimeout(() => this.pump(), Math.min(20, this.buffering.deadline - performance.now()));
+                return;
+            }
+        }
+        this.buffering = null;
         while (this.queue.length && this.cursor - this.ctx.currentTime < 1) {
             const packet = this.queue.shift();
             const start = Math.max(this.cursor, this.ctx.currentTime + (this.cursor > this.ctx.currentTime ? 0 : .02));
@@ -228,6 +247,7 @@ export class Player {
         if (this.flushing && !this.active.size && !this.pendingPlayback.size && !this.queue.length) {
             this.flushing = false;
             this.cursor = 0;
+            this.recoveryBufferSeconds = .12;
             this.onDrain(this.owner);
             return;
         }
@@ -260,6 +280,8 @@ export class Player {
         this.queue = [];
         this.cursor = 0;
         this.flushing = false;
+        this.buffering = null;
+        this.recoveryBufferSeconds = .12;
     }
     get busy() { return Boolean(this.queue.length || this.active.size || this.pendingPlayback.size); }
 }
