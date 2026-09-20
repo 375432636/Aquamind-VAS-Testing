@@ -1,5 +1,5 @@
 import { ClockSync } from './clock_sync.mjs';
-import { Recorder, Player, ns, encodePCM } from './audio.mjs?v=5';
+import { Recorder, Player, ns, encodePCM } from './audio.mjs?v=6';
 const $ = id => document.getElementById(id);
 let vas, record, turn = 0, serverListenTurn = 0, owner = 0, pendingOwner = 0, outputActive = false, seq = 0, rate = 16000, recorder, mic = false, auto = false, ending = false, ready = false, active = false, discard = false, chain = Promise.resolve();
 let clockSync, clockSyncTask;

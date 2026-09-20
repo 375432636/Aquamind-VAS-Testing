@@ -199,11 +199,9 @@ export class Player {
     pump() {
         clearTimeout(this.timer);
         this.observePlayback();
-        const count = this.queue.reduce((n, p) => n + p.pcm.length, 0);
-        if (!this.active.size && count < this.rate * .3 && !this.flushing) {
-            this.timer = setTimeout(() => this.pump(), 20);
-            return;
-        }
+        // Start on the first decoded packet, including after an interruption or
+        // underrun. The 20 ms scheduling lead below covers small arrival jitter;
+        // subsequent packets keep their contiguous sample boundaries.
         while (this.queue.length && this.cursor - this.ctx.currentTime < 1) {
             const packet = this.queue.shift();
             const start = Math.max(this.cursor, this.ctx.currentTime + (this.cursor > this.ctx.currentTime ? 0 : .02));
