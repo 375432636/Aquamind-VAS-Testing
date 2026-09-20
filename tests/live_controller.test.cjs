@@ -182,7 +182,7 @@ test('missing final diagnostics preserves successful client capture and records 
 
 
 test('VAD remains one live recorder after reply drain and uploads silence and next speech',async()=>{
- const {elements,sent,peer,recorders}=await setup();elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ const {elements,sent,peer,record,recorders}=await setup();elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
  const mic=recorders[0];peer.receive({type:'stt',text:'第一句'});peer.receive({type:'tts',state:'start'});await tick();
  peer.onmessage({data:new Uint8Array([9]).buffer});await tick();
  mic.callback(new Int16Array(960),new Uint8Array([2]),960);
@@ -194,6 +194,35 @@ test('VAD remains one live recorder after reply drain and uploads silence and ne
  assert.deepEqual(sent().filter(x=>x.type==='listen').map(x=>[x.state,x.mode]),[['start','auto']]);
  await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});assert.equal(mic.stopped,true);
  const stoppedCount=peer.sent.length;mic.callback(new Int16Array(960),new Uint8Array([4]),2880);assert.equal(peer.sent.length,stoppedCount);
+ await elements.finish.onclick();
+ const events=record.sent.filter(x=>typeof x==='string').flatMap(x=>JSON.parse(x).events||[]);
+ assert.deepEqual(events.filter(e=>e.event==='turn_started').map(e=>e.turn),[1,2]);
+ assert.deepEqual(events.filter(e=>e.event==='stt').map(e=>e.turn),[1,2]);
+ assert.ok(events.some(e=>e.event==='input_audio_frame_sent'&&e.turn===2));
+});
+
+test('streaming STT updates before a reply stay in one VAD report turn',async()=>{
+ const {elements,peer,record}=await setup();elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ peer.receive({type:'stt',text:'你可以'});peer.receive({type:'stt',text:'你可以听到我吗'});peer.receive({type:'tts',state:'start'});peer.receive({type:'tts',state:'stop'});await tick();
+ await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});await elements.finish.onclick();
+ const events=record.sent.filter(x=>typeof x==='string').flatMap(x=>JSON.parse(x).events||[]);
+ assert.deepEqual(events.filter(e=>e.event==='turn_started').map(e=>e.turn),[1]);
+ assert.deepEqual(events.filter(e=>e.event==='stt').map(e=>e.turn),[1,1]);
+});
+
+test('PTT followed by two VAD utterances produces three turns in one report session',async()=>{
+ const {elements,handlers,peer,record,recorders,sent}=await setup();
+ handlers.keydown(key());await tick();handlers.keyup(key());await tick();
+ peer.receive({type:'stt',text:'PTT 问题'});peer.receive({type:'tts',state:'start'});peer.receive({type:'tts',state:'stop'});await tick();
+ elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ const mic=recorders.at(-1);peer.receive({type:'stt',text:'VAD 第一问'});peer.receive({type:'tts',state:'start'});peer.receive({type:'tts',state:'stop'});await tick();
+ mic.callback(new Int16Array(960).fill(1024),new Uint8Array([3]),1920);peer.receive({type:'stt',text:'VAD 第二问'});await tick();
+ await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});await elements.finish.onclick();
+ const events=record.sent.filter(x=>typeof x==='string').flatMap(x=>JSON.parse(x).events||[]);
+ assert.deepEqual(events.filter(e=>e.event==='turn_started').map(e=>[e.turn,e.data.mode]),[[1,'manual'],[2,'vad'],[3,'vad']]);
+ assert.deepEqual(events.filter(e=>e.event==='turn_started').map(e=>e.data.server_listen_turn_id),[1,2,2]);
+ assert.deepEqual(events.filter(e=>e.event==='stt').map(e=>[e.turn,e.data.text]),[[1,'PTT 问题'],[2,'VAD 第一问'],[3,'VAD 第二问']]);
+ assert.deepEqual(sent().filter(e=>e.type==='listen').map(e=>[e.state,e.mode]),[['start','manual'],['stop',undefined],['start','auto']]);
 });
 
 test('starting VAD during welcome playback does not abort or wait for the speaker',async()=>{

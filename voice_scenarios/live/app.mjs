@@ -1,11 +1,13 @@
 import { ClockSync } from './clock_sync.mjs';
 import { Recorder, Player, ns, encodePCM } from './audio.mjs?v=5';
 const $ = id => document.getElementById(id);
-let vas, record, turn = 0, owner = 0, pendingOwner = 0, outputActive = false, seq = 0, rate = 16000, recorder, mic = false, auto = false, ending = false, ready = false, active = false, discard = false, chain = Promise.resolve();
+let vas, record, turn = 0, serverListenTurn = 0, owner = 0, pendingOwner = 0, outputActive = false, seq = 0, rate = 16000, recorder, mic = false, auto = false, ending = false, ready = false, active = false, discard = false, chain = Promise.resolve();
 let clockSync, clockSyncTask;
 let recording = true;
 let captureStart = null, captureGeneration = 0, inputSamples = 0, inputPeak = 0, diagnosticsActive = false;
 let batch = [], batchSequence = 0, waiters = [], played = new Set(), lastVoice = 0, startedVoice = false, currentMode = 'manual';
+let vadTurnHasStt = false, vadResponseStarted = false, vadPendingFrames = [];
+const captureFinishedTurns = new Set();
 const status = text => $('status').textContent = text;
 function error(e) { $('error').hidden = false; $('error').textContent = e.message || String(e); }
 function message(role, text) {
@@ -60,14 +62,63 @@ function recordingControls() {
     $('finish').textContent = enabled ? '结束并生成报告' : '断开连接';
     $('clock-sync').disabled = !enabled;
 }
+function finishInputCapture(index = turn) {
+    if (!index || currentMode === 'text' || captureFinishedTurns.has(index))
+        return;
+    captureFinishedTurns.add(index);
+    if (lastVoice)
+        emit('speech_input_finished', { source: 'client_energy_estimate', description: '客户端能量估计，非 VAS VAD' }, index, lastVoice);
+    emit('input_capture_finished', { samples: inputSamples, peak: inputPeak, status: inputPeak > 0 ? 'captured' : 'silent' }, index);
+}
 function done(index, interrupted = false) {
     if (index && index === turn && active) {
+        finishInputCapture(index);
         emit('turn_finished', { interrupted }, index);
         active = false;
     }
     if (!ending) {
         status(mic && currentMode === 'vad' ? '持续聆听中' : '已连接');
     }
+}
+function openReportTurn(mode, text = '', at = ns(), continuous = false) {
+    turn++;
+    active = true;
+    currentMode = mode;
+    startedVoice = false;
+    lastVoice = 0;
+    inputSamples = 0;
+    inputPeak = 0;
+    vadTurnHasStt = false;
+    vadResponseStarted = false;
+    emit('turn_started', { mode, text, server_listen_turn_id: serverListenTurn, ...(continuous ? { continuous: true } : {}) }, turn, at);
+}
+function recordInputFrame(frame, index = turn) {
+    inputSamples += frame.samples;
+    inputPeak = Math.max(inputPeak, frame.peak);
+    emit('input_audio_frame_sent', frame.data, index, frame.at);
+    if (frame.isSpeech) {
+        lastVoice = frame.at;
+        if (!startedVoice) {
+            startedVoice = true;
+            emit('input_speech_started', { source: 'client_energy_estimate' }, index, frame.at);
+        }
+    }
+}
+function openNextVadReportTurn(at) {
+    if (active) {
+        finishInputCapture(turn);
+        emit('turn_finished', { interrupted: true, reason: 'vad_next_utterance' }, turn, at);
+        active = false;
+    }
+    const firstSpeech = vadPendingFrames.findIndex(frame => frame.isSpeech);
+    const start = firstSpeech >= 0 ? Math.max(0, firstSpeech - 8) : Math.max(0, vadPendingFrames.length - 50);
+    const frames = vadPendingFrames.splice(start);
+    vadPendingFrames = [];
+    const startedAt = frames[0]?.at || at;
+    openReportTurn('vad', '', startedAt, true);
+    emit('input_started', { continuous: true }, turn, startedAt);
+    for (const frame of frames)
+        recordInputFrame(frame, turn);
 }
 const player = new Player((pcm, meta) => {
     if (recording)
@@ -133,9 +184,8 @@ async function stopMic(manual = false) {
     $('mic-status').textContent = '麦克风已停止';
     if (currentMode === 'vad')
         $('talk').textContent = '开始连续聆听';
-    if (lastVoice)
-        emit('speech_input_finished', { source: 'client_energy_estimate', description: '客户端能量估计，非 VAS VAD' }, turn, lastVoice);
-    emit('input_capture_finished', { samples: inputSamples, peak: inputPeak, status: inputPeak > 0 ? 'captured' : 'silent' });
+    finishInputCapture(turn);
+    vadPendingFrames = [];
     if (inputPeak === 0) {
         $('mic-status').textContent = '未录到声音，请检查麦克风或选择其他输入设备';
     }
@@ -186,12 +236,8 @@ async function begin(mode, text = '') {
         throw Error('请先连接');
     if (mode !== 'vad' && (active || player.busy))
         throw Error('请等待本轮播放完成，或先点击“打断回复”');
-    turn++;
-    active = true;
-    currentMode = mode;
-    startedVoice = false;
-    lastVoice = 0;
-    emit('turn_started', { mode, text });
+    serverListenTurn++;
+    openReportTurn(mode, text);
     send({ type: 'listen', state: 'start', mode: mode === 'vad' ? 'auto' : 'manual', session_id: window.sessionId });
     emit('listen_start_sent', { mode, wire_mode: mode === 'vad' ? 'auto' : 'manual' });
     $('input-control').textContent = mode === 'manual' ? '已发送 start/manual · 持续传送语音，松开后发送 stop' : mode === 'vad' ? '已发送 start/auto · 等待 VAS 自动判断结束' : '文字输入';
@@ -230,19 +276,24 @@ async function startMic() {
                 if (offset === 0)
                     emit('input_started', {}, turn, at);
                 const peak = inputLevel(pcm);
-                inputSamples += pcm.length;
-                inputPeak = Math.max(inputPeak, peak);
-                if (recording)
-                    emit('input_audio_frame_sent', { pcm: encodePCM(pcm), sample_rate: 16000, pcm_offset_samples: offset, stream: mode === 'vad' ? 'uplink' : 'input', is_speech: peak > 500 }, turn, at);
-                let energy = 0;
-                for (const x of pcm)
-                    energy += x * x;
-                if (Math.sqrt(energy / pcm.length) > 500) {
-                    lastVoice = at;
-                    if (!startedVoice) {
-                        startedVoice = true;
-                        emit('input_speech_started', { source: 'client_energy_estimate' }, turn, at);
-                    }
+                const isSpeech = peak > 500;
+                if (recording) {
+                    const frame = {
+                        at, peak, isSpeech, samples: pcm.length,
+                        data: { pcm: encodePCM(pcm), sample_rate: 16000, pcm_offset_samples: offset, stream: mode === 'vad' ? 'uplink' : 'input', is_speech: isSpeech },
+                    };
+                    if (mode === 'vad' && vadResponseStarted)
+                        vadPendingFrames.push(frame);
+                    else
+                        recordInputFrame(frame);
+                    if (vadPendingFrames.length > 1000)
+                        vadPendingFrames.splice(0, vadPendingFrames.length - 1000);
+                }
+                else {
+                    inputSamples += pcm.length;
+                    inputPeak = Math.max(inputPeak, peak);
+                    if (isSpeech)
+                        lastVoice = at;
                 }
                 if (inputSamples >= 16000 && inputPeak === 0)
                     $('mic-status').textContent = '麦克风数据全部为静音，请检查输入设备';
@@ -323,10 +374,14 @@ async function receive(raw) {
         emit('hello_received', m, 0);
     }
     else if (m.type === 'stt') {
+        if (mic && currentMode === 'vad' && vadTurnHasStt && vadResponseStarted)
+            openNextVadReportTurn(ns());
         pendingOwner = turn;
         if (mic && currentMode === 'vad')
             active = true;
         emit('stt', m);
+        if (mic && currentMode === 'vad')
+            vadTurnHasStt = true;
         if (currentMode !== 'text')
             message('user', m.text);
         // Streaming STT is a transcript update, not a microphone endpoint.
@@ -340,6 +395,8 @@ async function receive(raw) {
             status(mic && currentMode === 'vad' ? '正在回复 · 持续聆听中' : '正在回复');
         }
         emit('tts_' + m.state, { ...m, response_listen_turn_id: owner || null, is_session_output: !owner }, owner);
+        if (m.state === 'start' && mic && currentMode === 'vad' && vadTurnHasStt)
+            vadResponseStarted = true;
         if (m.state === 'sentence_start')
             message('assistant', m.text);
         if (m.state === 'stop') {
@@ -419,6 +476,7 @@ async function connect() {
             };
         }
         turn = 0;
+        serverListenTurn = 0;
         owner = 0;
         pendingOwner = 0;
         outputActive = false;
@@ -426,6 +484,10 @@ async function connect() {
         diagnosticsActive = false;
         seq = 0;
         active = false;
+        vadTurnHasStt = false;
+        vadResponseStarted = false;
+        vadPendingFrames = [];
+        captureFinishedTurns.clear();
         played.clear();
         batch = [];
         emit('connection_started', {}, 0, started);

@@ -68,7 +68,14 @@ def test_live_records_and_exports_without_vas(tmp_path):
                     "sequence": 1,
                     "events": [
                         event("connection_started", 1000000000),
-                        event("turn_started", 2000000000, 1, mode="text", text="你好"),
+                        event(
+                            "turn_started",
+                            2000000000,
+                            1,
+                            mode="text",
+                            text="你好",
+                            server_listen_turn_id=7,
+                        ),
                         event("text_sent", 2000000000, 1),
                         event("turn_finished", 3000000000, 1),
                     ],
@@ -82,6 +89,7 @@ def test_live_records_and_exports_without_vas(tmp_path):
                 assert (await client.get(result[name])).status == 200
             saved = json.loads((tmp_path / session["id"] / "result.json").read_text())
             assert saved["turns"][0]["input_text"] == "你好"
+            assert saved["turns"][0]["server_listen_turn_id"] == 7
             assert saved["diagnostics"]["complete"] is False
 
     asyncio.run(run())

@@ -25,7 +25,7 @@ from .reply_timing import (
 )
 from .timeline import group_timeline_spans, media_timeline_markers, request_spans
 from .tts_evidence import tts_segment_evidence
-from .turn_attribution import attribute_mixed_turns
+from .turn_attribution import attribute_mixed_turns, attribute_reused_listen_turns
 
 
 def delta(events, start, end, key, *, signed=False):
@@ -41,6 +41,8 @@ def delta(events, start, end, key, *, signed=False):
 def evaluate(result, vas_events, *, artifact_dir=None):
     report = copy.deepcopy(result)
     vas_events, failures = attribute_mixed_turns(report, vas_events)
+    vas_events, reused_failures = attribute_reused_listen_turns(report, vas_events)
+    failures.extend(reused_failures)
     attribution_complete = not failures
     failure_groups = {
         key: []
@@ -52,7 +54,7 @@ def evaluate(result, vas_events, *, artifact_dir=None):
         )
     }
     failure_groups["diagnostic_missing"].extend(failures)
-    mixed = any(t.get("sensor") for t in report["turns"])
+    attributed = any("client_turn_index" in event for event in vas_events)
     tts_capabilities = next(
         (
             e["data"]
@@ -76,7 +78,7 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             for e in vas_events
             if (
                 e.get("client_turn_index") == index
-                if mixed
+                if attributed
                 else e.get("listen_turn_id")
                 in turn.get(
                     "server_listen_turn_ids",
@@ -365,7 +367,9 @@ def evaluate(result, vas_events, *, artifact_dir=None):
         e
         for e in vas_events
         if (
-            not e.get("client_turn_index") if mixed else e.get("listen_turn_id") is None
+            not e.get("client_turn_index")
+            if attributed
+            else e.get("listen_turn_id") is None
         )
     ]
     report["failures"] = failures

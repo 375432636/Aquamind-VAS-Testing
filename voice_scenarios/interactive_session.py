@@ -86,6 +86,11 @@ class InteractiveSession:
                     expected={},
                     interruption={},
                     playback_source="browser_audio_context",
+                    **(
+                        {"server_listen_turn_id": data["server_listen_turn_id"]}
+                        if data.get("server_listen_turn_id") is not None
+                        else {}
+                    ),
                 )
             )
         if index > len(self.result["turns"]):

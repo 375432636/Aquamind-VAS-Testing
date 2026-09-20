@@ -85,3 +85,77 @@ def attribute_mixed_turns(report, events):
             output_owners.setdefault(output, owner)
         row["client_turn_index"] = owner
     return rows, []
+
+
+def attribute_reused_listen_turns(report, events):
+    """Split one continuous VAD listen stream into its browser report turns.
+
+    The browser keeps one ``listen/start`` and one recorder alive while VAS
+    creates several utterances. Raw diagnostics therefore reuse one
+    ``listen_turn_id``. ``speech_chunk_started`` provides an ordered,
+    clock-independent boundary and ``utterance_id`` keeps late/cancelled spans
+    with the utterance that created them.
+    """
+
+    if any(turn.get("sensor") for turn in report.get("turns", [])):
+        return events, []
+    groups = defaultdict(list)
+    for index, turn in enumerate(report.get("turns", []), 1):
+        raw_id = turn.get("server_listen_turn_id")
+        if raw_id is not None:
+            groups[raw_id].append(index)
+    reused = {raw_id: owners for raw_id, owners in groups.items() if len(owners) > 1}
+    if not reused:
+        return events, []
+
+    rows = [dict(event, client_turn_index=0) for event in events]
+    failures = []
+    for raw_id, owners in groups.items():
+        matching = [row for row in rows if row.get("listen_turn_id") == raw_id]
+        if len(owners) == 1:
+            for row in matching:
+                row["client_turn_index"] = owners[0]
+            continue
+
+        starts, seen = [], set()
+        for row in matching:
+            if row.get("event") != "speech_chunk_started":
+                continue
+            utterance_id = row.get("data", {}).get("utterance_id")
+            if utterance_id and utterance_id not in seen:
+                seen.add(utterance_id)
+                starts.append((row["seq"], utterance_id))
+        if len(starts) != len(owners):
+            failures.append(
+                f"连续 VAD 诊断包含 {len(starts)} 个语句边界，但客户端记录了 {len(owners)} 个轮次；原始数据已保留。"
+            )
+        usable = min(len(starts), len(owners))
+        utterance_owners = {
+            utterance_id: owner
+            for (_, utterance_id), owner in zip(starts[:usable], owners[:usable])
+        }
+        bounds = [
+            (seq, owner) for (seq, _), owner in zip(starts[:usable], owners[:usable])
+        ]
+        span_owners, output_owners = {}, {}
+        for row in matching:
+            data = row.get("data", {})
+            explicit = utterance_owners.get(data.get("utterance_id"))
+            owner = explicit or owners[0]
+            if not explicit:
+                for seq, candidate in bounds:
+                    if row["seq"] >= seq:
+                        owner = candidate
+            span = row.get("span_id")
+            parent = row.get("parent_span_id")
+            output = row.get("output_id")
+            if not explicit:
+                owner = span_owners.get(
+                    span, output_owners.get(output, span_owners.get(parent, owner))
+                )
+            if span:
+                span_owners.setdefault(span, owner)
+            if output:
+                output_owners.setdefault(output, owner)
+            row["client_turn_index"] = owner
+    return rows, failures
