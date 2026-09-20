@@ -1,0 +1,23 @@
+# The experiment runner explicitly targets the regular 5090 SSH tunnel.
+# --prepare creates manual.json and vad.json from the same generated WAVs.
+name: 5090 Zoomi · 速度组合十二问
+evaluation:
+  persona: Zoomi（5090）
+  knowledge_base_count: 4
+  focus: 最终 ASR 准入、RAG、多轮上下文与打断
+turns:
+- {tool: 人设, text: 你是谁}
+- {tool: 人设, text: 你可以做什么}
+- {tool: 知识库-图文, text: 请查一下上海有多少家门店}
+- {tool: 知识库-图文, text: 请查知识库，告诉我上海国金店的地址和营业时间}
+- {tool: 知识库-图文, text: 请查知识库，推荐防水的耳机，告诉我型号和防水等级}
+- {tool: 知识库-图文, text: 请查知识库，最便宜的耳机是哪一款，多少钱}
+- {tool: 知识库-文字, text: 刚才这款支持录音转文字吗？请查一下产品资料}
+- tool: 知识库-图文
+  text: 请查知识库，推荐适合送女朋友的产品，说明价格和理由
+  interrupt_after_seconds: 2
+  output_kind: answer
+- {tool: 知识库-图文, text: 请查知识库，告诉我如何成为会员，有哪些优惠}
+- {tool: 知识库-视频, text: 请查知识库，有奢音耳机的介绍视频吗}
+- {tool: 知识库-图文, text: 请查门店资料，哪家门店周六最早开门}
+- {tool: LLM, text: 根据刚才查到的资料，总结一下推荐的耳机和价格，简短一点}
