@@ -13,6 +13,8 @@ from .interactive_session import InteractiveSession
 ENDPOINTS = {
     "dev": "wss://lumin-vas-aquamind-dev.deep-edge.cn/looomyn/v1/",
     "main": "wss://lumin-vas-aquamind.deep-edge.cn/looomyn/v1/",
+    "5090-tailscale": "wss://100.114.113.70:18443/looomyn/v1/",
+    "5090-lan": "wss://10.10.95.179:18443/looomyn/v1/",
 }
 
 

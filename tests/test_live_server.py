@@ -3,7 +3,36 @@ import json
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from voice_scenarios.web_server import create_app
+from voice_scenarios.web_server import ENDPOINTS, create_app
+
+
+def test_live_exposes_both_5090_network_paths(tmp_path):
+    async def run():
+        async with TestClient(TestServer(create_app(tmp_path))) as client:
+            config = await (await client.get("/api/config")).json()
+            assert config["endpoints"]["5090-tailscale"] == (
+                "wss://100.114.113.70:18443/looomyn/v1/"
+            )
+            assert config["endpoints"]["5090-lan"] == (
+                "wss://10.10.95.179:18443/looomyn/v1/"
+            )
+            page = await (await client.get("/live/")).text()
+            assert 'id="5090-address"' in page
+            assert "100.114.113.70" in page
+            assert "10.10.95.179" in page
+            for environment in ("5090-tailscale", "5090-lan"):
+                response = await client.post(
+                    "/api/sessions",
+                    json={
+                        "environment": environment,
+                        "device_id": "00:00:00:00:00:21",
+                        "recording": False,
+                    },
+                )
+                assert response.status == 200
+                assert (await response.json())["ws_url"] == ENDPOINTS[environment]
+
+    asyncio.run(run())
 
 
 def test_live_chat_only_does_not_create_recording_or_report(tmp_path):

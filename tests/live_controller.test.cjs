@@ -2,8 +2,9 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function setup(options={}){
  const handlers={};
- const elements={};for(const id of ['status','error','messages','environment','mac','token','ota','connect','finish','text','send','talk','interrupt','mode','mic-status','downloads','text-form','mic-device','mic-level','mic-check','mic-preview','input-control','voice-hint'])elements[id]={value:'',disabled:false,append(){},replaceChildren(){},scrollIntoView(){}};
+ const elements={};for(const id of ['status','error','messages','environment','5090-address-field','5090-address','mac','token','ota','connect','finish','text','send','talk','interrupt','mode','mic-status','downloads','text-form','mic-device','mic-level','mic-check','mic-preview','input-control','voice-hint'])elements[id]={value:'',disabled:false,hidden:false,append(){},replaceChildren(){},scrollIntoView(){}};
  elements.mac.value='00:00:00:00:00:21';elements.environment.value='dev';elements.mode.value='manual';elements.ota.checked=false;
+ elements['5090-address'].value='5090-tailscale';
  const sockets=[],recorders=[],players=[],requests=[],encoded=[];
  elements.recording={checked:options.recording!==false,disabled:false};
  elements['clock-sync']={checked:false,disabled:false};
@@ -27,6 +28,14 @@ async function setup(options={}){
  const peer=sockets.find(s=>s.url.startsWith('ws://local/vas')),record=sockets.find(s=>s.url.includes('/record'));
  return {elements,handlers,recorders,players,peer,record,requests,encoded,sockets,sent:()=>peer.sent.filter(x=>typeof x==='string').map(JSON.parse)};
 }
+test('5090 environment exposes Tailscale and LAN endpoint selection',async()=>{
+ const {elements,requests}=await setup();await elements.finish.onclick();
+ elements.environment.value='5090';elements.environment.onchange();
+ assert.equal(elements['5090-address-field'].hidden,false);
+ elements['5090-address'].value='5090-lan';await elements.connect.onclick();
+ assert.equal(JSON.parse(requests.at(-1).body).environment,'5090-lan');
+ assert.equal(elements.environment.disabled,true);assert.equal(elements['5090-address'].disabled,true);
+});
 test('chat-only connects without diagnostics, clock sync, recording socket or reports',async()=>{
  const {elements,sent,record,peer,requests,sockets}=await setup({recording:false});
  assert.equal(JSON.parse(requests[0].body).recording,false);

@@ -53,7 +53,7 @@ function controls(on) {
     for (const id of ['text', 'send', 'talk', 'interrupt', 'finish'])
         $(id).disabled = !on;
     $('connect').disabled = on;
-    for (const id of ['environment', 'mac', 'token', 'ota', 'recording'])
+    for (const id of ['environment', '5090-address', 'mac', 'token', 'ota', 'recording'])
         $(id).disabled = on;
 }
 function recordingControls() {
@@ -440,7 +440,9 @@ async function connect() {
         if (!/^(?:[\da-f]{2}:){5}[\da-f]{2}$/i.test($('mac').value.trim()))
             throw Error('请填写有效 MAC 地址');
         await player.prime();
-        const config = { environment: $('environment').value, device_id: $('mac').value.trim(), recording };
+        const selectedEnvironment = $('environment').value;
+        const environment = selectedEnvironment === '5090' ? $('5090-address').value : selectedEnvironment;
+        const config = { environment, device_id: $('mac').value.trim(), recording };
         let token = $('token').value;
         status('正在建立连接');
         const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
@@ -676,6 +678,10 @@ $('mode').onchange = () => {
     $('input-control').textContent = manual ? '手动结束 · 等待按下空格或说话按钮' : 'VAD 自动结束 · 等待开始';
 };
 $('mode').onchange();
+$('environment').onchange = () => {
+    $('5090-address-field').hidden = $('environment').value !== '5090';
+};
+$('environment').onchange();
 $('mac').value = localStorage.getItem('testing-mac') || '';
 window.addEventListener('pagehide', () => { recorder?.stop().catch(() => { }); closeMicrophoneProbe().catch(() => { }); player.stop(); vas?.close(); record?.close(); });
 let microphoneProbe = null, previewUrl = null;
