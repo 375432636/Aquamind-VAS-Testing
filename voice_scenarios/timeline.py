@@ -2,6 +2,7 @@
 
 import math
 
+from .knowledge_evidence import knowledge_evidence
 from .llm_evidence import thinking_mode
 from .memory_evidence import candidate_decisions, memory_evidence
 
@@ -15,6 +16,7 @@ def request_spans(events):
     }
     spans, errors = [], []
     memories = memory_evidence(events)
+    knowledge = knowledge_evidence(events)
     candidates = candidate_decisions(events)
     for end in events:
         # HTTP phases / retries are milestones inside the logical request.
@@ -43,6 +45,9 @@ def request_spans(events):
             }
         )
         data = spans[-1]["data"]
+        key = (start.get("clock_id"), start.get("span_id"))
+        if key in knowledge:
+            spans[-1]["knowledge_evidence"] = knowledge[key]
         if data.get("memory_lookup_id") in memories:
             spans[-1]["memory_evidence"] = memories[data["memory_lookup_id"]]
         if data.get("pipeline_attempt_id") in candidates:
@@ -212,6 +217,7 @@ def group_timeline_spans(spans, events):
     lanes = {}
     span_lanes = {}
     speech_spans = {}
+    knowledge = knowledge_evidence(events)
     for span in ordered:
         event = starts.get(span["span_id"], {})
         segment = dict(
@@ -219,6 +225,9 @@ def group_timeline_spans(spans, events):
             output_id=event.get("output_id"),
             output_kind=event.get("output_kind"),
         )
+        evidence = knowledge.get((span.get("clock_id"), span.get("span_id")))
+        if evidence is not None:
+            segment["knowledge_evidence"] = evidence
         name = span["name"]
         owner = llm_parent(span) if name == "tts_request" else None
         key = ("span", span["span_id"])

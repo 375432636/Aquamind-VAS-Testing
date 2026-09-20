@@ -262,3 +262,26 @@ test('Memory expands returned and injected text safely on the existing lane',()=
   render('server',[{label:'Memory',category:'memory_request',segments:[{label:'Memory',start:0,end:1e9,memory_evidence:evidence}],markers:[]}]);
   assert.doesNotMatch(root.innerHTML,/memory-evidence/);
 });
+
+test('knowledge lookup expands query and result in its own lane without claiming LLM adoption',()=>{
+  const {root,render}=renderer();
+  const evidence={label:'已返回',query:{text:'水晶球',complete:true,available:true},returned:{text:'<script>Oracube</script>',complete:true,available:true}};
+  const lane={label:'rag-lightrag_search',category:'tool_call',segments:[{label:'RAG',start:0,end:1e9,knowledge_evidence:evidence}],markers:[]};
+  render('server',[lane],{}, {expandedLanes:new Set([0])});
+  assert.match(root.innerHTML,/knowledge-evidence/);
+  assert.match(root.innerHTML,/查询词/);
+  assert.match(root.innerHTML,/工具返回正文/);
+  assert.match(root.innerHTML,/&lt;script&gt;Oracube/);
+  assert.doesNotMatch(root.innerHTML,/<script>Oracube|LLM 已采用|知识库命中/);
+  render('server',[lane]);
+  assert.doesNotMatch(root.innerHTML,/knowledge-evidence/);
+});
+
+test('missing knowledge content and empty result remain distinguishable',()=>{
+  const {root,render}=renderer();
+  const evidence={label:'结果未采集',query:{complete:false},returned:{text:'部分结果',complete:false,truncated:true}};
+  render('server',[{label:'RAG',segments:[{start:0,end:1e9,knowledge_evidence:evidence}],markers:[]}],{}, {expandedLanes:new Set([0])});
+  assert.match(root.innerHTML,/数据不完整/);
+  assert.match(root.innerHTML,/已截断/);
+  assert.match(root.innerHTML,/未采集/);
+});

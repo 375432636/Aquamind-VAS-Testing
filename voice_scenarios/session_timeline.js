@@ -1,3 +1,10 @@
+function syncTimelineRowHeights(rows, labels) {
+  rows.forEach((row,index)=>{row.style.minHeight=labels[index].style.minHeight='';});
+  const heights=rows.map((row,index)=>row.hidden?0:Math.max(58,row.getBoundingClientRect().height,labels[index].getBoundingClientRect().height));
+  rows.forEach((row,index)=>{row.style.minHeight=labels[index].style.minHeight=heights[index]+'px';});
+  return heights.reduce((sum,value)=>sum+value,0);
+}
+
 function sessionInputRanges(row, markers = []) {
   const segments = (row.input_segments || []).filter(s=>Number.isFinite(s.start_seconds) && Number.isFinite(s.end_seconds) && s.end_seconds > s.start_seconds);
   if (!segments.length) return [];
@@ -402,9 +409,7 @@ function renderSessionTimeline(target, session = {}) {
         button.setAttribute('aria-expanded',String(expandedLanes.has(index)));
         button.querySelector('.lane-chevron').textContent=expandedLanes.has(index)?'▾':'▸';
       });
-      const heights = rows.map((row,index)=>row.hidden?0:Math.max(58,row.getBoundingClientRect().height,labels[index].getBoundingClientRect().height));
-      rows.forEach((row,index)=>{row.style.minHeight=labels[index].style.minHeight=heights[index]+'px';});
-      canvas.style.height = vasTop+heights.reduce((sum,value)=>sum+value,0)+24+'px';
+      canvas.style.height = vasTop+syncTimelineRowHeights(rows,labels)+24+'px';
       labelRoot.style.height=canvas.style.height;
       labelRoot.parentElement.style.height=viewport.clientHeight+'px';
     }
@@ -485,6 +490,15 @@ function renderSessionTimeline(target, session = {}) {
     const button=event.target.closest('[data-lane-toggle]');
     if(button)vasController?.toggleLane(Number(button.dataset.laneToggle));
   });
+  // Native details toggles change row height without changing the viewport.
+  // Reflow matching labels without rerendering (which would close the details).
+  canvas.addEventListener('toggle',event=>{
+    if(event.target.tagName!=='DETAILS' || !event.target.closest('#session-vas'))return;
+    const rows=[...canvas.querySelectorAll('#session-vas .lane')];
+    const labels=[...labelRoot.querySelectorAll('.session-vas-label')];
+    canvas.style.height=vasTop+syncTimelineRowHeights(rows,labels)+24+'px';
+    labelRoot.style.height=canvas.style.height;
+  },true);
   if (audio) {
     audio.addEventListener('timeupdate',()=>{if(selection && audio.currentTime>=selection[1]){if(looping){seek(selection[0]);}else if(!audio.paused && target.dataset.selectionPlaying==='true'){audio.pause();target.dataset.selectionPlaying='false';}}});
     target.querySelector('[data-friendly="play-selection"]').addEventListener('click',()=>{target.dataset.selectionPlaying='true';});

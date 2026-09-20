@@ -27,3 +27,15 @@ test('overview and turn views restore all three preferences, old reports keep th
   assert.equal(mode('invalid', lanes), 'key');
   assert.equal(mode('key', [{category:'llm_request'}]), 'details');
 });
+
+test('opening and closing evidence details resizes matching labels and releases old height',()=>{
+  const sync = vm.runInNewContext(readFileSync('voice_scenarios/session_timeline.js','utf8')+'\nsyncTimelineRowHeights;');
+  function node(height,hidden=false){return {height,hidden,style:{minHeight:'400px'},getBoundingClientRect(){return {height:Math.max(this.height,parseFloat(this.style.minHeight)||0)};}};}
+  const rows=[node(280),node(60),node(100,true)], labels=[node(30),node(40),node(30)];
+  assert.equal(sync(rows,labels),340);
+  assert.equal(labels[0].style.minHeight,'280px');
+  assert.equal(rows[1].style.minHeight,labels[1].style.minHeight);
+  rows[0].height=80;
+  assert.equal(sync(rows,labels),140);
+  assert.equal(labels[0].style.minHeight,'80px');
+});
