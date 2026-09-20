@@ -69,6 +69,15 @@ function candidateDetails(data = {}) {
   const reason={memory_changed:'Memory 有新内容',guardrail_blocked:'护栏拦截',turn_cancelled:'本轮已打断',pipeline_error:'流水线失败'}[data.reason];
   return [state,reason,data.pipeline_role==='memory_replacement'?'补充 Memory 重发':'并行候选请求',data.replaces_attempt_id?`替代请求 ${data.replaces_attempt_id}`:''].filter(Boolean).join(' · ');
 }
+function knowledgeDetails(evidence) {
+  if (!evidence) return '';
+  return [evidence.label, ...['query','returned'].map(kind=> {
+    const content=evidence[kind] || {};
+    const label=kind==='query'?'查询词':'工具返回正文';
+    const state=[!content.complete?'数据不完整':'',content.truncated?'已截断':''].filter(Boolean).join(' · ');
+    return `${label}${state?' · '+state:''}\n${content.text || (content.complete && content.available?'（空返回）':'未采集')}`;
+  })].join('\n\n');
+}
 function configDetails(data = {}) {
   const labels = {temperature:'Temperature', top_p:'Top P', max_tokens:'Max tokens', voice_id:'音色', speed:'语速', vol:'音量', pitch:'音调', sample_rate:'采样率', format:'格式', channel:'声道', bitrate:'码率'};
   const params = data.parameters || {};
@@ -211,7 +220,8 @@ function timeline(id, lanes, clock = {}, options = {}) {
     }).join('');
     const memories=segments.filter(item=>item.memory_evidence).map(item=>item.memory_evidence);
     const memory=expandedLanes.has(index)?memories.map(item=>`<details class="memory-evidence"><summary>${esc(item.label)} · 查看返回内容与采用内容</summary><pre>${esc(memoryDetails(item))}</pre></details>`).join(''):'';
-    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key${segments.some(item=>item.tts_evidence)?' has-tts-text':''}">${keys}</div>${memory}`;
+    const knowledge=expandedLanes.has(index)?segments.filter(item=>item.knowledge_evidence).map(item=>`<details class="memory-evidence knowledge-evidence"><summary>知识库 · ${esc(item.knowledge_evidence.label)} · 查看查询与返回内容</summary><pre>${esc(knowledgeDetails(item.knowledge_evidence))}</pre></details>`).join(''):'';
+    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key${segments.some(item=>item.tts_evidence)?' has-tts-text':''}">${keys}</div>${memory}${knowledge}`;
   }
   const axis = clock.mode === 'wall' ? [0,range/2,range].map(offset=>`<span>${beijingTime(clock.origin_wall_time_ms+(zero+offset)/1e6)}<small>+${sec(offset/1e9)} s</small></span>`).join('') : `<span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span>`;
   root.innerHTML = `<div class="timeline-plot">${options.embedded ? '' : '<div class="axis">'+axis+'</div>'}` + lanes.map((lane,index) => {
@@ -268,7 +278,7 @@ function timeline(id, lanes, clock = {}, options = {}) {
       const restoreFocus = document.activeElement === button;
       if (button.dataset.sentenceIndex == null) toggleLane(laneIndex);
       if (restoreFocus && button.dataset.sentenceIndex == null) root.querySelector(`[data-event-index="${button.dataset.eventIndex}"]`)?.focus({preventScroll:true});
-      detail.textContent = [title(item), configDetails(item.data), ttsTextDetails(item), candidateDetails(item.data), memoryDetails(item.memory_evidence), item.data?.purpose === 'rules' ? '规则向量' : item.data?.purpose === 'query' ? '用户问题向量' : '', item.data?.error_type || ''].filter(Boolean).join(' · ');
+      detail.textContent = [title(item), configDetails(item.data), ttsTextDetails(item), candidateDetails(item.data), memoryDetails(item.memory_evidence), knowledgeDetails(item.knowledge_evidence), item.data?.purpose === 'rules' ? '规则向量' : item.data?.purpose === 'query' ? '用户问题向量' : '', item.data?.error_type || ''].filter(Boolean).join(' · ');
     }
     detail.hidden = false;
     return true;
