@@ -243,7 +243,7 @@ function renderSessionTimeline(target, session = {}) {
       selection=[item.start_seconds,item.end_seconds];drawSelection();
       const evidence=waitEvidence(item,vasLanes);
       evidence.forEach(stage=>canvas.querySelectorAll('#session-vas .lane')[stage.index]?.classList.add('wait-overlap'));
-      body = `<p>${escape(descriptions[item.kind] || '未播放声音的等待区间')}</p><div class="wait-evidence">${evidence.length ? evidence.map(stage=>`<button data-wait-lane="${stage.index}">${escape(stage.label.replace(/^第 \d+ 轮 · /,''))} · ${seconds(stage.overlap)}</button>`).join('') : '<span>该窗口内没有可对应的 VAS 请求记录。</span>'}</div><small>同窗阶段仅供定位；两端未校时，不能据此判定阻塞原因。</small>`;
+      body = `<p>${escape(descriptions[item.kind] || '未播放声音的等待区间')}</p><div class="wait-evidence">${evidence.length ? evidence.map(stage=>`<button data-wait-lane="${stage.index}">${escape(stage.label.replace(/^第 \d+ 轮 · /,''))} · ${seconds(stage.overlap)}</button>`).join('') : '<span>该窗口内没有可对应的 VAS 请求记录。</span>'}</div><small>同窗阶段仅供定位，不能单凭重叠判定阻塞原因；跨端精度请查看页面校准状态。</small>`;
     }
     const stats = item.item_type === 'input' && row ? `<div class="selected-turn-metrics"><span>输入结束 <b>${seconds(row.input_end_seconds)}</b></span><span>首包到达 <b>${seconds(row.first_received_seconds)}</b></span><span>首句播放 <b>${seconds(row.first_playback_seconds)}</b></span></div>` : '';
     detail.innerHTML = `<div class="session-detail-heading"><span class="badge">第 ${item.turn_index} 轮</span><strong>${escape(item.label)}</strong><span class="detail-time">${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} <b>· ${seconds(item.end_seconds-item.start_seconds)}</b>${escape(clockCaption(item.start_seconds))}</span><a href="turn-${String(item.turn_index).padStart(3,'0')}.html">内部时序 ↗</a></div>${body}${stats}`;
@@ -297,6 +297,8 @@ function renderSessionTimeline(target, session = {}) {
     return hit.time;
   }
   canvas.addEventListener('pointerdown', event => {
+    // Native disclosures and text selection must not become timeline gestures.
+    if (event.target.closest('details')) return;
     if (event.pointerType === 'touch' || event.button !== 0 || !extent) return;
     inspectedTime=null;
     const handle = event.target.closest('[data-measure-handle]');
@@ -321,11 +323,12 @@ function renderSessionTimeline(target, session = {}) {
   });
   canvas.addEventListener('pointercancel', () => {if(gesture){selection=gesture.selection;const id=gesture.pointerId;gesture=null;if(canvas.hasPointerCapture(id))canvas.releasePointerCapture(id);drawSelection();}});
   canvas.addEventListener('click', event => {
+    if (event.target.closest('details')) return;
     if (event.detail !== 0 || event.target.closest('[data-measure-handle]')) return;
     activate(event.target);
   });
   target.addEventListener('keydown', event => {
-    if (event.target.closest('input,textarea,select,[contenteditable="true"]')) return;
+    if (event.target.closest('details,input,textarea,select,[contenteditable="true"]')) return;
     if (event.code === 'Space' && event.target.tagName !== 'BUTTON' && audio) {
       event.preventDefault(); audio.paused ? audio.play().catch(()=>{}) : audio.pause(); return;
     }

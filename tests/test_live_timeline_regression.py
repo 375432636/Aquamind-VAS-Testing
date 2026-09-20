@@ -61,6 +61,7 @@ async def record_session(directory, clock_mode):
             audio_seq=seq,
             pcm=pcm(value),
             sample_rate=RATE,
+            output_kind=kind,
         )
         observed = max(received, played) + 0.2
         timing = dict(

@@ -316,3 +316,37 @@ python -m voice_scenarios rebuild artifacts/old-session --output artifacts/rebui
 仅当旧模拟播放拥有完整 PCM 就绪证据时重建；浏览器实播、缺失证据和旧打断片段不会重新计时。重建版明确标注“模拟播放重建”，保存 `result.original.json`，原目录保持不变。
 
 本地无云端验收页面：`PYTHONPATH=. python tests/live_preview.py`，打开 `http://127.0.0.1:19226/live/` 并取消 OTA 校验。该模拟端返回固定测试音，不代表真实 VAS 性能。
+
+### 跨端时间校准
+
+开启诊断的 Python 自动测试默认在连接后后台采样 5 次 `clock_sync`，
+每组总预算 1 秒，单次等待最多 0.25 秒；支持校准的服务在结束前再复测。
+普通对话不等待校准，旧 VAS 不支持时报告显示未校准。
+配置文件 `clock_sync: false` 或批量运行环境变量 `VAS_CLOCK_SYNC=0` 可关闭。
+网页实时测试在「连接选项」中提供独立的时间校准开关。
+
+报告默认使用有效校准，并可切换「原始时间／校准时间」。原始日志、客户端
+播放时间和同端单调时钟耗时不改动。报告显示最小 RTT 样本的偏移与半 RTT
+不确定范围；该范围只描述采样时刻，不是整个会话的精度保证。前后采样明显
+不一致或服务端会话不同则停止应用校准。跨端时间差不等同于纯网络耗时。
+校准样本保存在 `result.json` / `report.json` 的 `clock_sync` 及客户端事件日志中。
+
+客户端回听、等待和 VAS 诊断已分离：详情与验证方式见[客户端音轨独立与可选校时](docs/client-audio-clock-independence.md)。
+
+
+### Memory 与 LLM 并行验收
+
+服务端启用流水线后，原 Memory 时间轴会显示命中、未命中、重复画像、超时或失败；
+展开时间条，再点“查看返回内容与采用内容”读取本轮记忆。LLM 时间轴保留弃用候选和
+补充 Memory 重发的请求，关键回复指标排除弃用候选。旧服务未采集的结果显示“未采集”。
+
+本地真实 VAS + Fake 服务回归：
+
+```bash
+VAS_TEST_ROOT=/absolute/path/to/VAS/main/xiaozhi-server \
+  python -m pytest tests/test_memory_pipeline_stack.py -v
+```
+
+场景：`config/memory-pipeline.example.yaml`；外部服务数据：`config/fake-memory-pipeline.yaml`。
+PTT 和 VAD 各一个三轮会话，覆盖未命中复用、命中后丢弃错误音乐调用、工具递归只查询一次 Memory。
+需要按本地开发说明准备 VAS 的 `.venv`；测试不连接线上外部服务。

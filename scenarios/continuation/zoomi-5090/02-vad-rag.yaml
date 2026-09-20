@@ -1,0 +1,18 @@
+name: 5090 Zoomi · VAD 知识库与上下文
+device_id: C2:B8:56:7B:95:7C
+environment: dev
+input_mode: vad
+turn_timeout_seconds: 120
+evaluation:
+  persona: Zoomi（5090）
+  knowledge_base_count: 4
+  focus: RAG、上下文与续说版本隔离
+turns:
+- tool: 知识库-图文
+  text: 请查一下上海有多少家门店
+- tool: 知识库-图文
+  text: 哪家门店周六最早开门
+- tool: 知识库-图文
+  text: 请推荐一款适合送女朋友的产品
+- tool: LLM
+  text: 你刚刚说的会员具体怎么加入

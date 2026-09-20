@@ -56,6 +56,11 @@ def test_real_stack_public_milestones_and_guardrail(tmp_path):
             assert await run(args) == 0
             report = json.loads((args.output / "report.json").read_text())
             assert report["diagnostics"]["complete"]
+            assert report["clock_sync"]["status"] == "calibrated"
+            assert {sample["phase"] for sample in report["clock_sync"]["samples"]} == {
+                "start",
+                "end",
+            }
             for turn in report["turns"]:
                 events = turn["vas_events"]
                 names = {e["event"] for e in events}
@@ -144,6 +149,7 @@ def test_real_stack_vad_continuous_noise_and_multiturn(tmp_path):
                 report = json.loads((output / "report.json").read_text())
                 assert len(report["turns"]) == 2
                 assert report["diagnostics"]["complete"]
+                assert report["clock_sync"]["status"] == "calibrated"
                 for index, turn in enumerate(report["turns"], 1):
                     assert turn["status"] == "completed"
                     assert turn["metrics"]["asr_endpoint_to_final_ms"] >= 0

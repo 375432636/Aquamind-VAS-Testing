@@ -1,0 +1,33 @@
+schema_version: 1
+name: Memory 与 LLM 并行放行回归
+evaluation:
+  persona: Fake 流水线验收
+  knowledge_base_count: 0
+  focus: Memory 并行与弃用隔离
+turn_timeout_seconds: 35
+settle_seconds: 0.3
+turns:
+  - id: memory-miss
+    tool: LLM
+    input_text: 你好，请介绍一下自己。
+    audio: ../fixtures/input.wav
+    expect:
+      memory_requests: 1
+      llm_requests: 1
+      tools: {}
+  - id: memory-hit-discards-tool
+    tool: LLM
+    input_text: 我喜欢什么饮料？
+    audio: ../fixtures/input.wav
+    expect:
+      memory_requests: 1
+      llm_requests: 2
+      tools: {}
+  - id: memory-hit-tool-recursion
+    tool: LLM
+    input_text: 那再帮我查一下上海天气。
+    audio: ../fixtures/input.wav
+    expect:
+      memory_requests: 1
+      llm_requests: 3
+      tools: {self_test_weather: 1}

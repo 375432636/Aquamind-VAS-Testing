@@ -1,0 +1,28 @@
+name: 5090 Zoomi · VAD 续说与问题修正
+device_id: C2:B8:56:7B:95:7C
+environment: dev
+input_mode: vad
+turn_timeout_seconds: 120
+evaluation:
+  persona: Zoomi（5090）
+  knowledge_base_count: 4
+  focus: RAG、上下文与续说版本隔离
+turns:
+- tool: 知识库-图文
+  chunks:
+  - text: 帮我介绍一下门店
+  - text: 我说的是上海静安区的门店
+    resume_after_endpoint_ms: 0
+  expect:
+    speech_utterances: 1
+    speech_chunks_min: 2
+- tool: 知识库-图文
+  chunks:
+  - text: 我想买最贵的耳机
+  - text: 说错了，我要最便宜的一款
+    resume_after_endpoint_ms: 0
+  expect:
+    speech_utterances: 1
+    speech_chunks_min: 2
+- tool: LLM
+  text: 成为会员有什么优惠，具体怎么加入

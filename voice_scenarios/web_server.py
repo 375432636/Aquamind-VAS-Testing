@@ -46,6 +46,8 @@ def create_app(output, endpoints=None):
             r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", config.get("device_id", "")
         ):
             raise web.HTTPBadRequest(text="请选择环境并填写有效 MAC")
+        if config.get("recording", True) is False:
+            return web.json_response({"ws_url": endpoints[config["environment"]]})
         sid = uuid.uuid4().hex
         sessions[sid] = InteractiveSession(output / sid, config)
         return web.json_response(

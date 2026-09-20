@@ -46,6 +46,7 @@ function enableTimelineMeasurement(root, duration, snapPoints = []) {
     draw();
   }
   plot.addEventListener('pointerdown', event => {
+    if (event.target.closest('details')) return;
     const bounds = axis.getBoundingClientRect();
     if (event.button !== 0 || gesture || event.clientX < bounds.left || event.clientX > bounds.right) return;
     const handle = event.target.closest('[data-chain-handle]');

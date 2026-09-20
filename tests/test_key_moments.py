@@ -237,3 +237,21 @@ def test_vad_keeps_separate_lane():
         "local_vad_endpoint_detected",
         "asr_endpoint_detected",
     }
+
+
+def test_discarded_speculative_first_token_is_not_a_reply_keypoint():
+    report = sample()
+    report["turns"][0]["vas_events"] = [
+        dict(
+            event="llm_candidate_discarded",
+            monotonic_ns=7 * S,
+            data={"pipeline_attempt_id": "candidate-a"},
+        ),
+    ]
+    lane = report["session_playback"]["vas_timeline"]["lanes"][1]
+    lane["markers"][0]["data"]["pipeline_attempt_id"] = "candidate-a"
+    rows = keys(report)
+    assert not any(
+        row["key_id"] == "llm_first" and row["llm_number"] == 1 for row in rows
+    )
+    assert any(row["key_id"] == "llm_first" and row["llm_number"] == 2 for row in rows)

@@ -1,5 +1,7 @@
 """Summarize observed LLM attempts without inferring unobserved network stages."""
 
+from .memory_evidence import candidate_decisions
+
 
 def thinking_mode(data):
     """Label only an explicitly recorded request flag; never infer from model."""
@@ -55,6 +57,7 @@ def summarize_llm_requests(events):
     Logical requests on older servers retain a row with unknown HTTP evidence.
     No duration is calculated across clocks, attempts or logical request spans.
     """
+    decisions = candidate_decisions(events)
     logical = {
         e["span_id"]: e
         for e in events
@@ -93,6 +96,17 @@ def summarize_llm_requests(events):
                 "unknown",
             ),
         }
+        summary.update(
+            {
+                k: metadata.get(k)
+                for k in (
+                    "pipeline_attempt_id",
+                    "pipeline_role",
+                    "replaces_attempt_id",
+                )
+            }
+        )
+        summary.update(decisions.get(metadata.get("pipeline_attempt_id"), {}))
         for name in ("input_tokens", "cached_tokens", "output_tokens"):
             value = metadata.get(name)
             summary[name] = (

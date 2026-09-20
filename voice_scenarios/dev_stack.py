@@ -45,6 +45,8 @@ async def serve_stack(vas_root, script, base_port=19080):
     config = json.loads(json.dumps(config).replace(old, new))
     config["server"]["port"] = base_port
     profile = yaml.safe_load(Path(script).read_text())
+    if "llm_memory_pipeline" in profile:
+        config["llm_memory_pipeline"] = profile["llm_memory_pipeline"]
     config["safety_filter"] = {
         "api": {
             "base_url": f"http://127.0.0.1:{base_port+1}/v1",

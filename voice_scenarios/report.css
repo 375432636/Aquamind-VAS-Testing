@@ -40,3 +40,9 @@
 .segment-key .sentence-key:hover,.segment-key .sentence-key:focus-visible{background:var(--accent-soft);color:var(--accent)}
 .sentence-key i{flex-shrink:0}.sentence-preview{overflow:hidden;text-overflow:ellipsis;min-width:0}
 .event-summary .event-symbol{font-size:11px;font-weight:650;white-space:nowrap;background:#f3f6fb}.lane-content{min-width:0}
+
+.status-dot.warning-dot{background:#b08032}
+
+.memory-evidence { position:sticky; left:0; max-width:680px; margin:6px 0; padding:8px 12px; border:1px solid #d8cde5; border-radius:8px; background:#faf8fd; font-size:13px; }
+.memory-evidence summary { cursor:pointer; color:#725591; font-weight:600; }
+.memory-evidence pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; max-height:260px; overflow:auto; margin:10px 0 0; }

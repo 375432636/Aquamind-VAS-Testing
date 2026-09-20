@@ -1,4 +1,13 @@
 const report = JSON.parse(document.getElementById('data').textContent);
+if (typeof location !== 'undefined' && /(?:[?&])clock=raw(?:&|$)/.test(location.search) && report.raw_view) {
+  Object.assign(report, report.raw_view);
+  const label = document.getElementById('clock-sync-status');
+  if (label) label.textContent = '原始时间 · 未应用跨端校准';
+  const timelineLabel = document.getElementById('session-clock-label');
+  if (timelineLabel?.textContent?.startsWith('北京时间')) {
+    timelineLabel.textContent = '北京时间 UTC+8 · 会话起点 = 0 s · 原始时间，未应用跨端校准';
+  }
+}
 const turn = report.turn;
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -44,6 +53,21 @@ window.addEventListener('pagehide', () => document.querySelectorAll('audio').for
 function configSummary(data = {}) {
   const vendor = data.vendor || (data.adapter === 'openai' || data.provider === 'openai' ? 'OpenAI 兼容接口' : data.adapter || data.provider);
   return [vendor, data.model].filter(Boolean).join(' · ');
+}
+function memoryDetails(evidence) {
+  if (!evidence) return '';
+  return [evidence.label, ...['returned','injected'].map(kind=> {
+    const content=evidence[kind] || {};
+    const label=kind==='returned'?'Memory 返回内容（格式化）':'本轮实际补充的 Memory';
+    const state=!content.complete?' · 数据不完整':content.truncated?' · 已截断':'';
+    return `${label}${state}\n${content.text || (content.complete?'（无）':'未采集')}`;
+  })].join('\n\n');
+}
+function candidateDetails(data = {}) {
+  if (!data.pipeline_attempt_id) return '';
+  const state={adopted:'已采用',discarded:'已弃用'}[data.selection] || '等待判定';
+  const reason={memory_changed:'Memory 有新内容',guardrail_blocked:'护栏拦截',turn_cancelled:'本轮已打断',pipeline_error:'流水线失败'}[data.reason];
+  return [state,reason,data.pipeline_role==='memory_replacement'?'补充 Memory 重发':'并行候选请求',data.replaces_attempt_id?`替代请求 ${data.replaces_attempt_id}`:''].filter(Boolean).join(' · ');
 }
 function configDetails(data = {}) {
   const labels = {temperature:'Temperature', top_p:'Top P', max_tokens:'Max tokens', voice_id:'音色', speed:'语速', vol:'音量', pitch:'音调', sample_rate:'采样率', format:'格式', channel:'声道', bitrate:'码率'};
@@ -185,7 +209,9 @@ function timeline(id, lanes, clock = {}, options = {}) {
       const text=item.tts_evidence.status==='matched'?item.tts_evidence.text:'文本未关联';
       return `<button type="button" class="sentence-key" data-sentence-index="${all.indexOf(item)}" title="${esc(title(item)+'\n'+ttsTextDetails(item))}" aria-label="${esc('第 '+item.segment_number+' 段 · '+ttsTextDetails(item))}">${prefix}<span class="sentence-preview">${esc(text)}</span></button>`;
     }).join('');
-    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key${segments.some(item=>item.tts_evidence)?' has-tts-text':''}">${keys}</div>`;
+    const memories=segments.filter(item=>item.memory_evidence).map(item=>item.memory_evidence);
+    const memory=expandedLanes.has(index)?memories.map(item=>`<details class="memory-evidence"><summary>${esc(item.label)} · 查看返回内容与采用内容</summary><pre>${esc(memoryDetails(item))}</pre></details>`).join(''):'';
+    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key${segments.some(item=>item.tts_evidence)?' has-tts-text':''}">${keys}</div>${memory}`;
   }
   const axis = clock.mode === 'wall' ? [0,range/2,range].map(offset=>`<span>${beijingTime(clock.origin_wall_time_ms+(zero+offset)/1e6)}<small>+${sec(offset/1e9)} s</small></span>`).join('') : `<span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span>`;
   root.innerHTML = `<div class="timeline-plot">${options.embedded ? '' : '<div class="axis">'+axis+'</div>'}` + lanes.map((lane,index) => {
@@ -234,7 +260,7 @@ function timeline(id, lanes, clock = {}, options = {}) {
         if ('requested_silence_duration_ms' in data) extra.push(`请求静音阈值 ${data.requested_silence_duration_ms == null ? '未知 / 不启用' : data.requested_silence_duration_ms /1000 + ' s'}`);
         if ('confirmed_silence_duration_ms' in data) extra.push(`服务端确认阈值 ${data.confirmed_silence_duration_ms == null ? '未知' : data.confirmed_silence_duration_ms /1000 + ' s'}`);
         if (data.error_type) extra.push(data.error_type);
-        return [title(item), ...extra].join(' · ');
+        return [title(item), ...extra, candidateDetails(data), memoryDetails(item.memory_evidence)].filter(Boolean).join(' · ');
       }).join('\n');
     } else {
       const item = all[Number(button.dataset.sentenceIndex ?? button.dataset.eventIndex)];
@@ -242,7 +268,7 @@ function timeline(id, lanes, clock = {}, options = {}) {
       const restoreFocus = document.activeElement === button;
       if (button.dataset.sentenceIndex == null) toggleLane(laneIndex);
       if (restoreFocus && button.dataset.sentenceIndex == null) root.querySelector(`[data-event-index="${button.dataset.eventIndex}"]`)?.focus({preventScroll:true});
-      detail.textContent = [title(item), configDetails(item.data), ttsTextDetails(item), item.data?.purpose === 'rules' ? '规则向量' : item.data?.purpose === 'query' ? '用户问题向量' : '', item.data?.error_type || ''].filter(Boolean).join(' · ');
+      detail.textContent = [title(item), configDetails(item.data), ttsTextDetails(item), candidateDetails(item.data), memoryDetails(item.memory_evidence), item.data?.purpose === 'rules' ? '规则向量' : item.data?.purpose === 'query' ? '用户问题向量' : '', item.data?.error_type || ''].filter(Boolean).join(' · ');
     }
     detail.hidden = false;
     return true;

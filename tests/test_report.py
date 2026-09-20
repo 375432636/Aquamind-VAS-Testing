@@ -1,6 +1,126 @@
 from voice_scenarios.report import build_report, evaluate
 
 
+def test_continuation_assertion_fails_if_vad_created_two_utterances():
+    import json
+
+    from voice_scenarios.ci_run import validate_turns
+
+    validate_turns(
+        json.dumps(
+            [
+                {
+                    "text": "查询门店",
+                    "expect": {"speech_utterances": 1, "speech_chunks_min": 2},
+                }
+            ]
+        ),
+        {"diagnostics": "frame", "turn_timeout_seconds": 90},
+    )
+    result = {
+        "name": "续说断言",
+        "status": "passed",
+        "turns": [
+            {
+                "id": "one",
+                "status": "completed",
+                "events": [],
+                "expected": {"speech_utterances": 1, "speech_chunks_min": 2},
+            }
+        ],
+    }
+    rows = [
+        {
+            "event": "speech_chunk_started",
+            "listen_turn_id": 1,
+            "clock_id": "vas",
+            "monotonic_ns": n,
+            "data": {"utterance_id": uid},
+        }
+        for n, uid in enumerate(("a", "b"))
+    ]
+    failed = evaluate(result, rows)
+    assert failed["status"] == "failed"
+    assert failed["turns"][0]["metrics"]["speech_utterances"] == 2
+    rows[1].update(event="speech_continuation_detected", data={"utterance_id": "a"})
+    assert evaluate(result, rows)["status"] == "passed"
+
+
+def test_filler_during_continuation_keeps_signed_client_latency():
+    events = [
+        {"event": "input_chunk_finished", "at_ns": 1_000_000_000, "data": {}},
+        {"event": "playback_started", "at_ns": 1_100_000_000, "data": {}},
+        {"event": "audio_send_completed", "at_ns": 3_000_000_000, "data": {}},
+    ]
+    result = {
+        "name": "提前临时回复",
+        "status": "passed",
+        "turns": [
+            {
+                "id": "one",
+                "status": "completed",
+                "events": events,
+                "input_settings": {"mode": "manual"},
+            }
+        ],
+    }
+    assert evaluate(result, [])["turns"][0]["metrics"]["first_playback_ms"] == -1900
+
+
+def test_continuous_asr_summary_uses_latest_corrected_text_keeps_revisions():
+    events = [
+        {"event": "stt", "at_ns": index, "data": {"text": text}}
+        for index, text in enumerate(
+            ("上海金安店的地只", "上海静安店的地址和营业时间是什么")
+        )
+    ]
+    result = {
+        "name": "续说",
+        "status": "passed",
+        "turns": [{"id": "one", "status": "completed", "events": events}],
+    }
+    turn = evaluate(result, [])["turns"][0]
+    assert turn["metrics"]["asr_text"] == "上海静安店的地址和营业时间是什么"
+    assert turn["events"] == events
+
+
+def test_rag_count_recognizes_legacy_name_without_counting_other_mcp_tools():
+    names = ("rag-lightrag_search", "rag-lightrag_search", "rag-admin", "weather")
+    rows = []
+    for index, name in enumerate(names):
+        common = {"listen_turn_id": 1, "span_id": str(index), "clock_id": "vas"}
+        rows.extend(
+            [
+                {
+                    **common,
+                    "event": "tool_call_started",
+                    "monotonic_ns": index * 10,
+                    "data": {"tool_name": name, "category": "other"},
+                },
+                {
+                    **common,
+                    "event": "tool_call_finished",
+                    "monotonic_ns": index * 10 + 1,
+                    "status": "ok",
+                    "data": {},
+                },
+            ]
+        )
+    result = {
+        "name": "RAG",
+        "status": "passed",
+        "turns": [{"id": "one", "status": "completed", "events": []}],
+    }
+    turn = evaluate(result, rows)["turns"][0]
+    assert turn["metrics"]["knowledge_base_calls"] == 2
+    assert turn["metrics"]["tools"] == {
+        "rag-lightrag_search": 2,
+        "rag-admin": 1,
+        "weather": 1,
+    }
+    assert all(row["data"].get("category", "other") == "other" for row in rows)
+
+
 def test_session_player_prefers_mixed_audio_and_retains_split_download(tmp_path):
     report = evaluate({"name": "完整对话", "status": "passed", "turns": []}, [])
     report["session_playback"] = {
@@ -572,3 +692,27 @@ def test_static_overview_preserves_all_turns_in_one_session(tmp_path):
     assert 'href="turn-002.html"' in page
     assert "vas_timeline" in embedded["session_playback"]
     assert page.count('id="session-canvas"') == 1
+
+
+def test_confirmed_interruption_does_not_show_not_triggered_badge(tmp_path):
+    report = evaluate(
+        {
+            "name": "confirmed interrupt",
+            "status": "passed",
+            "turns": [
+                {
+                    "id": "turn-03",
+                    "status": "interrupted",
+                    "requested_interruption": {"after_playback_seconds": 1},
+                    "interruption": {"abort_requested_at_ns": 2000000000},
+                    "events": [],
+                }
+            ],
+        },
+        [],
+    )
+    build_report(report, tmp_path / "report.html")
+    for name in ("report.html", "turn-001.html"):
+        page = (tmp_path / name).read_text()
+        assert "已打断" in page
+        assert "打断未触发" not in page

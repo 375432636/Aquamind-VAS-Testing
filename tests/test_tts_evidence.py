@@ -3,6 +3,77 @@ from copy import deepcopy
 from voice_scenarios.tts_evidence import tts_segment_evidence
 
 
+def test_plain_turn_after_chunk_turns_uses_explicit_server_to_client_mapping():
+    from voice_scenarios.report import evaluate
+
+    _, rows = request("a", "正式回答", [2, 3], turn=6, sequence=10)
+    rows.append(server("tts_request_finished", "a", 20, turn=6))
+    for row in rows:
+        row["output_kind"] = "answer"
+    cached = [
+        server("tts_state_sent", None, 1, turn=6, state="sentence_start"),
+        server("audio_output_frame", None, 2, turn=6, audio_seq=1),
+    ]
+    for row in cached:
+        row.update(output_kind="filler", output_id="6:prepared:filler")
+    original = deepcopy(cached + rows)
+    turn = {
+        "id": "three",
+        "listen_turn_id": 3,
+        "server_listen_turn_id": 6,
+        "status": "completed",
+        "events": sentence("嗯", [1], turn=3) + sentence("正式回答", [2, 3], turn=3),
+    }
+    result = evaluate(
+        {"name": "混合输入", "status": "passed", "turns": [turn]}, cached + rows
+    )
+    actual = result["turns"][0]
+    assert actual["reply_annotations"]["1"]["output_kind"] == "filler"
+    assert actual["reply_annotations"]["2"]["output_kind"] == "answer"
+    assert actual["spans"][0]["tts_evidence"]["text"] == "正式回答"
+    assert actual["vas_events"] == original
+
+
+def test_prepared_filler_without_request_does_not_hide_following_answer():
+    from voice_scenarios.tts_evidence import cached_audio_annotations
+
+    span, rows = request("a", "正式回答", [2, 3], sequence=10)
+    cached = [
+        server("tts_state_sent", None, 1, state="sentence_start"),
+        server("audio_output_frame", None, 2, audio_seq=1),
+    ]
+    for event in cached:
+        event.update(output_kind="filler", output_id="1:prepared:filler")
+    client = sentence("嗯", [1]) + sentence("正式回答", [2, 3])
+    evidence = tts_segment_evidence([span], cached + rows, client)
+    assert evidence["a"]["text"] == "正式回答"
+    assert (
+        cached_audio_annotations(cached + rows, client)["1"]["output_kind"] == "filler"
+    )
+    cached[-1]["data"]["audio_seq"] = 42
+    assert cached_audio_annotations(cached + rows, client) == {}
+    assert (
+        tts_segment_evidence([span], cached + rows, client)["a"]["status"]
+        == "unmatched"
+    )
+
+
+def test_continuation_start_does_not_cut_off_playing_filler_packet_ownership():
+    from voice_scenarios.tts_evidence import cached_audio_annotations
+
+    cached = [
+        server("tts_state_sent", None, 1, state="sentence_start"),
+        server("audio_output_frame", None, 2, audio_seq=1),
+        server("audio_output_frame", None, 3, audio_seq=2),
+    ]
+    for event in cached:
+        event.update(output_kind="filler", output_id="1:prepared:filler")
+    client = sentence("嗯", [1, 2])
+    client.insert(2, dict(event="listen_start_sent", at_ns=201, data={}))
+    client.append(dict(event="input_chunk_finished", at_ns=300, data={}))
+    assert set(cached_audio_annotations(cached, client)) == {"1", "2"}
+
+
 def server(event, span, seq, *, turn=1, session="session", **data):
     return dict(
         event=event,

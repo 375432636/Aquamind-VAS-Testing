@@ -38,3 +38,4 @@ turns:
       - name: self_music_stop
         arguments: {}
         pre_speech: 好的。
+enable_intelligent_interruption: true

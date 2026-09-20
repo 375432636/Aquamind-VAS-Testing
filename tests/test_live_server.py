@@ -6,6 +6,28 @@ from aiohttp.test_utils import TestClient, TestServer
 from voice_scenarios.web_server import create_app
 
 
+def test_live_chat_only_does_not_create_recording_or_report(tmp_path):
+    async def run():
+        async with TestClient(TestServer(create_app(tmp_path))) as client:
+            response = await client.post(
+                "/api/sessions",
+                json={
+                    "environment": "dev",
+                    "device_id": "00:00:00:00:00:21",
+                    "recording": False,
+                },
+            )
+            assert response.status == 200
+            session = await response.json()
+            assert session == {
+                "ws_url": "wss://lumin-vas-aquamind-dev.deep-edge.cn/looomyn/v1/"
+            }
+            assert not list(tmp_path.iterdir())
+        assert not list(tmp_path.iterdir())
+
+    asyncio.run(run())
+
+
 def test_live_records_and_exports_without_vas(tmp_path):
     async def run():
         async with TestClient(TestServer(create_app(tmp_path))) as client:

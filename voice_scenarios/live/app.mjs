@@ -1,6 +1,9 @@
+import { ClockSync } from './clock_sync.mjs';
 import { Recorder, Player, ns, encodePCM } from './audio.mjs?v=5';
 const $ = id => document.getElementById(id);
 let vas, record, turn = 0, owner = 0, pendingOwner = 0, outputActive = false, seq = 0, rate = 16000, recorder, mic = false, auto = false, ending = false, ready = false, active = false, discard = false, chain = Promise.resolve();
+let clockSync, clockSyncTask;
+let recording = true;
 let captureStart = null, captureGeneration = 0, inputSamples = 0, inputPeak = 0, diagnosticsActive = false;
 let batch = [], batchSequence = 0, waiters = [], played = new Set(), lastVoice = 0, startedVoice = false, currentMode = 'manual';
 const status = text => $('status').textContent = text;
@@ -16,6 +19,8 @@ function message(role, text) {
     p.scrollIntoView({ block: 'nearest' });
 }
 function emit(event, data = {}, index = turn, at = ns()) {
+    if (!recording)
+        return;
     batch.push({ event, data, turn: index, at_ns: at, wall_time_ns: Math.round((performance.timeOrigin + at / 1e6) * 1e6) });
     if (batch.length >= 20)
         flush();
@@ -46,8 +51,14 @@ function controls(on) {
     for (const id of ['text', 'send', 'talk', 'interrupt', 'finish'])
         $(id).disabled = !on;
     $('connect').disabled = on;
-    for (const id of ['environment', 'mac', 'token', 'ota'])
+    for (const id of ['environment', 'mac', 'token', 'ota', 'recording'])
         $(id).disabled = on;
+}
+function recordingControls() {
+    const enabled = $('recording').checked;
+    $('connect').textContent = enabled ? '连接并开始记录' : '直接连接对话';
+    $('finish').textContent = enabled ? '结束并生成报告' : '断开连接';
+    $('clock-sync').disabled = !enabled;
 }
 function done(index, interrupted = false) {
     if (index && index === turn && active) {
@@ -55,12 +66,15 @@ function done(index, interrupted = false) {
         active = false;
     }
     if (!ending) {
-        status('已连接');
-        if (auto && !mic)
-            setTimeout(() => startMic().catch(error), 150);
+        status(mic && currentMode === 'vad' ? '持续聆听中' : '已连接');
     }
 }
-const player = new Player((pcm, meta) => emit('audio_received', { pcm: encodePCM(pcm), sample_rate: rate, audio_seq: meta.audio_seq, response_listen_turn_id: meta.turn || null }, meta.turn, meta.received), (pcm, meta) => {
+const player = new Player((pcm, meta) => {
+    if (recording)
+        emit('audio_received', { pcm: encodePCM(pcm), sample_rate: rate, audio_seq: meta.audio_seq, response_listen_turn_id: meta.turn || null }, meta.turn, meta.received);
+}, (pcm, meta) => {
+    if (!recording)
+        return;
     const timing = Object.fromEntries([
         'timing_model','timing_method','clock_observed_at_ns','audio_context_time',
         'scheduled_context_time','output_context_time','output_performance_time',
@@ -104,12 +118,21 @@ async function stopMic(manual = false) {
     if (!mic)
         return;
     mic = false;
-    await recorder.stop();
+    const stoppedRecorder = recorder;
+    try {
+        await stoppedRecorder.stop();
+    }
+    finally {
+        if (recorder === stoppedRecorder)
+            recorder = null;
+    }
     $('mic-device').disabled = false;
     $('mode').disabled = false;
     $('mic-check').disabled = false;
     $('mic-level').value = 0;
     $('mic-status').textContent = '麦克风已停止';
+    if (currentMode === 'vad')
+        $('talk').textContent = '开始连续聆听';
     if (lastVoice)
         emit('speech_input_finished', { source: 'client_energy_estimate', description: '客户端能量估计，非 VAS VAD' }, turn, lastVoice);
     emit('input_capture_finished', { samples: inputSamples, peak: inputPeak, status: inputPeak > 0 ? 'captured' : 'silent' });
@@ -130,9 +153,12 @@ async function stopMic(manual = false) {
     }
 }
 async function interrupt(fromCapture = false) {
-    auto = false;
-    if (!fromCapture)
-        await stopMic(false);
+    const keepListening = auto && mic && currentMode === 'vad';
+    if (!keepListening) {
+        auto = false;
+        if (!fromCapture)
+            await stopMic(false);
+    }
     if (!active && !player.busy)
         return;
     const old = turn;
@@ -153,12 +179,12 @@ async function interrupt(fromCapture = false) {
         return;
     }
     done(old, true);
-    status('已打断');
+    status(keepListening ? '已打断 · 持续聆听中' : '已打断');
 }
 async function begin(mode, text = '') {
     if (!ready || ending)
         throw Error('请先连接');
-    if (active || player.busy)
+    if (mode !== 'vad' && (active || player.busy))
         throw Error('请等待本轮播放完成，或先点击“打断回复”');
     turn++;
     active = true;
@@ -181,7 +207,7 @@ async function startMic() {
     captureStart = (async () => {
         let localRecorder;
         try {
-            if (active || player.busy) {
+            if (mode !== 'vad' && (active || player.busy)) {
                 const resumeAuto = auto;
                 await interrupt(true);
                 auto = resumeAuto;
@@ -195,7 +221,9 @@ async function startMic() {
             $('mode').disabled = true;
             $('mic-check').disabled = true;
             localRecorder = new Recorder((pcm, encoded, offset) => {
-                if (vas?.readyState !== 1)
+                // Keep the final worklet frame during stop(), but reject any
+                // late callback after that recorder has been closed/replaced.
+                if (vas?.readyState !== 1 || recorder !== localRecorder)
                     return;
                 vas.send(encoded);
                 const at = ns();
@@ -204,7 +232,8 @@ async function startMic() {
                 const peak = inputLevel(pcm);
                 inputSamples += pcm.length;
                 inputPeak = Math.max(inputPeak, peak);
-                emit('input_audio_frame_sent', { pcm: encodePCM(pcm), sample_rate: 16000, pcm_offset_samples: offset, stream: mode === 'vad' ? 'uplink' : 'input', is_speech: peak > 500 }, turn, at);
+                if (recording)
+                    emit('input_audio_frame_sent', { pcm: encodePCM(pcm), sample_rate: 16000, pcm_offset_samples: offset, stream: mode === 'vad' ? 'uplink' : 'input', is_speech: peak > 500 }, turn, at);
                 let energy = 0;
                 for (const x of pcm)
                     energy += x * x;
@@ -234,15 +263,21 @@ async function startMic() {
             inputPeak = 0;
             mic = true;
             await recorder.start();
-            $('mic-status').textContent = mode === 'vad' ? '正在聆听，等待 VAS 判断结束' : '正在录音 · 松开空格结束';
+            $('mic-status').textContent = mode === 'vad' ? '持续收音并上传 · 回复播放期间也保持开启' : '正在录音 · 松开空格结束';
+            if (mode === 'vad')
+                $('talk').textContent = '停止连续聆听';
             status('正在聆听');
         }
         catch (e) {
             mic = false;
+            if (mode === 'vad')
+                auto = false;
             $('mic-device').disabled = false;
             $('mode').disabled = false;
             $('mic-check').disabled = false;
             await localRecorder?.stop().catch(() => { });
+            if (recorder === localRecorder)
+                recorder = null;
             emit('recording_error', { message: e.message }, 0);
             $('mic-status').textContent = '录音未开始，请检查麦克风权限';
             throw e;
@@ -266,6 +301,8 @@ async function receive(raw) {
     }
     const m = JSON.parse(raw);
     if (m.type === 'diagnostics') {
+        if (!recording)
+            return;
         if (m.state === 'started') {
             diagnosticsActive = true;
             emit('diagnostics_started', m, 0);
@@ -287,18 +324,20 @@ async function receive(raw) {
     }
     else if (m.type === 'stt') {
         pendingOwner = turn;
+        if (mic && currentMode === 'vad')
+            active = true;
         emit('stt', m);
         if (currentMode !== 'text')
             message('user', m.text);
-        if (mic && $('mode').value === 'vad')
-            await stopMic(false);
+        // Streaming STT is a transcript update, not a microphone endpoint.
+        // VAD capture spans replies and pauses until the user stops it.
     }
     else if (m.type === 'tts') {
         if (m.state === 'start' && !outputActive) {
             owner = pendingOwner;
             outputActive = true;
             discard = false;
-            status('正在回复');
+            status(mic && currentMode === 'vad' ? '正在回复 · 持续聆听中' : '正在回复');
         }
         emit('tts_' + m.state, { ...m, response_listen_turn_id: owner || null, is_session_output: !owner }, owner);
         if (m.state === 'sentence_start')
@@ -331,43 +370,54 @@ async function connect() {
     $('downloads').hidden = true;
     const started = ns();
     ending = false;
+    recording = $('recording').checked;
+    $('recording').disabled = true;
+    clockSync = undefined;
+    clockSyncTask = undefined;
+    if (record) {
+        record.onclose = null;
+        record.close();
+        record = null;
+    }
     try {
         if (!/^(?:[\da-f]{2}:){5}[\da-f]{2}$/i.test($('mac').value.trim()))
             throw Error('请填写有效 MAC 地址');
         await player.prime();
-        const config = { environment: $('environment').value, device_id: $('mac').value.trim() };
+        const config = { environment: $('environment').value, device_id: $('mac').value.trim(), recording };
         let token = $('token').value;
         status('正在建立连接');
         const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
         if (!r.ok)
             throw Error(await r.text());
         const session = await r.json();
-        record = new WebSocket(location.origin.replace(/^http/, 'ws') + session.record_url);
-        await new Promise((resolve, reject) => { record.onopen = resolve; record.onerror = () => reject(Error('本地记录服务连接失败')); });
-        record.onmessage = e => {
-            const m = JSON.parse(e.data);
-            if (m.state === 'error')
-                error(Error(m.message));
-            if (m.state === 'finished') {
-                $('downloads').replaceChildren();
-                for (const [key, label] of [['report', '打开静态 HTML 报告'], ['excel', '下载 Excel 报告']]) {
-                    const a = document.createElement('a');
-                    a.href = m[key];
-                    a.textContent = label;
-                    a.target = '_blank';
-                    $('downloads').append(a);
+        if (recording) {
+            record = new WebSocket(location.origin.replace(/^http/, 'ws') + session.record_url);
+            await new Promise((resolve, reject) => { record.onopen = resolve; record.onerror = () => reject(Error('本地记录服务连接失败')); });
+            record.onmessage = e => {
+                const m = JSON.parse(e.data);
+                if (m.state === 'error')
+                    error(Error(m.message));
+                if (m.state === 'finished') {
+                    $('downloads').replaceChildren();
+                    for (const [key, label] of [['report', '打开静态 HTML 报告'], ['excel', '下载 Excel 报告']]) {
+                        const a = document.createElement('a');
+                        a.href = m[key];
+                        a.textContent = label;
+                        a.target = '_blank';
+                        $('downloads').append(a);
+                    }
+                    $('downloads').hidden = false;
+                    status('报告已生成');
                 }
-                $('downloads').hidden = false;
-                status('报告已生成');
-            }
-        };
-        record.onclose = () => {
-            if (!ending) {
-                error(Error('本地记录连接中断，已停止对话；部分报告保存在本地会话目录'));
-                vas?.close();
-                controls(false);
-            }
-        };
+            };
+            record.onclose = () => {
+                if (!ending) {
+                    error(Error('本地记录连接中断，已停止对话；部分报告保存在本地会话目录'));
+                    vas?.close();
+                    controls(false);
+                }
+            };
+        }
         turn = 0;
         owner = 0;
         pendingOwner = 0;
@@ -393,21 +443,30 @@ async function connect() {
         vas = new WebSocket(url);
         vas.binaryType = 'arraybuffer';
         chain = Promise.resolve();
-        vas.onmessage = e => { chain = chain.then(() => receive(e.data)).catch(e => { error(e); emit('client_error', { message: e.message }); finish(false).catch(error); }); };
+        clockSync = recording ? new ClockSync(send, emit) : undefined;
+        vas.onmessage = e => {
+            const received = performance.timeOrigin + performance.now();
+            if (typeof e.data === 'string') {
+                try { if (clockSync?.receive(JSON.parse(e.data), received)) return; } catch { /* normal receive handles malformed messages */ }
+            }
+            chain = chain.then(() => receive(e.data)).catch(e => { error(e); emit('client_error', { message: e.message }); finish(false).catch(error); }); };
         await new Promise((resolve, reject) => { const timer = setTimeout(() => reject(Error('VAS 连接超时')), 15000); vas.onopen = () => { clearTimeout(timer); resolve(); }; vas.onerror = () => { clearTimeout(timer); reject(Error('VAS 连接失败，请检查地址、认证与证书')); }; });
         emit('connection_opened', {}, 0);
         vas.onclose = () => {
             if (!ending) {
-                error(Error('VAS 连接中断，正在导出已收到的数据'));
+                error(Error(recording ? 'VAS 连接中断，正在导出已收到的数据' : 'VAS 连接中断，请重新连接'));
                 finish(false).catch(error);
             }
         };
-        const diagnostic = waitFor(m => m.type === 'diagnostics' && ['started', 'error'].includes(m.state), 5000);
-        send({ type: 'diagnostics', state: 'start', level: 'frame' });
-        await diagnostic.catch(e => error(e));
+        if (recording) {
+            const diagnostic = waitFor(m => m.type === 'diagnostics' && ['started', 'error'].includes(m.state), 5000);
+            send({ type: 'diagnostics', state: 'start', level: 'frame' });
+            await diagnostic.catch(e => error(e));
+        }
         const hello = waitFor(m => m.type === 'hello');
         send({ type: 'hello', device_id: config.device_id, token, version: 1, transport: 'websocket', features: { mcp: true }, audio_params: { format: 'opus', sample_rate: 16000, channels: 1, frame_duration: 60 } });
         await hello;
+        clockSyncTask = recording && $('clock-sync')?.checked !== false ? clockSync.collect() : Promise.resolve();
         controls(true);
         status('已连接');
         localStorage.setItem('testing-mac', config.device_id);
@@ -430,6 +489,7 @@ async function finish(complete = true) {
     ending = true;
     auto = false;
     controls(false);
+    $('recording').disabled = true;
     $('connect').disabled = true;
     try {
         await closeMicrophoneProbe().catch(e => { error(e); complete = false; });
@@ -442,10 +502,14 @@ async function finish(complete = true) {
             emit('playback_stopped', {}, owner);
             done(turn, true);
         }
+        await clockSyncTask;
+        if (vas?.readyState === 1 && clockSync?.supported) await clockSync.collect('end');
         if (vas?.readyState === 1 && diagnosticsActive) {
-            const final = waitFor(m => m.type === 'diagnostics' && m.finished && m.next_seq === m.end_seq, 5000);
+            const final = waitFor(m => m.type === 'diagnostics' && m.finished && m.next_seq === m.end_seq, 15000);
+            emit('diagnostics_finish_requested', {}, 0);
             send({ type: 'diagnostics', state: 'finish' });
-            await final.catch(() => { complete = false; });
+            await final.then(() => emit('diagnostics_finish_confirmed', {}, 0),
+                () => emit('diagnostics_finish_timeout', { timeout_seconds: 15 }, 0));
         }
         await chain;
         emit('connection_closed', {}, 0);
@@ -456,8 +520,13 @@ async function finish(complete = true) {
     finally {
         vas?.close();
         $('connect').disabled = false;
+        $('recording').disabled = false;
+        if (!recording)
+            status('已断开');
     }
 }
+$('recording').onchange = recordingControls;
+recordingControls();
 $('connect').onclick = connect;
 $('finish').onclick = () => finish().catch(error);
 $('interrupt').onclick = () => interrupt().catch(error);
@@ -467,6 +536,8 @@ $('text-form').onsubmit = async (e) => {
     if (!text)
         return;
     try {
+        if (mic)
+            throw Error('请先停止录音再发送文字');
         auto = false;
         await begin('text', text);
         emit('text_sent', { text });
@@ -536,10 +607,10 @@ window.addEventListener('keyup', e => {
 window.addEventListener('blur', releaseSpace);
 $('mode').onchange = () => {
     const manual = $('mode').value === 'manual';
-    $('talk').textContent = manual ? '按住说话 · 松开结束' : '开始 / 停止连续聆听';
+    $('talk').textContent = manual ? '按住说话 · 松开结束' : '开始连续聆听';
     $('voice-hint').textContent = manual
         ? '按住空格或说话按钮持续录音，松开才发送结束信号。不会因本地静音自动停止。文字输入框内空格用于输入。'
-        : '持续发送麦克风音频，由 VAS 判断句子结束。点击按钮开始或停止连续聆听。';
+        : '持续发送麦克风语音和静音帧，回复播放期间也不会暂停。由 VAS 判断结束与续说；再次点击停止收音。';
     $('input-control').textContent = manual ? '手动结束 · 等待按下空格或说话按钮' : 'VAD 自动结束 · 等待开始';
 };
 $('mode').onchange();

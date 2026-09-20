@@ -22,6 +22,7 @@ def _client_scope(data):
 def _sentences(events):
     groups = defaultdict(list)
     active = None
+    chunks = any(e.get("event") == "input_chunk_finished" for e in events)
     for event in events:
         name, data = event.get("event"), event.get("data", {})
         if name == "tts_sentence_start":
@@ -32,7 +33,9 @@ def _sentences(events):
                     event=event, text=data["text"], audio_seqs=[], scope=scope
                 )
                 groups[scope].append(active)
-        elif name in {"tts_sentence_end", "tts_stop", "listen_start_sent"}:
+        elif name in {"tts_sentence_end", "tts_stop"} or (
+            name == "listen_start_sent" and not chunks
+        ):
             active = None
         elif name == "audio_packet_received" and active is not None:
             seq = data.get("audio_seq")
@@ -54,6 +57,69 @@ def _segment_ready(start, events):
         and event.get("output_id") == start.get("output_id")
     ]
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _cached_pairs(vas_events, client_events):
+    """Verify prerecorded filler by complete sentence order and exact packets."""
+    sentences = _sentences(client_events)
+    states = defaultdict(list)
+    for event in vas_events:
+        if (
+            event.get("event") == "tts_state_sent"
+            and event.get("data", {}).get("state") == "sentence_start"
+        ):
+            states[_server_scope(event)].append(event)
+    pairs = []
+    for scope, rows in states.items():
+        client = sentences.get(scope, [])
+        if (
+            scope is None
+            or len(rows) != len(client)
+            or any(type(row.get("seq")) is not int for row in rows)
+        ):
+            continue
+        rows = sorted(rows, key=lambda row: row["seq"])
+        if len({row["seq"] for row in rows}) != len(rows):
+            continue
+        for index, (state, sentence) in enumerate(zip(rows, client)):
+            if (
+                state.get("span_id") is not None
+                or state.get("output_kind") != "filler"
+                or not state.get("output_id")
+            ):
+                continue
+            end = rows[index + 1]["seq"] if index + 1 < len(rows) else float("inf")
+            packets = [
+                event.get("data", {}).get("audio_seq")
+                for event in vas_events
+                if event.get("event") == "audio_output_frame"
+                and _server_scope(event) == scope
+                and event.get("clock_id") == state.get("clock_id")
+                and event.get("output_id") == state["output_id"]
+                and state["seq"] < event.get("seq", -1) < end
+            ]
+            if (
+                packets
+                and all(type(seq) is int for seq in packets)
+                and packets == sentence["audio_seqs"]
+                and len(set(packets)) == len(packets)
+            ):
+                pairs.append((state, sentence))
+    return pairs
+
+
+def cached_audio_annotations(vas_events, client_events):
+    """Annotate cached filler without inventing a TTS synthesis request."""
+    return {
+        str(seq): {
+            "output_kind": "filler",
+            "output_id": state["output_id"],
+            "source": "cached_sentence_audio_sequence",
+            "span_id": None,
+        }
+        for state, sentence in _cached_pairs(vas_events, client_events)
+        for seq in sentence["audio_seqs"]
+    }
 
 
 def _protocol_pairs(states, sentences, starts, ready):
@@ -107,6 +173,13 @@ def tts_segment_evidence(spans, vas_events, client_events):
     starts = {key: rows[0] for key, rows in by_span.items() if len(rows) == 1}
     ready = {key: _segment_ready(start, vas_events) for key, start in starts.items()}
     sentences = _sentences(client_events)
+    cached = _cached_pairs(vas_events, client_events)
+    cached_states = {id(state) for state, _ in cached}
+    cached_client = {id(sentence["event"]) for _, sentence in cached}
+    sentences = {
+        scope: [s for s in rows if id(s["event"]) not in cached_client]
+        for scope, rows in sentences.items()
+    }
     states = defaultdict(list)
     packets = defaultdict(set)
     for event in vas_events:
@@ -117,6 +190,7 @@ def tts_segment_evidence(spans, vas_events, client_events):
         if (
             event.get("event") == "tts_state_sent"
             and data.get("state") == "sentence_start"
+            and id(event) not in cached_states
         ):
             states[scope].append(event)
         if event.get("event") in {"audio_output_frame", "audio_output_started"}:
@@ -194,6 +268,8 @@ def tts_segment_evidence(spans, vas_events, client_events):
         evidence.update(
             status="matched",
             text=sentence["text"],
+            output_kind=start.get("output_kind"),
+            output_id=start.get("output_id"),
             source=source,
             source_label=(
                 "播报文本（按音频包关联）"

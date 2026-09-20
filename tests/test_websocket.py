@@ -10,6 +10,100 @@ from voice_scenarios import Scenario, run_scenario
 from voice_scenarios.websocket import WebSocketTransport
 
 
+def test_input_owned_filler_before_stt_keeps_two_turns_out_of_greeting(tmp_path):
+    """A cached acknowledgement can precede recognition; STT is not ownership."""
+    source = tmp_path / "question.wav"
+    with wave.open(str(source), "wb") as audio:
+        audio.setparams((1, 2, 16000, 0, "NONE", ""))
+        audio.writeframes(b"\x00\x10" * 1920)
+    scenario = Scenario.from_dict(
+        {
+            "greeting_wait_seconds": 0.1,
+            "settle_seconds": 0.01,
+            "turn_timeout_seconds": 1,
+            "turns": [{"audio": str(source)}, {"audio": str(source)}],
+        }
+    )
+
+    async def exercise():
+        async def peer(ws):
+            encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
+            turn = 0
+
+            async def sentence(text):
+                await ws.send(
+                    json.dumps({"type": "tts", "state": "sentence_start", "text": text})
+                )
+                await ws.send(encoder.encode(b"\x00\x10" * 960, 960))
+
+            async for raw in ws:
+                if isinstance(raw, bytes):
+                    continue
+                message = json.loads(raw)
+                if message["type"] == "hello":
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "hello",
+                                "session_id": "early",
+                                "audio_params": {
+                                    "format": "opus",
+                                    "sample_rate": 16000,
+                                    "channels": 1,
+                                },
+                            }
+                        )
+                    )
+                    await ws.send(json.dumps({"type": "tts", "state": "start"}))
+                    await sentence("欢迎语")
+                    await ws.send(json.dumps({"type": "tts", "state": "stop"}))
+                elif message["type"] == "listen" and message["state"] == "stop":
+                    turn += 1
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "tts",
+                                "state": "start",
+                                "response_listen_turn_id": turn,
+                            }
+                        )
+                    )
+                    await sentence("嗯，我想想。")
+                    await asyncio.sleep(0.08)
+                    await ws.send(json.dumps({"type": "stt", "text": f"问题 {turn}"}))
+                    await ws.send(json.dumps({"type": "tts", "state": "start"}))
+                    await sentence(f"回答 {turn}")
+                    await ws.send(json.dumps({"type": "tts", "state": "stop"}))
+
+        async with serve(peer, "127.0.0.1", 0) as server:
+            transport = WebSocketTransport(
+                f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/",
+                device_id="early",
+            )
+            return await run_scenario(scenario, transport, tmp_path / "output")
+
+    result = asyncio.run(exercise())
+    assert result["status"] == "passed", [turn.get("error") for turn in result["turns"]]
+    for index, turn in enumerate(result["turns"], 1):
+        frames = [
+            event for event in turn["events"] if event["event"] == "audio_received"
+        ]
+        assert len(frames) == 2
+        assert all(
+            event["data"]["response_listen_turn_id"] == index for event in frames
+        )
+        assert all(not event["data"]["is_session_output"] for event in frames)
+        started = next(
+            event["at_ns"]
+            for event in turn["events"]
+            if event["event"] == "playback_started"
+        )
+        stt = next(
+            event["at_ns"] for event in turn["events"] if event["event"] == "stt"
+        )
+        assert started < stt
+
+
 @pytest.mark.parametrize("diagnostics", ["off", "stage", "frame"])
 def test_input_frame_clock_records_unpadded_samples_at_send_completion(
     tmp_path, diagnostics
@@ -101,7 +195,12 @@ def test_real_websocket_opus_round_trip_and_timed_abort(tmp_path):
                     for _ in range(8):
                         await ws.send(encoder.encode(b"\x00\x10" * 960, 960))
                     await ws.send(json.dumps({"type": "tts", "state": "stop"}))
-                elif message["type"] == "abort":
+                elif (
+                    message["type"] == "abort"
+                    and message.get("reason") == "wake_word_detected"
+                ):
+                    # VAS with intelligent interruption only acknowledges this
+                    # explicit control immediately. Other reasons await speech.
                     await ws.send(json.dumps({"type": "tts", "state": "stop"}))
 
         async with serve(peer, "127.0.0.1", 0) as server:
@@ -407,8 +506,9 @@ def test_first_question_interrupt_waits_for_real_reply_after_long_greeting(tmp_p
     assert first["interruption"]["server_stop_observed"]
 
 
+@pytest.mark.parametrize("finish_delay", [0, 15.1])
 def test_diagnostics_share_websocket_without_token_headers_or_http(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, finish_delay
 ):
     import aiohttp
 
@@ -454,6 +554,7 @@ def test_diagnostics_share_websocket_without_token_headers_or_http(
                 "type": "diagnostics",
                 "state": "finish",
             }
+            await asyncio.sleep(finish_delay)
             rows = [
                 {
                     "server_session_id": "ws-only",

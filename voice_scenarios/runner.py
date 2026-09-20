@@ -6,6 +6,7 @@ import wave
 from dataclasses import asdict
 from pathlib import Path
 
+from .clock_sync import ClockSyncSamples
 from .clock_timeline import client_wall_time
 from .diagnostics import DiagnosticCollector
 from .player import ClockedPlayer
@@ -24,8 +25,8 @@ async def run_scenario(
     """Run all turns on one connection; preserve partial results on failure."""
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    # Capture once, before connecting. No server offset estimation and no extra
-    # wall-clock syscall per audio frame; playback timing stays monotonic.
+    # Capture once before connecting. Optional server calibration stays separate;
+    # no extra wall-clock syscall per audio frame, playback stays monotonic.
     client_clock = {
         "monotonic_ns": time.monotonic_ns(),
         "wall_time_ns": time.time_ns(),
@@ -48,7 +49,12 @@ async def run_scenario(
     collector = None
     journal = (output_dir / "client-events.jsonl").open("w")
 
+    clock_samples = ClockSyncSamples()
+
     def emit(event):
+        if event.kind == "clock_sync_samples":
+            clock_samples.samples.extend(event.data["samples"])
+            result["clock_sync"] = clock_samples.summary()
         if event.kind == "connection_started":
             result["connection_started_at_ns"] = event.at_ns
         if collector:
@@ -71,12 +77,15 @@ async def run_scenario(
         if event.kind != "vas_event":
             journal.write(json.dumps(record, ensure_ascii=False) + "\n")
             journal.flush()
-        events.put_nowait(event)
+        if event.kind not in {"clock_sync_samples", "clock_sync_unavailable"}:
+            events.put_nowait(event)
 
     try:
         if getattr(transport, "diagnostics", "off") != "off":
             collector = DiagnosticCollector(output_dir, emit)
         result["session"] = await transport.connect(emit)
+        if hasattr(transport, "start_clock_sync"):
+            transport.start_clock_sync(client_clock)
         result["startup"] = {}
         await _wait_for_greeting(
             scenario,
@@ -405,6 +414,12 @@ async def _run_turn(
             sink(Event("input_started"))
             if turn.sensor:
                 data = await transport.send_sensor(turn.sensor)
+            elif turn.chunks:
+                uplink = prefix.with_suffix(".uplink.wav")
+                result["audio"]["uplink"] = str(uplink)
+                data = await transport.send_audio_chunks(
+                    turn.chunks, input_stream=scenario.input, uplink_path=uplink
+                )
             elif scenario.input.mode == "vad":
                 uplink = prefix.with_suffix(".uplink.wav")
                 result["audio"]["uplink"] = str(uplink)
@@ -506,6 +521,8 @@ async def _run_turn(
                 input_done = True
                 if "server_listen_turn_id" in data:
                     result["server_listen_turn_id"] = data["server_listen_turn_id"]
+                if "server_listen_turn_ids" in data:
+                    result["server_listen_turn_ids"] = data["server_listen_turn_ids"]
             elif event.kind == "vas_event":
                 row = event.data
                 if row.get("event") == "audio_output_started":

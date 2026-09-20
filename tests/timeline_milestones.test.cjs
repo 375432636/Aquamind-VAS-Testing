@@ -250,3 +250,15 @@ test('negative cross-clock differences never claim actual playback preceded synt
   assert.doesNotMatch(note({duration_seconds:-.006,clock_basis:'wall_unaligned'}),/后者先发生/);
   assert.match(note({duration_seconds:-.112,clock_basis:'monotonic'}),/后者先发生/);
 });
+
+test('Memory expands returned and injected text safely on the existing lane',()=>{
+  const {root,detail,render}=renderer();
+  const evidence={label:'命中 · 已采用',returned:{text:'<script>bad()</script>',complete:true},injected:{text:'用户喜欢绿茶',complete:true}};
+  render('server',[{label:'Memory · 命中',category:'memory_request',segments:[{label:'Memory',start:0,end:1e9,memory_evidence:evidence}],markers:[]}],{}, {expandedLanes:new Set([0])});
+  assert.match(root.innerHTML,/memory-evidence/);
+  assert.match(root.innerHTML,/本轮实际补充的 Memory/);
+  assert.match(root.innerHTML,/&lt;script&gt;/);
+  assert.doesNotMatch(root.innerHTML,/<script>bad/);
+  render('server',[{label:'Memory',category:'memory_request',segments:[{label:'Memory',start:0,end:1e9,memory_evidence:evidence}],markers:[]}]);
+  assert.doesNotMatch(root.innerHTML,/memory-evidence/);
+});

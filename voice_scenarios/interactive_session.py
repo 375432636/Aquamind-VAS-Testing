@@ -6,6 +6,7 @@ import struct
 import wave
 from pathlib import Path
 
+from .clock_sync import ClockSyncSamples
 from .diagnostics import DiagnosticCollector
 from .runner import save_result
 
@@ -61,6 +62,11 @@ class InteractiveSession:
             or not 0 <= index <= 1000
         ):
             raise ValueError("invalid_browser_event")
+        if name == "clock_sync_samples":
+            samples = self.result.get("clock_sync", {}).get("samples", [])
+            self.result["clock_sync"] = ClockSyncSamples(
+                samples + data.get("samples", [])
+            ).summary()
         if name == "turn_started":
             if index != len(self.result["turns"]) + 1:
                 raise ValueError("turn_sequence_gap")

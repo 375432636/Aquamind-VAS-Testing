@@ -124,7 +124,16 @@ def playback_metrics(turn):
         ),
         key=lambda row: row["start_seconds"],
     )
-    first = sentences[0]["start_seconds"] if sentences else "未采集"
+    metrics = turn.get("metrics", {})
+    first = (
+        metrics["first_playback_ms"] / 1000
+        if metrics.get("first_playback_ms") is not None
+        else (
+            "未采集"
+            if "first_playback_ms" in metrics
+            else sentences[0]["start_seconds"] if sentences else "未采集"
+        )
+    )
     answer = next((row for row in sentences if row.get("kind") == "answer"), None)
     if answer is None:
         return first, "未采集"

@@ -18,6 +18,7 @@ from .input_control import refresh_ptt_markers
 from .reply_audio import _packet_index
 from .reply_timing import (
     analyze_reply_timing,
+    first_playback_frame,
     input_end_event,
     ordered_playback_frames,
     playback_clock,
@@ -107,7 +108,8 @@ def _input(turn, directory, frames, not_before):
     events = turn.get("events", [])
     vad = turn.get("input_settings", {}).get("mode") == "vad"
     if frames:
-        kind = "uplink" if vad else "input"
+        chunks = any(e["event"] == "input_chunk_finished" for e in events)
+        kind = "uplink" if vad or chunks else "input"
         source = _source(turn, directory, kind)
         if source.rate != SAMPLE_RATE:
             raise ValueError("unsupported_input_sample_rate")
@@ -116,6 +118,20 @@ def _input(turn, directory, frames, not_before):
         for event in frames:
             data = event.get("data", {})
             count = data.get("samples")
+            offset = data.get("pcm_offset_samples")
+            # PTT chunk gaps are saved zero PCM but deliberately not uploaded.
+            # They need no invented send timestamp; keep silence between clips.
+            if (
+                chunks
+                and not vad
+                and isinstance(offset, int)
+                and position < offset <= source.samples
+            ):
+                with wave.open(str(source.path), "rb") as reader:
+                    reader.setpos(position)
+                    if any(reader.readframes(offset - position)):
+                        raise ValueError("untimed_non_silent_chunk_audio")
+                position = offset
             if (
                 data.get("stream") != kind
                 or data.get("sample_rate") != SAMPLE_RATE
@@ -200,11 +216,6 @@ def _reply(turn, directory):
         or any(
             packets[seq].get("sample_rate", source.rate) != source.rate for seq in seqs
         )
-        or any(
-            packets[seq].get("server_listen_turn_id")
-            not in (None, turn.get("server_listen_turn_id", turn.get("listen_turn_id")))
-            for seq in seqs
-        )
     ):
         raise ValueError("invalid_playback_index")
     sizes = [packets[seq]["bytes"] // 2 for seq in seqs]
@@ -212,10 +223,12 @@ def _reply(turn, directory):
         raise ValueError("wav_playback_mismatch")
     clips, intervals, position = [], {}, 0
     previous_end = None
-    for event, seq, size in list(zip(starts, seqs, sizes))[
-        : clock["trusted_frame_count"]
-    ]:
+    trusted_indices = set(clock["trusted_frame_indices"])
+    for index, (event, seq, size) in enumerate(zip(starts, seqs, sizes)):
         count = min(size, source.samples - position)
+        if index not in trusted_indices:
+            position += size
+            continue
         if (
             previous_end is not None
             and event["at_ns"] < previous_end - 1e9 / source.rate
@@ -567,7 +580,7 @@ def prepare_session_playback(report, directory):
             limitation(
                 "partial_playback_clock",
                 index,
-                "已保留浏览器输出时钟确认的首音和连续播放前缀；未确认尾部未放入整段回听，原始完整回复可单独回听。",
+                "已保留每个播放时刻确认的区间；少量未确认区间未放入整段回听，后续已确认音频不受影响。原始完整回复可单独回听。",
             )
         clips.extend(input_clips + reply_clips)
         endpoint = max([endpoint] + [clip.end_ns for clip in input_clips + reply_clips])
@@ -582,15 +595,8 @@ def prepare_session_playback(report, directory):
         first_received = _time(reply_events, "audio_packet_received") or _time(
             reply_events, "audio_received"
         )
-        valid_frames = validated_playback_frames(turn)
-        first_playback = min(
-            (
-                e["at_ns"]
-                for e in valid_frames
-                if not e.get("data", {}).get("is_session_output")
-            ),
-            default=None,
-        )
+        first_frame = first_playback_frame(turn)
+        first_playback = first_frame["at_ns"] if first_frame is not None else None
         row = {
             "index": index,
             "id": turn.get("id", str(index)),
@@ -691,6 +697,8 @@ def prepare_session_playback(report, directory):
                 "kind": sentence["kind"],
                 "text": sentence["text"],
                 "status": status,
+                "start_confirmed": sentence.get("start_confirmed", bool(frames)),
+                "end_confirmed": sentence.get("end_confirmed", bool(frames)),
                 "audio_seqs": sentence["audio_seqs"],
                 "start_seconds": seconds(frames[0]["start_ns"]) if frames else None,
                 "end_seconds": (
@@ -739,6 +747,8 @@ def prepare_session_playback(report, directory):
                 kind, wait_end = "interrupted", interruption
             waits.append((kind, seconds(input_end), seconds(wait_end)))
         for previous, current in zip(spoken, spoken[1:]):
+            if not previous["end_confirmed"] or not current["start_confirmed"]:
+                continue
             kind = (
                 "transition"
                 if previous["kind"] in ("pre_speech", "filler")

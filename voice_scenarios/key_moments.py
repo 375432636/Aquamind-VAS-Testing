@@ -3,7 +3,8 @@
 import copy
 from collections import defaultdict
 
-from .reply_timing import validated_playback_frames
+from .memory_evidence import candidate_decisions
+from .reply_timing import ordered_playback_frames, validated_playback_frames
 
 
 def _identity(item):
@@ -19,7 +20,16 @@ def _interval(left, right, absolute):
         "clock_id"
     )
     same = same and (left["source"] == "client" or left.get("clock_id") is not None)
-    basis = "monotonic" if same else "wall_unaligned" if absolute else "unavailable"
+    calibration = left.get("clock_calibration") or right.get("clock_calibration")
+    basis = (
+        "monotonic"
+        if same
+        else (
+            ("wall_calibrated" if calibration else "wall_unaligned")
+            if absolute
+            else "unavailable"
+        )
+    )
     delta = (
         (right["start_ns"] - left["start_ns"])
         if same
@@ -32,11 +42,18 @@ def _interval(left, right, absolute):
         end_ns=right["plot_start_ns"],
         duration_seconds=None if basis == "unavailable" else delta,
         clock_basis=basis,
+        uncertainty_seconds=(
+            calibration["uncertainty_ns"] / 1e9 if calibration and not same else None
+        ),
         note=(
             "同一时钟的实际时间差"
             if same
             else (
-                "跨端墙钟差，未校时；包含时钟偏差，不等同于网络耗时"
+                (
+                    f"跨端校准估计，采样不确定范围 ±{calibration['uncertainty_ns'] / 1e9:.6f} 秒；不等同于纯网络耗时"
+                    if calibration
+                    else "跨端墙钟差，未校时；包含时钟偏差，不等同于网络耗时"
+                )
                 if absolute
                 else "缺少共同墙钟，不计算跨端间隔"
             )
@@ -112,7 +129,12 @@ def _turn_rows(turn, index, own, playback):
     )
     mode = mode or turn.get("input_settings", {}).get("mode")
     final = server_point("asr_final", "ASR 完成")
-    stop = client_point({"listen_stop_sent"}, "STOP 发出")
+    stops = [e for e in events if e["event"] == "listen_stop_sent"]
+    stop = (
+        client_at("listen_stop_sent", stops[-1]["at_ns"], "STOP 发出")
+        if stops
+        else None
+    )
     speech_end = (
         stop
         if mode == "manual"
@@ -161,6 +183,7 @@ def _turn_rows(turn, index, own, playback):
     elif final:
         pair("asr_final", "ASR 完成", None, final)
 
+    decisions = candidate_decisions(turn.get("vas_events", []))
     llm_events = defaultdict(list)
     for m in server:
         if m["event"] in ("llm_request_started", "llm_first_token") and m.get(
@@ -172,6 +195,9 @@ def _turn_rows(turn, index, own, playback):
         sorted(llm_events, key=lambda key: _first(llm_events[key])["plot_start_ns"]), 1
     ):
         start = server_point("llm_request_started", "请求提交", identity)
+        attempt = (start or {}).get("data", {}).get("pipeline_attempt_id")
+        if decisions.get(attempt, {}).get("selection") == "discarded":
+            continue
         token = server_point("llm_first_token", "首包类型未采集", identity)
         if token:
             kind = token.get("data", {}).get("delta_kind")
@@ -181,9 +207,11 @@ def _turn_rows(turn, index, own, playback):
             token["evidence_note"] = (
                 "工具参数不等于文字；这里只显示本次 LLM 请求实际记录的首个增量。"
             )
+        if not llms and final:
+            pair(
+                "asr_to_llm", f"ASR → LLM #{n}", final, start, ["LLM 请求提交未采集"], n
+            )
         llms[identity] = (n, start, token)
-        if n == 1 and final:
-            pair("asr_to_llm", "ASR → LLM #1", final, start, ["LLM 请求提交未采集"], n)
 
     # Walk explicit parent spans in the same clock. Common chat parents do not
     # identify which sibling LLM generated a TTS segment.
@@ -260,8 +288,15 @@ def _turn_rows(turn, index, own, playback):
             if evidence.get("status") == "matched"
             else set()
         )
-        matching = [e for e in frames if e.get("data", {}).get("audio_seq") in seqs]
-        frame = min(matching, key=lambda e: e["at_ns"], default=None)
+        first = next(
+            (
+                e
+                for e in ordered_playback_frames(turn)
+                if e.get("data", {}).get("audio_seq") in seqs
+            ),
+            None,
+        )
+        frame = first if first is not None and first in frames else None
         played = (
             client_at("playback_frame_started", frame["at_ns"], play_label)
             if frame

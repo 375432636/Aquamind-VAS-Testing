@@ -6,7 +6,7 @@ function renderReplyTiming(target, timing, session, turnIndex) {
   const types = {greeting:'欢迎语',answer:'正式回复',pre_speech:'过渡语',filler:'临时回复',mixed:'混合输出',unknown:'类型未关联'};
   const statuses = {completed:'已播放',interrupted:'被打断',not_played:'未播放',incomplete:'采集不完整',timing_unavailable:'播放时刻不可确认'};
   const reliable = !['invalid','estimated'].includes(timing?.playback_clock?.status);
-  const timingNote = timing?.playback_clock?.status === 'partial' ? '已确认的播放时间保留，未确认尾部可在原始音频中回听' : reliable ? '时间与会话播放保持一致' : '文字与原始音频保留，播放时刻无法确认';
+  const timingNote = timing?.playback_clock?.status === 'partial' ? '已确认的播放区间保留，未确认区间可在原始音频中回听' : reliable ? '时间与会话播放保持一致' : '文字与原始音频保留，播放时刻无法确认';
   target.innerHTML = `<div class="section-heading"><div><h2>回复内容</h2><p>${timingNote}</p></div><span class="unit-label">${rows.length} 段回复</span></div>` + (rows.length ? rows.map((row, i) => {
     const absolute = sessionRows.find(item => item.index === (row.index || i + 1));
     const start = absolute?.start_seconds, end = absolute?.end_seconds;

@@ -1,4 +1,4 @@
-"""One presentation axis, without estimating offsets between client and VAS."""
+"""One presentation axis with optional, explicit clock calibration."""
 
 import copy
 
@@ -54,7 +54,9 @@ def vad_display_times(events):
     return result
 
 
-def combined_timeline(turn, client_clock):
+def combined_timeline(turn, client_clock, clock_sync=None):
+    calibrated = (clock_sync or {}).get("status") == "calibrated"
+    offset = clock_sync["offset_ns"] if calibrated else 0
     client = {}
     unreliable_playback = playback_clock(turn)["status"] in {"invalid", "estimated"}
     group_labels = {"input": "发送音频", "playback": "回复播放", "control": "控制指令"}
@@ -108,7 +110,12 @@ def combined_timeline(turn, client_clock):
                     return item.get("wall_time_ns") or client_wall_time(
                         at, client_clock
                     )
-                return server_times.get((domain[1], at))
+                value = server_times.get((domain[1], at))
+                if calibrated:
+                    item["clock_calibration"] = {
+                        k: clock_sync[k] for k in ("offset_ns", "uncertainty_ns")
+                    }
+                return value - offset if isinstance(value, int) else value
 
             items.append(
                 (
@@ -131,7 +138,18 @@ def combined_timeline(turn, client_clock):
         for item, _, start, end in items
     )
     absolute = complete and not discontinuity
-    zero = min((start for _, _, start, _ in items), default=0) if absolute else None
+    client_origin = client_wall_time(
+        (client_clock or {}).get("monotonic_ns", 0), client_clock
+    )
+    zero = (
+        (
+            client_origin
+            if client_origin is not None
+            else min((start for _, _, start, _ in items), default=0)
+        )
+        if absolute
+        else None
+    )
     local_zeros = {}
     for item, domain, _, _ in items:
         local_zeros[domain] = min(
@@ -141,13 +159,18 @@ def combined_timeline(turn, client_clock):
         item["wall_time_ms"] = start / 1e6 if start is not None else None
         item["end_wall_time_ms"] = end / 1e6 if end is not None else None
         item["plot_start_ns"] = (
-            start - zero if absolute else item["start_ns"] - local_zeros[domain]
+            start - client_origin
+            if domain[0] == "client" and client_origin is not None
+            else start - zero if absolute else item["start_ns"] - local_zeros[domain]
         )
         if "end_ns" in item:
             item["plot_end_ns"] = (
-                end - zero if absolute else item["end_ns"] - local_zeros[domain]
+                end - client_origin
+                if domain[0] == "client" and client_origin is not None
+                else end - zero if absolute else item["end_ns"] - local_zeros[domain]
             )
     return {
+        "clock_sync": clock_sync,
         "mode": "wall" if absolute else "relative",
         "reason": (
             None
@@ -197,6 +220,7 @@ def session_trace_timeline(report):
                 "vas_events": turn.get("vas_events", []),
             },
             None,
+            report.get("clock_sync"),
         )
         if chart["lanes"]:
             charts.append((index, chart))
@@ -232,6 +256,7 @@ def session_trace_timeline(report):
     # Media received outside the audio file's extent is still inspectable.
     bounds.extend(m["at_seconds"] for m in playback.get("media_markers", []))
     return {
+        "clock_sync": report.get("clock_sync"),
         "mode": "wall" if absolute else "relative",
         "time_zone": "Asia/Shanghai",
         "origin_wall_time_ms": wall_zero / 1e6 if absolute else None,

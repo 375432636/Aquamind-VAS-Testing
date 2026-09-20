@@ -376,7 +376,7 @@ def test_confirmed_prefix_survives_estimated_tail_and_retains_original_pcm_order
 @pytest.mark.parametrize(
     "first_data,first_at,expected",
     [
-        (confirmed_data(3.4, False), 3.25, "estimated"),
+        (confirmed_data(3.4, False), 3.25, "partial"),
         ({"timing_model": "browser_audio_context_v1"}, 1.5, "invalid"),
     ],
 )

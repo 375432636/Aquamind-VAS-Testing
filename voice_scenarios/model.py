@@ -41,6 +41,19 @@ class Interruption:
 
 
 @dataclass(frozen=True)
+class AudioChunk:
+    audio: Path
+    resume_after_endpoint_ms: float = 0
+
+    def __post_init__(self):
+        positive_number(
+            self.resume_after_endpoint_ms, "resume_after_endpoint_ms", allow_zero=True
+        )
+        if self.resume_after_endpoint_ms > 5000:
+            raise ValueError("resume_after_endpoint_ms must not exceed 5000")
+
+
+@dataclass(frozen=True)
 class Turn:
     id: str
     audio: Path | None = None
@@ -50,10 +63,14 @@ class Turn:
     input_text: str | None = None
     sensor: str | None = None
     tool: str | None = None
+    chunks: tuple[AudioChunk, ...] = ()
 
     def __post_init__(self):
-        if (self.audio is None) == (self.sensor is None):
-            raise ValueError("turn requires exactly one of audio or sensor")
+        if (
+            sum((self.audio is not None, self.sensor is not None, bool(self.chunks)))
+            != 1
+        ):
+            raise ValueError("turn requires exactly one of audio, sensor or chunks")
         if self.sensor is not None:
             sensor_command(self.sensor)
         if not isinstance(self.expect, dict):
@@ -109,13 +126,29 @@ class Scenario:
         for index, value in enumerate(data["turns"], 1):
             if (
                 not isinstance(value, dict)
-                or sum(key in value for key in ("audio", "sensor")) != 1
+                or sum(key in value for key in ("audio", "sensor", "chunks")) != 1
             ):
                 raise ValueError("turn requires exactly one of audio or sensor")
             sensor = sensor_command(value["sensor"]) if "sensor" in value else None
             path = (
-                (Path(base_dir) / value["audio"]).resolve() if sensor is None else None
+                (Path(base_dir) / value["audio"]).resolve()
+                if "audio" in value
+                else None
             )
+            chunks = ()
+            if "chunks" in value:
+                raw_chunks = value["chunks"]
+                if not isinstance(raw_chunks, list) or not 2 <= len(raw_chunks) <= 8:
+                    raise ValueError("chunks requires 2–8 audio segments")
+                chunks = tuple(
+                    AudioChunk(
+                        (Path(base_dir) / part["audio"]).resolve(),
+                        part.get("resume_after_endpoint_ms", 0),
+                    )
+                    for part in raw_chunks
+                )
+                if any(not part.audio.is_file() for part in chunks):
+                    raise ValueError("chunk input audio does not exist")
             if path is not None and not path.is_file():
                 raise ValueError(f"input audio does not exist: {path}")
             turn_id = str(value.get("id", f"turn-{index}"))
@@ -171,6 +204,7 @@ class Scenario:
                     or (f"传感器 · {SENSOR_COMMANDS[sensor]}" if sensor else None),
                     sensor,
                     value.get("tool"),
+                    chunks,
                 )
             )
         return cls(

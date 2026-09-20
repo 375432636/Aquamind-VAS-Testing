@@ -9,14 +9,17 @@ from pathlib import Path
 
 from .assertions import evaluate_business_assertions
 from .clock_timeline import combined_timeline, session_trace_timeline
-from .evaluation import tool_check
+from .evaluation import TOOL_NAMES, tool_check
 from .excel_report import export_excel
 from .input_control import inspect_input_control, refresh_ptt_markers
 from .key_moments import add_key_moment_lanes
 from .llm_evidence import summarize_llm_requests
 from .reply_timing import (
     analyze_reply_timing,
+    first_playback_frame,
     input_end_event,
+    ordered_playback_frames,
+    packet_kind,
     playback_clock,
     validated_playback_frames,
 )
@@ -25,10 +28,14 @@ from .tts_evidence import tts_segment_evidence
 from .turn_attribution import attribute_mixed_turns
 
 
-def delta(events, start, end, key):
+def delta(events, start, end, key, *, signed=False):
     a = next((e[key] for e in events if e["event"] == start), None)
     b = next((e[key] for e in events if e["event"] == end), None)
-    return (b - a) / 1e6 if a is not None and b is not None and b >= a else None
+    return (
+        (b - a) / 1e6
+        if a is not None and b is not None and (signed or b >= a)
+        else None
+    )
 
 
 def evaluate(result, vas_events, *, artifact_dir=None):
@@ -63,10 +70,6 @@ def evaluate(result, vas_events, *, artifact_dir=None):
     if report.get("diagnostics") and not report["diagnostics"].get("complete"):
         failures.append("诊断数据不完整")
         failure_groups["diagnostic_missing"].append("诊断数据不完整")
-    output_edges = sorted(
-        (e for e in vas_events if e["event"] == "audio_output_started"),
-        key=lambda e: e["data"]["audio_seq"],
-    )
     for index, turn in enumerate(report["turns"], 1):
         rows = [
             e
@@ -74,7 +77,15 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             if (
                 e.get("client_turn_index") == index
                 if mixed
-                else e.get("listen_turn_id") == turn.get("listen_turn_id", index)
+                else e.get("listen_turn_id")
+                in turn.get(
+                    "server_listen_turn_ids",
+                    [
+                        turn.get(
+                            "server_listen_turn_id", turn.get("listen_turn_id", index)
+                        )
+                    ],
+                )
             )
         ]
         turn["vas_events"] = rows
@@ -87,43 +98,39 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             in {"asr_session_config_requested", "asr_session_config_confirmed"}
         ]
         spans, span_errors = request_spans(rows)
-        # Match the recorded sentence protocol before legacy packet enrichment
-        # adds inferred output IDs (old live clients can have shifted counters).
-        texts = tts_segment_evidence(spans, rows, turn["events"])
+        # Server diagnostics may annotate a verified sentence exchange, but never
+        # rewrite client packets: their audio counters are independent.
+        # A chunked PTT turn has several server listen IDs but one client ID.
+        # Canonicalize only this annotation view using the recorded mapping;
+        # preserve every original server event and clock in the report.
+        annotation_rows = rows
+        if (
+            turn.get("server_listen_turn_ids")
+            or turn.get("server_listen_turn_id") is not None
+        ):
+            annotation_rows = [
+                {**row, "listen_turn_id": turn.get("listen_turn_id", index)}
+                for row in rows
+            ]
+        texts = tts_segment_evidence(spans, annotation_rows, turn["events"])
         for span in spans:
             if span["span_id"] in texts:
                 span["tts_evidence"] = texts[span["span_id"]]
-        for event in turn["events"]:
-            audio_seq = event.get("data", {}).get("audio_seq")
-            if audio_seq is not None and output_edges:
-                edge = next(
-                    (
-                        e
-                        for e in reversed(output_edges)
-                        if e["data"]["audio_seq"] <= audio_seq
-                    ),
-                    None,
-                )
-                if edge:
-                    event["data"].update(
-                        server_listen_turn_id=edge.get("listen_turn_id"),
-                        output_kind=(
-                            "greeting"
-                            if event["data"].get("is_session_output")
-                            else edge.get("output_kind")
-                        ),
-                        output_id=edge.get("output_id"),
-                    )
-                    if (
-                        event["event"] == "playback_frame_started"
-                        and edge.get("listen_turn_id") is not None
-                        and edge.get("client_turn_index", edge.get("listen_turn_id"))
-                        != index
-                    ):
-                        failures.append(
-                            f"{turn['id']}: 播放了属于其他轮次的迟到音频 seq={audio_seq}"
-                        )
-                        failure_groups["functional"].append(failures[-1])
+        from .tts_evidence import cached_audio_annotations
+
+        turn["reply_annotations"] = cached_audio_annotations(
+            annotation_rows, turn["events"]
+        )
+        for span in spans:
+            evidence = texts.get(span["span_id"], {})
+            if evidence.get("status") == "matched":
+                for seq in evidence.get("audio_seqs", []):
+                    turn["reply_annotations"][str(seq)] = {
+                        "output_kind": evidence.get("output_kind"),
+                        "output_id": evidence.get("output_id"),
+                        "source": evidence["source"],
+                        "span_id": span["span_id"],
+                    }
         failures.extend(span_errors)
         failure_groups["diagnostic_missing"].extend(span_errors)
         turn["spans"] = spans
@@ -146,12 +153,10 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             playback_events = [
                 e for e in turn["events"] if e["event"] != "playback_started"
             ]
-            if played_frames:
+            first_frame = first_playback_frame(turn)
+            if first_frame is not None:
                 playback_events.append(
-                    {
-                        "event": "playback_started",
-                        "at_ns": min(e["at_ns"] for e in played_frames),
-                    }
+                    {"event": "playback_started", "at_ns": first_frame["at_ns"]}
                 )
         metrics = {
             "image_items": media_counts["image"],
@@ -159,13 +164,17 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             "asr_text": next(
                 (
                     e.get("data", {}).get("text")
-                    for e in turn["events"]
+                    for e in reversed(turn["events"])
                     if e["event"] == "stt"
                 ),
                 None,
             ),
             "first_playback_ms": delta(
-                playback_events, input_end_event(turn), "playback_started", "at_ns"
+                playback_events,
+                input_end_event(turn),
+                "playback_started",
+                "at_ns",
+                signed=True,
             ),
             "stop_queue_ms": delta(
                 rows, "listen_stop_enqueued", "listen_stop_dequeued", "monotonic_ns"
@@ -193,6 +202,9 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             "local_vad_ends": counts["local_vad_endpoint_detected"],
             "asr_vad_starts": counts["asr_speech_started"],
             "asr_vad_ends": counts["asr_endpoint_detected"],
+            "speech_utterances": counts["speech_chunk_started"],
+            "speech_chunks": counts["speech_chunk_started"]
+            + counts["speech_continuation_detected"],
             "llm_requests": counts["llm_request_started"],
             "memory_requests": counts["memory_request_started"],
             "tts_requests": counts["tts_request_started"],
@@ -209,6 +221,10 @@ def evaluate(result, vas_events, *, artifact_dir=None):
             ),
             "knowledge_base_calls": sum(
                 e["data"].get("category") == "knowledge_base"
+                or (
+                    e["data"].get("category") in {None, "other"}
+                    and e["data"].get("tool_name") in TOOL_NAMES["知识库-文字"]
+                )
                 for e in rows
                 if e["event"] == "tool_call_started"
             ),
@@ -216,15 +232,28 @@ def evaluate(result, vas_events, *, artifact_dir=None):
         if turn.get("sensor"):
             turn["server_input_text"] = metrics["asr_text"]
             metrics["asr_text"] = None
-        outputs = [e for e in rows if e["event"] == "audio_output_started"]
-        played = {e["data"].get("audio_seq"): e["at_ns"] for e in played_frames}
-        answer_ns = next(
+        packets = {
+            e["data"].get("audio_seq"): e["data"]
+            for e in turn["events"]
+            if e["event"] == "audio_received"
+        }
+        first_answer = next(
             (
-                played[e["data"]["audio_seq"]]
-                for e in outputs
-                if e.get("output_kind") == "answer" and e["data"]["audio_seq"] in played
+                e
+                for e in ordered_playback_frames(turn)
+                if packet_kind(
+                    turn,
+                    e["data"].get("audio_seq"),
+                    packets.get(e["data"].get("audio_seq"), {}),
+                )
+                == "answer"
             ),
             None,
+        )
+        answer_ns = (
+            first_answer["at_ns"]
+            if first_answer is not None and first_answer in played_frames
+            else None
         )
         stop_ns = next(
             (e["at_ns"] for e in turn["events"] if e["event"] == input_end_event(turn)),
@@ -409,11 +438,17 @@ def _badge(label, tone="neutral"):
 
 def _turn_badges(turn):
     status = (
-        _badge("失败", "danger") if _turn_failed(turn) else _badge("完成", "success")
+        _badge("失败", "danger")
+        if _turn_failed(turn)
+        else (
+            _badge("已打断", "warning")
+            if turn.get("status") == "interrupted"
+            else _badge("完成", "success")
+        )
     )
-    if turn.get("interruption"):
+    if turn.get("interruption") and turn.get("status") != "interrupted":
         status += _badge("已打断", "warning")
-    elif turn.get("requested_interruption"):
+    elif not turn.get("interruption") and turn.get("requested_interruption"):
         status += _badge("打断未触发", "warning")
     if turn.get("input_settings", {}).get("mode") == "vad":
         status += _badge("VAD")
@@ -438,6 +473,7 @@ def _timing_values(turn):
         r["end_seconds"]
         for r in rows
         if r.get("kind") in {"pre_speech", "filler"}
+        and r.get("end_confirmed", r.get("status") == "completed")
         and r.get("end_seconds") is not None
         and answer
         and r["end_seconds"] <= answer["start_seconds"]
@@ -445,15 +481,16 @@ def _timing_values(turn):
     metrics = turn.get("metrics", {})
 
     def fallback(row, metric):
-        value = row.get("start_seconds")
-        return (
-            value
-            if value is not None
-            else (metrics[metric] / 1000 if metrics.get(metric) is not None else None)
-        )
+        if metric in metrics:
+            return metrics[metric] / 1000 if metrics[metric] is not None else None
+        return row.get("start_seconds")
 
     return [
-        fallback(heard, "first_playback_ms"),
+        (
+            metrics["first_playback_ms"] / 1000
+            if metrics.get("first_playback_ms") is not None
+            else None
+        ),
         fallback(answer, "first_answer_playback_ms"),
         answer["start_seconds"] - max(temporary_ends) if temporary_ends else None,
         timing.get("max_gap_seconds"),
@@ -478,12 +515,21 @@ def _navigation(report, active):
     links.append('<div class="nav-caption">本次对话</div>')
     for index, turn in enumerate(report["turns"]):
         current = ' aria-current="page"' if index == active else ""
-        failed = " danger-dot" if _turn_failed(turn) else ""
+        state = (
+            "失败"
+            if _turn_failed(turn)
+            else "已打断" if turn.get("status") == "interrupted" else "完成"
+        )
+        failed = (
+            " danger-dot"
+            if state == "失败"
+            else " warning-dot" if state == "已打断" else ""
+        )
         links.append(
             f'<a class="turn-link" href="turn-{index + 1:03}.html"{current}>'
             f'<span class="turn-number">{index + 1:02}</span><span class="turn-label">'
             f'{_text(_question(turn))}</span><span class="status-dot{failed}" aria-label="'
-            f'{"失败" if _turn_failed(turn) else "完成"}"></span></a>'
+            f'{state}"></span></a>'
         )
     return "".join(links)
 
@@ -510,7 +556,7 @@ def _notices(report, turn=None):
     if partial:
         messages.insert(
             0,
-            f"第 {'、'.join(partial)} 轮已保留确认的首音时间；打断附近的尾部缺少可靠播放时刻，未放入时间轴和整段回听，原始完整回复可在单轮页面回听。",
+            f"第 {'、'.join(partial)} 轮存在少量播放计时不确定区间；其余已确认区间保留在时间轴和整段回听，完整原始回复可在单轮页面回听。",
         )
     if report.get("data_source") == "mock":
         messages.insert(
@@ -518,7 +564,9 @@ def _notices(report, turn=None):
             "MOCK 模拟数据 · 未连接 VAS，回复及时间仅用于验证测试工具，不代表真实服务表现。",
         )
     if report.get("diagnostics") and not report["diagnostics"].get("complete"):
-        messages.append("诊断数据不完整，部分阶段的时间可能缺失。")
+        messages.append(
+            "诊断数据不完整：VAS 缺少结束数据，部分服务端环节可能缺失；客户端录音和播放记录独立保留。"
+        )
     # Clock failures are summarized once above; keep per-turn detail in JSON.
     messages.extend(
         message
@@ -538,7 +586,7 @@ def _notices(report, turn=None):
             if not check["passed"]
         )
     else:
-        messages.extend(report.get("failures", []))
+        messages.extend(m for m in report.get("failures", []) if m != "诊断数据不完整")
     labels = {
         "functional": "功能失败",
         "diagnostic_missing": "诊断缺失",
@@ -549,13 +597,22 @@ def _notices(report, turn=None):
     category_summary = " · ".join(
         f"{labels[key]} {len(items)}" for key, items in groups.items() if items
     )
-    return (
+    messages = list(dict.fromkeys(messages))
+    summary = (
         f'<div class="notice" role="status">{_text(category_summary)}</div>'
         if category_summary
         else ""
-    ) + "".join(
+    )
+    if len(messages) > 2:
+        return summary + (
+            f'<details class="inline-disclosure"><summary>查看 {len(messages)} 项采集说明</summary>'
+            '<div class="detail-body">'
+            + "".join(f"<p>{_text(message)}</p>" for message in messages)
+            + "</div></details>"
+        )
+    return summary + "".join(
         f'<div class="notice" role="status">{_text(message)}</div>'
-        for message in dict.fromkeys(messages)
+        for message in messages
     )
 
 
@@ -618,7 +675,11 @@ def _overview(report):
     maximum = lambda column: max(
         (v[column] for v in values if v[column] is not None), default=None
     )
-    completed = sum(not _turn_failed(turn) for turn in turns)
+    failed = sum(_turn_failed(turn) for turn in turns)
+    interrupted = sum(
+        turn.get("status") == "interrupted" and not _turn_failed(turn) for turn in turns
+    )
+    completed = len(turns) - failed - interrupted
     content = (
         '<div class="page-heading"><div><div class="eyebrow">SESSION OVERVIEW</div>'
         f'<h1>{_text(report.get("name", "语音测试"))}</h1><p>整段会话 · 用户语音、回复播放与 VAS 全链路时序。</p></div>'
@@ -635,7 +696,7 @@ def _overview(report):
                     "对话轮次",
                     f"{len(turns):02}",
                     "轮",
-                    f"{completed} 轮完成 · {len(turns) - completed} 轮失败",
+                    f"{completed} 轮完成 · {interrupted} 轮打断 · {failed} 轮失败",
                 ),
                 ("最慢首句声音", _seconds(maximum(0)), "s", "从输入结束开始计时"),
                 ("最慢正式回复", _seconds(maximum(1)), "s", "从输入结束开始计时"),
@@ -668,7 +729,7 @@ def _overview(report):
         '<div class="overview-footer"><span>同一 WebSocket 会话内顺序执行，保留上下文。</span>'
         '<a href="report.json" download>下载报告数据</a></div>'
         '<details class="disclosure"><summary>运行信息与采集口径</summary><div class="detail-body">'
-        "<p>播放时间来自 Python 模拟播放器；客户端与 VAS 各自使用单调时钟。"
+        "<p>自动测试使用 Python 模拟播放；网页录制使用浏览器音频时钟。客户端与 VAS 各自保留原始计时。"
         "“—”表示该项未采集或本轮不适用。</p>"
         f'<pre>{_text(json.dumps({"session": report.get("session"), "run": report.get("run_metadata"), "diagnostics": report.get("diagnostics")}, ensure_ascii=False, indent=2))}</pre>'
         "</div></details>"
@@ -768,8 +829,10 @@ def _turn_playback(playback, turn, index):
 def _session_panel(report):
     playback = report.get("session_playback", {})
     trace = playback.get("vas_timeline", {})
+    calibrated = (trace.get("clock_sync") or {}).get("status") == "calibrated"
     clock_label = (
-        "北京时间 UTC+8 · 会话起点 = 0 s · 两端未校时"
+        "北京时间 UTC+8 · 会话起点 = 0 s · "
+        + ("VAS 已校准至客户端" if calibrated else "两端未校时")
         if trace.get("mode") == "wall"
         else (
             "相对时间 · 客户端与 VAS 各自从 0 s 开始，不能跨来源相减"
@@ -784,7 +847,7 @@ def _session_panel(report):
     content = (
         '<section class="panel session-panel" id="session-timeline"><div class="section-heading">'
         f'<div><div class="eyebrow">SESSION TIMELINE</div><h2>{title}</h2>'
-        f"<p>{clock_label}</p></div>"
+        f'<p id="session-clock-label">{clock_label}</p></div>'
         f'<span class="unit-label">全程 {_seconds(duration)} s</span></div>'
     )
     if report.get("playback_reconstruction"):
@@ -855,7 +918,7 @@ def _session_panel(report):
             if turn_index
             else "<p>VAS 展示所有轮次及欢迎语等会话级阶段，维度与详细页一致。"
         )
-        + "两端尚未校时，跨来源间距可能包含时钟误差；旧记录缺少绝对时间时，各来源独立归零。"
+        + "校准仅调整 VAS 在图中的位置，客户端语音、播放、等待和回听不受影响；校准状态和不确定范围见页首。旧记录缺少校准样本时保留原始时间。"
         "超出音频长度的 VAS 记录仍显示，音频回听长度不变。</p>"
         "<p>自动测试以 WAV 语音内容发送结束计时；网页 VAD 以客户端能量估计语音结束，单独标明，非服务端 VAD 事件。传感器以指令发出作为输入时刻，不生成输入音频。</p>"
     )
@@ -1104,6 +1167,7 @@ def _llm_evidence_panel(turn):
         "响应头 → 首块",
         "首块 → 有效输出",
         "状态",
+        "流水线选择",
     ]
     body = []
     for row in rows:
@@ -1135,6 +1199,15 @@ def _llm_evidence_panel(turn):
                 else value(row.get("status"))
             ),
         ]
+        cells.append(
+            {"adopted": "已采用", "discarded": "已弃用"}.get(
+                row.get("selection"), "未采集"
+            )
+            + {
+                "memory_replacement": " · 补充 Memory 重发",
+                "guardrail_replacement": " · 护栏回复重发",
+            }.get(row.get("pipeline_role"), "")
+        )
         body.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
     return (
         '<section class="panel compact-panel"><div class="section-heading"><h2>LLM 请求证据</h2></div>'
@@ -1191,9 +1264,21 @@ def build_report(report, path):
         turn["timeline_lanes"] = group_timeline_spans(
             turn.get("spans", []), turn.get("vas_events", [])
         )
-        turn["combined_timeline"] = combined_timeline(turn, display.get("client_clock"))
+        turn["combined_timeline"] = combined_timeline(
+            turn, display.get("client_clock"), display.get("clock_sync")
+        )
     playback["vas_timeline"] = session_trace_timeline(display)
     add_key_moment_lanes(display)
+    raw_display = copy.deepcopy(display)
+    raw_display.pop("clock_sync", None)
+    for raw_turn in raw_display["turns"]:
+        raw_turn["combined_timeline"] = combined_timeline(
+            raw_turn, raw_display.get("client_clock")
+        )
+    raw_display["session_playback"]["vas_timeline"] = session_trace_timeline(
+        raw_display
+    )
+    add_key_moment_lanes(raw_display)
     environment = display.get("run_metadata", {}).get("environment", "本地报告")
 
     def page(index):
@@ -1201,9 +1286,28 @@ def build_report(report, path):
         playback = display.get("session_playback", {})
         if index is not None:
             playback = _turn_playback(playback, turn, index + 1)
+        raw_playback = raw_display["session_playback"]
+        if index is not None:
+            raw_playback = _turn_playback(
+                raw_playback, raw_display["turns"][index], index + 1
+            )
+        sync = display.get("clock_sync", {})
+        sync_label = "未校准（旧报告、未启用或服务不支持）"
+        if sync.get("status") == "calibrated":
+            sync_label = f"跨端已校准 · 偏移 {sync['offset_ns']/1e9:+.6f} s · 采样不确定范围 ±{sync['uncertainty_ns']/1e9:.6f} s"
+        elif sync.get("status") == "unstable":
+            sync_label = "校准不稳定，已保留原始时间；请检查时钟变化或连接归属"
+        notice = f'<div class="notice"><span id="clock-sync-status">{_text(sync_label)}</span> · <a href="?clock=raw">原始时间</a> / <a href="?clock=calibrated">校准时间</a></div>'
         encoded = (
             json.dumps(
                 {
+                    "clock_sync": sync,
+                    "raw_view": {
+                        "turn": (
+                            raw_display["turns"][index] if index is not None else None
+                        ),
+                        "session_playback": raw_playback,
+                    },
                     "turn": turn,
                     "turn_index": index + 1 if index is not None else None,
                     "session_playback": playback,
@@ -1222,9 +1326,8 @@ def build_report(report, path):
             "__ENVIRONMENT__": _text(str(environment).upper()),
             "__STYLE__": style,
             "__NAVIGATION__": _navigation(display, index),
-            "__CONTENT__": (
-                _turn_page(display, index) if turn is not None else _overview(display)
-            ),
+            "__CONTENT__": notice
+            + (_turn_page(display, index) if turn is not None else _overview(display)),
             "__REPORT_DATA__": encoded,
             "__SCRIPT__": script,
         }

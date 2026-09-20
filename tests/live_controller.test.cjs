@@ -4,33 +4,85 @@ async function setup(options={}){
  const handlers={};
  const elements={};for(const id of ['status','error','messages','environment','mac','token','ota','connect','finish','text','send','talk','interrupt','mode','mic-status','downloads','text-form','mic-device','mic-level','mic-check','mic-preview','input-control','voice-hint'])elements[id]={value:'',disabled:false,append(){},replaceChildren(){},scrollIntoView(){}};
  elements.mac.value='00:00:00:00:00:21';elements.environment.value='dev';elements.mode.value='manual';elements.ota.checked=false;
- const sockets=[],recorders=[];
+ const sockets=[],recorders=[],players=[],requests=[],encoded=[];
+ elements.recording={checked:options.recording!==false,disabled:false};
+ elements['clock-sync']={checked:false,disabled:false};
  class Socket{
   constructor(url){this.url=String(url);this.readyState=1;this.sent=[];sockets.push(this);queueMicrotask(()=>this.onopen?.());}
   receive(value){this.onmessage?.({data:JSON.stringify(value)});}
   send(raw){if(options.failStop&&typeof raw==='string'&&JSON.parse(raw).type==='listen'&&JSON.parse(raw).state==='stop')throw Error('test stop send failed');this.sent.push(raw);if(typeof raw!=='string'||this.url.includes('/record'))return;const m=JSON.parse(raw);queueMicrotask(()=>{
-   if(m.type==='diagnostics'){if(m.state==='start')this.receive({type:'diagnostics',state:'started',schema_version:1,level:'frame',server_session_id:'test'});else if(m.state==='finish')this.receive({type:'diagnostics',state:'events',schema_version:1,server_session_id:'test',events:[],complete:true,finished:true,next_seq:0,end_seq:0});else this.receive({type:'diagnostics',state:'error',error:'unsupported diagnostic control'});}
+   if(m.type==='diagnostics'){if(m.state==='start')this.receive({type:'diagnostics',state:'started',schema_version:1,level:'frame',server_session_id:'test'});else if(m.state==='finish'&&!options.dropFinal)this.receive({type:'diagnostics',state:'events',schema_version:1,server_session_id:'test',events:[],complete:true,finished:true,next_seq:0,end_seq:0});else this.receive({type:'diagnostics',state:'error',error:'unsupported diagnostic control'});}
    if(m.type==='hello')this.receive({type:'hello',session_id:'test',audio_params:{format:'opus',sample_rate:16000}});
    if(m.type==='abort')this.receive({type:'tts',state:'stop'});
   });}
   close(){this.readyState=3;}
  }
  class Recorder{constructor(callback){this.callback=callback;recorders.push(this);}async prepare(){if(options.prepare)await options.prepare();}async start(){this.callback(new Int16Array(960).fill(options.silent?0:1024),new Uint8Array([1]),0);}async stop(){if(options.tail&&!this.stopped)this.callback(new Int16Array(960).fill(512),new Uint8Array([2]),960);this.stopped=true;}}
- class Player{constructor(a,b,c){this.onDrain=c;this.busy=false;this.chain=Promise.resolve();}async prime(){}async format(){}async flush(turn){this.onDrain(turn);}stop(){} }
+ class Player{constructor(a,b,c){players.push(this);this.onDrain=c;this.busy=false;this.chain=Promise.resolve();}async feed(){this.busy=true;}async prime(){}async format(){}async flush(turn){this.onDrain(turn);}stop(){} }
  let now=0;
- const ctx={document:{getElementById:id=>elements[id],createElement:()=>({scrollIntoView(){}})},window:{addEventListener(name,fn){handlers[name]=fn;}},performance:{timeOrigin:1700000000000},location:{origin:'http://localhost'},localStorage:{getItem:()=> '00:00:00:00:00:21',setItem(){}},setTimeout,clearTimeout,setInterval(){},WebSocket:Socket,Recorder,Player,ns:()=>++now*1000000,encodePCM:()=> 'AQABAA==',Blob,URL,console,Uint8Array,Int16Array,fetch:async()=>({ok:true,json:async()=>({ws_url:'ws://local/vas',record_url:'/record',id:'1'})})};
- vm.createContext(ctx);vm.runInContext(fs.readFileSync('voice_scenarios/live/app.mjs','utf8').replace(/^import .*?;\n/,''),ctx);
+ const {ClockSync} = await import('../voice_scenarios/live/clock_sync.mjs');
+ const ctx={ClockSync,document:{getElementById:id=>elements[id],createElement:()=>({scrollIntoView(){}})},window:{addEventListener(name,fn){handlers[name]=fn;}},performance:{timeOrigin:1700000000000,now:()=>++now},location:{origin:'http://localhost'},localStorage:{getItem:()=> '00:00:00:00:00:21',setItem(){}},setTimeout:(fn,ms)=>setTimeout(fn,options.dropFinal&&ms>=5000?5:ms),clearTimeout,setInterval(){},WebSocket:Socket,Recorder,Player,ns:()=>++now*1000000,encodePCM:()=> {encoded.push(true);return 'AQABAA==';},Blob,URL,console,Uint8Array,Int16Array,fetch:async(url,init)=>{requests.push({url,...init});return {ok:true,json:async()=>({ws_url:'ws://local/vas',...(JSON.parse(init?.body||'{}').recording===false?{}:{record_url:'/record',id:'1'})})};}};
+ vm.createContext(ctx);vm.runInContext(fs.readFileSync('voice_scenarios/live/app.mjs','utf8').replace(/^import .*?;\n/gm,''),ctx);
  await elements.connect.onclick();await tick();assert.equal(elements.status.textContent,'已连接',elements.error.textContent);
- return {elements,handlers,recorders,peer:sockets[1],record:sockets[0],sent:()=>sockets[1].sent.filter(x=>typeof x==='string').map(JSON.parse)};
+ const peer=sockets.find(s=>s.url.startsWith('ws://local/vas')),record=sockets.find(s=>s.url.includes('/record'));
+ return {elements,handlers,recorders,players,peer,record,requests,encoded,sockets,sent:()=>peer.sent.filter(x=>typeof x==='string').map(JSON.parse)};
 }
+test('chat-only connects without diagnostics, clock sync, recording socket or reports',async()=>{
+ const {elements,sent,record,peer,requests,sockets}=await setup({recording:false});
+ assert.equal(JSON.parse(requests[0].body).recording,false);
+ assert.equal(record,undefined);assert.equal(sockets.length,1);
+ assert.equal(sent().some(m=>['diagnostics','clock_sync'].includes(m.type)),false);
+ assert.equal(elements.recording.disabled,true);assert.equal(elements.finish.textContent,'断开连接');
+ elements.text.value='直接对话';await elements['text-form'].onsubmit({preventDefault(){}});
+ assert.equal(sent().find(m=>m.state==='detect').text,'直接对话');
+ await elements.finish.onclick();
+ assert.equal(peer.readyState,3);assert.equal(elements.downloads.hidden,true);
+ assert.equal(elements.recording.disabled,false);assert.equal(elements.status.textContent,'已断开');
+});
+test('chat-only preserves PTT and continuous VAD without encoding audio for logs',async()=>{
+ const {elements,handlers,recorders,peer,sent,encoded}=await setup({recording:false});
+ handlers.keydown(key());await tick();handlers.keyup(key());await tick();
+ assert.deepEqual(sent().filter(m=>m.type==='listen').map(m=>m.state),['start','stop']);
+ await elements.interrupt.onclick();await tick();
+ elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ peer.receive({type:'stt',text:'继续聊'});peer.receive({type:'tts',state:'start'});await tick();
+ const recorder=recorders.at(-1);recorder.callback(new Int16Array(960),new Uint8Array([2]),960);
+ assert.notEqual(recorder.stopped,true);assert.equal(encoded.length,0);
+ assert.equal(sent().filter(m=>m.type==='listen').at(-1).mode,'auto');
+ await elements.finish.onclick();assert.equal(recorder.stopped,true);
+});
+test('recording can be switched off and back on between connections',async()=>{
+ const {elements,sockets}=await setup();
+ await elements.finish.onclick();
+ elements.recording.checked=false;elements.recording.onchange();
+ assert.equal(elements.connect.textContent,'直接连接对话');
+ await elements.connect.onclick();
+ const chat=sockets.at(-1);
+ assert.equal(chat.sent.filter(x=>typeof x==='string').map(JSON.parse).some(m=>m.type==='diagnostics'),false);
+ await elements.finish.onclick();
+ elements.recording.checked=true;elements.recording.onchange();
+ await elements.connect.onclick();
+ assert.equal(elements.finish.textContent,'结束并生成报告');
+ assert.equal(sockets.at(-2).url,'ws://localhost/record');
+ assert.ok(sockets.at(-1).sent.filter(x=>typeof x==='string').map(JSON.parse).some(m=>m.type==='diagnostics'&&m.state==='start'));
+ await elements.finish.onclick();
+});
 test('manual microphone sends a real frame before listen stop',async()=>{
  const {elements,sent,peer}=await setup();await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});elements.talk.onpointerup();await tick();
  assert.ok(peer.sent.some(x=>x instanceof Uint8Array));assert.deepEqual(sent().filter(x=>x.type==='listen').map(x=>x.state),['start','stop']);
 });
-test('VAD endpoint stops microphone without sending manual stop',async()=>{
- const {elements,sent,peer}=await setup();elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});peer.receive({type:'stt',text:'模拟识别'});await tick();
+test('VAD keeps uploading microphone frames through STT and reply playback',async()=>{
+ const {elements,sent,peer,recorders}=await setup();elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ const mic=recorders[0];peer.receive({type:'stt',text:'模拟识别'});await tick();
+ assert.notEqual(mic.stopped,true,'STT must not close the continuous VAD microphone');
+ peer.receive({type:'tts',state:'start'});await tick();
+ const count=peer.sent.filter(x=>x instanceof Uint8Array).length;
+ mic.callback(new Int16Array(960),new Uint8Array([2]),960);
+ mic.callback(new Int16Array(960).fill(1024),new Uint8Array([3]),1920);
+ assert.equal(peer.sent.filter(x=>x instanceof Uint8Array).length,count+2);
  assert.deepEqual(sent().filter(x=>x.type==='listen').map(x=>[x.state,x.mode]),[['start','auto']]);
- assert.equal(elements['mic-status'].textContent,'麦克风已停止');
+ assert.match(elements['mic-status'].textContent,/持续|正在聆听/);
+ await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});assert.equal(mic.stopped,true);
 });
 test('abort is acknowledged before a new text turn can start',async()=>{
  const {elements,sent,peer}=await setup();elements.text.value='第一轮';await elements['text-form'].onsubmit({preventDefault(){}});peer.receive({type:'tts',state:'start'});await tick();
@@ -113,4 +165,59 @@ test('failed stop is recorded as failure rather than a sent stop',async()=>{
  assert.equal(events.filter(e=>e.event==='listen_stop_sent').length,0);
  assert.equal(events.filter(e=>e.event==='listen_stop_failed').length,1);
  assert.match(elements['input-control'].textContent,/stop 发送失败/);
+});
+
+
+test('missing final diagnostics preserves successful client capture and records the cause',async()=>{
+ const {elements,record}=await setup({dropFinal:true});
+ await elements.finish.onclick();
+ const messages=record.sent.filter(x=>typeof x==='string').map(JSON.parse);
+ assert.equal(messages.at(-1).action,'finish');
+ assert.equal(messages.at(-1).complete,true);
+ const events=messages.flatMap(x=>x.events||[]);
+ assert.equal(events.filter(e=>e.event==='diagnostics_finish_requested').length,1);
+ assert.equal(events.filter(e=>e.event==='diagnostics_finish_timeout').length,1);
+ assert.ok(events.some(e=>e.event==='connection_closed'));
+});
+
+
+test('VAD remains one live recorder after reply drain and uploads silence and next speech',async()=>{
+ const {elements,sent,peer,recorders}=await setup();elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ const mic=recorders[0];peer.receive({type:'stt',text:'第一句'});peer.receive({type:'tts',state:'start'});await tick();
+ peer.onmessage({data:new Uint8Array([9]).buffer});await tick();
+ mic.callback(new Int16Array(960),new Uint8Array([2]),960);
+ peer.receive({type:'tts',state:'stop'});await tick();
+ mic.callback(new Int16Array(960).fill(1024),new Uint8Array([3]),1920);
+ peer.receive({type:'stt',text:'第二句'});await tick();
+ assert.equal(recorders.length,1);assert.notEqual(mic.stopped,true);
+ assert.deepEqual(peer.sent.filter(x=>x instanceof Uint8Array).map(x=>x[0]),[1,2,3]);
+ assert.deepEqual(sent().filter(x=>x.type==='listen').map(x=>[x.state,x.mode]),[['start','auto']]);
+ await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});assert.equal(mic.stopped,true);
+ const stoppedCount=peer.sent.length;mic.callback(new Int16Array(960),new Uint8Array([4]),2880);assert.equal(peer.sent.length,stoppedCount);
+});
+
+test('starting VAD during welcome playback does not abort or wait for the speaker',async()=>{
+ const {elements,players,sent,recorders}=await setup();players[0].busy=true;elements.mode.value='vad';
+ await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ assert.equal(recorders.length,1);assert.notEqual(recorders[0].stopped,true);
+ assert.equal(sent().filter(x=>x.type==='abort').length,0);
+ assert.equal(sent().filter(x=>x.type==='listen'&&x.state==='start').length,1);
+ await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+});
+
+test('explicit reply interrupt leaves continuous VAD capture running',async()=>{
+ const {elements,peer,sent,recorders}=await setup();elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ peer.receive({type:'stt',text:'第一句'});peer.receive({type:'tts',state:'start'});await tick();
+ await elements.interrupt.onclick();await tick();
+ assert.equal(sent().filter(x=>x.type==='abort').length,1);assert.notEqual(recorders[0].stopped,true);
+ recorders[0].callback(new Int16Array(960),new Uint8Array([2]),960);
+ assert.equal(peer.sent.filter(x=>x instanceof Uint8Array).length,2);
+ await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+});
+
+test('finish stops continuous VAD and drains its final frame before closing',async()=>{
+ const {elements,recorders,peer}=await setup({tail:true});elements.mode.value='vad';await elements.talk.onpointerdown({preventDefault(){},isTrusted:false});
+ peer.receive({type:'stt',text:'识别文本'});await tick();await elements.finish.onclick();
+ assert.equal(recorders[0].stopped,true);assert.equal(peer.readyState,3);
+ assert.deepEqual(peer.sent.filter(x=>x instanceof Uint8Array).map(x=>x[0]),[1,2]);
 });

@@ -107,18 +107,6 @@ def prepare_reply_audio(report, directory):
                 if any(seq not in packets for seq in seqs):
                     clip["reason"] = "missing_packet"
                     continue
-                if any(
-                    packets[seq].get("server_listen_turn_id")
-                    not in (
-                        None,
-                        turn.get(
-                            "server_listen_turn_id", turn.get("listen_turn_id", index)
-                        ),
-                    )
-                    for seq in seqs
-                ):
-                    clip["reason"] = "cross_turn_audio"
-                    continue
                 chunks = [
                     pcm[a:b]
                     for seq in seqs

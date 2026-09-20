@@ -133,6 +133,7 @@ async def run(args):
             device_id=args.device_id or config.get("device_id", "AA:BB:CC:DD:EE:91"),
             token=config.get("token"),
             diagnostics=diagnostics,
+            clock_sync=config.get("clock_sync", True),
             fake_device_tools=args.fake_device
             or config.get("fake_device_tools", False),
         )

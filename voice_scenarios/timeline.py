@@ -3,6 +3,7 @@
 import math
 
 from .llm_evidence import thinking_mode
+from .memory_evidence import candidate_decisions, memory_evidence
 
 
 def request_spans(events):
@@ -13,6 +14,8 @@ def request_spans(events):
         if e["event"].endswith("_started") and e.get("span_id")
     }
     spans, errors = [], []
+    memories = memory_evidence(events)
+    candidates = candidate_decisions(events)
     for end in events:
         # HTTP phases / retries are milestones inside the logical request.
         if end["event"].startswith("http_"):
@@ -39,6 +42,11 @@ def request_spans(events):
                 "parent_span_id": start.get("parent_span_id"),
             }
         )
+        data = spans[-1]["data"]
+        if data.get("memory_lookup_id") in memories:
+            spans[-1]["memory_evidence"] = memories[data["memory_lookup_id"]]
+        if data.get("pipeline_attempt_id") in candidates:
+            data.update(candidates[data["pipeline_attempt_id"]])
     return spans, errors
 
 
@@ -84,6 +92,26 @@ def media_timeline_markers(events):
 
 
 MILESTONE_LABELS = {
+    "speech_chunk_started": "语音片段开始 · ASR 持续接收",
+    "speech_chunk_ended": "短暂停顿 · 开始续说窗口",
+    "speech_continuation_detected": "窗口内续说 · 保留 ASR",
+    "utterance_text_merged": "当前识别文本 · 提前启动回复",
+    "workflow_cancel_requested": "撤销旧回复版本",
+    "asr_continuation_commit": "续说窗口结束 · 发送 ASR 结束指令",
+    "reply_gate_opened": "最终文本确认 · 正式回复可放行",
+    "answer_audio_released": "正式音频缓冲已放行",
+    "filler_prepare_started": "临时回复开始预生成",
+    "filler_prepared": "临时回复预生成完成",
+    "filler_released": "临时回复放行",
+    "tool_pre_speech_released": "工具过渡语放行 · 不等待窗口或护栏",
+    "speech_workflow_error": "回复工作流失败",
+    "memory_lookup_result": "Memory 查询结果",
+    "llm_candidate_adopted": "候选回答已选定",
+    "llm_candidate_released": "回答放行 · 开始消费",
+    "llm_candidate_discarded": "候选回答已弃用",
+    "llm_candidate_cancel_requested": "取消旧候选 · 立即失效",
+    "llm_candidate_transport_finished": "候选网络请求已结束",
+    "llm_connection_warmup_result": "连接预热结果",
     "llm_request_started": "LLM 请求提交",
     "llm_request_finished": "LLM 请求结束",
     "tts_request_finished": "TTS 请求结束",
@@ -200,6 +228,23 @@ def group_timeline_spans(spans, events):
                 event.get("data", span.get("data"))
             )
             label = f"LLM #{llm_numbers[span['span_id']]} · {segment['thinking_mode']}"
+            generation = event.get("data", {}).get("workflow_version")
+            if generation is not None:
+                label += f" · 回复版本 G{generation}"
+            selection = span.get("data", {}).get("selection")
+            if selection:
+                label += " · 已弃用" if selection == "discarded" else " · 已采用"
+            if span.get("data", {}).get("pipeline_role") == "memory_replacement":
+                label += " · 补充 Memory 重发"
+            elif span.get("data", {}).get("pipeline_role") == "guardrail_replacement":
+                label += " · 护栏回复重发"
+        elif name == "llm_connection_warmup":
+            label = "LLM 连接预热（不生成回复）"
+        elif name == "llm_prompt_runtime_warmup":
+            label = "LLM 分词器预热"
+        elif name == "memory_request":
+            evidence = span.get("memory_evidence", {})
+            label = "Memory · " + evidence.get("label", "结果未采集")
         elif name == "asr_request":
             key = ("asr",)
             if span.get("data", {}).get("mode") not in (None, "STREAM"):
@@ -249,6 +294,21 @@ def group_timeline_spans(spans, events):
         if name not in MILESTONE_LABELS or at is None:
             continue
         request = nodes.get(event.get("span_id"))
+        if name.startswith("llm_candidate_") or name == "memory_lookup_result":
+            field = (
+                "memory_lookup_id"
+                if name == "memory_lookup_result"
+                else "pipeline_attempt_id"
+            )
+            identity = event.get("data", {}).get(field)
+            request = next(
+                (
+                    s
+                    for s in ordered
+                    if identity and s.get("data", {}).get(field) == identity
+                ),
+                None,
+            )
         if name == "tts_segment_ready":
             request = speech_spans.get(event.get("data", {}).get("segment_id"), request)
         if (
@@ -274,7 +334,26 @@ def group_timeline_spans(spans, events):
             ]
             if len(matches) == 1:
                 lane = matches[0]
-        if name.startswith("local_vad_") or name in {
+        if name.startswith(
+            (
+                "speech_",
+                "utterance_",
+                "workflow_",
+                "reply_gate_",
+                "answer_audio_",
+                "filler_",
+            )
+        ) or name in {"asr_continuation_commit", "tool_pre_speech_released"}:
+            lane = lanes.setdefault(
+                ("speech_turn",),
+                dict(
+                    label="续说窗口与回复版本",
+                    category="asr_request",
+                    segments=[],
+                    markers=[],
+                ),
+            )
+        elif name.startswith("local_vad_") or name in {
             "asr_speech_started",
             "asr_endpoint_detected",
         }:
@@ -319,6 +398,12 @@ def group_timeline_spans(spans, events):
                     markers=[],
                 ),
             )
+        if (
+            name == "memory_lookup_result"
+            and request
+            and request.get("memory_evidence")
+        ):
+            lane["memory_evidence"] = request["memory_evidence"]
         if lane["category"] == "unmatched":
             start = logical_llm.get((event.get("clock_id"), event.get("span_id")))
             if start:
@@ -347,6 +432,8 @@ def group_timeline_spans(spans, events):
             status=event.get("status"),
             since_request_seconds=None,
         )
+        if name == "memory_lookup_result" and request:
+            marker["memory_evidence"] = request.get("memory_evidence")
         if request and request["name"] == "tts_request":
             marker["span_id"] = request["span_id"]
             marker["segment_number"] = next(

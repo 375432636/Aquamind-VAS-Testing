@@ -49,6 +49,8 @@ NUMERIC_METRICS = {
     "pre_speech_outputs",
     "filler_outputs",
     "knowledge_base_calls",
+    "speech_utterances",
+    "speech_chunks",
     "interrupt_lateness_ms",
 }
 
@@ -160,6 +162,7 @@ def validate_turns(raw, settings):
     if not isinstance(turns, list) or not 1 <= len(turns) <= 30:
         raise ValueError("VAS_TURNS_JSON requires 1–30 turns")
     allowed = {
+        "chunks",
         "text",
         "audio",
         "sensor",
@@ -175,7 +178,7 @@ def validate_turns(raw, settings):
             turn = {"text": turn}
         if not isinstance(turn, dict) or set(turn) - allowed:
             raise ValueError(f"turn {index}: unsupported fields")
-        if sum(key in turn for key in ("text", "audio", "sensor")) != 1:
+        if sum(key in turn for key in ("text", "audio", "sensor", "chunks")) != 1:
             raise ValueError(
                 f"turn {index}: provide exactly one of text, audio or sensor"
             )
@@ -192,7 +195,44 @@ def validate_turns(raw, settings):
         item = {"id": turn_id}
         if "tool" in turn:
             item["tool"] = validate_tool(turn["tool"])
-        if "sensor" in turn:
+        if "chunks" in turn:
+            parts = turn["chunks"]
+            if not isinstance(parts, list) or not 2 <= len(parts) <= 8:
+                raise ValueError("chunks requires 2–8 segments")
+            normalized_parts = []
+            for number, part in enumerate(parts):
+                if not isinstance(part, dict) or set(part) - {
+                    "text",
+                    "audio",
+                    "resume_after_endpoint_ms",
+                }:
+                    raise ValueError(
+                        "chunk accepts text/audio and resume_after_endpoint_ms"
+                    )
+                delay = _number(
+                    part.get("resume_after_endpoint_ms", 0),
+                    "resume_after_endpoint_ms",
+                    0,
+                    5000,
+                )
+                if number == 0 and delay:
+                    raise ValueError("first chunk has no resume delay")
+                source = {
+                    key: value
+                    for key, value in part.items()
+                    if key != "resume_after_endpoint_ms"
+                }
+                normalized_parts.append(
+                    dict(
+                        validate_turns(json.dumps([source]), settings)[0],
+                        resume_after_endpoint_ms=delay,
+                    )
+                )
+            item["chunks"] = normalized_parts
+            item["input_text"] = "\n".join(
+                part.get("input_text", "音频片段") for part in normalized_parts
+            )
+        elif "sensor" in turn:
             item["sensor"] = sensor_command(turn["sensor"])
             item["input_text"] = f"传感器 · {SENSOR_COMMANDS[item['sensor']]}"
         elif "text" in turn:
@@ -273,6 +313,16 @@ def prepare(output, env, *, name=None):
     for index, turn in enumerate(turns, 1):
         if "sensor" in turn:
             continue
+        if "chunks" in turn:
+            for number, chunk in enumerate(turn["chunks"], 1):
+                audio = inputs / f"turn-{index:03d}-chunk-{number:02d}.wav"
+                if "source_audio" in chunk:
+                    shutil.copyfile(chunk.pop("source_audio"), audio)
+                else:
+                    synthesize(chunk["input_text"], audio)
+                validate_audio(audio, settings["turn_timeout_seconds"])
+                chunk["audio"] = audio.relative_to(output).as_posix()
+            continue
         audio = inputs / f"turn-{index:03d}.wav"
         if "source_audio" in turn:
             shutil.copyfile(turn.pop("source_audio"), audio)
@@ -314,6 +364,7 @@ async def execute_prepared(output, env, settings, scenario):
         device_id=settings["device_id"],
         token=env.get("VAS_TOKEN") or None,
         diagnostics=settings["diagnostics"],
+        clock_sync=env.get("VAS_CLOCK_SYNC", "1") != "0",
     )
     result = await run_scenario(scenario, transport, output)
     result["run_metadata"] = settings

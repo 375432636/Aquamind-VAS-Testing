@@ -11,6 +11,56 @@ BASE = 100_000_000_000
 RATE = 16000
 
 
+def test_ptt_chunks_replay_uplink_offsets_and_use_last_input_end(tmp_path):
+    from voice_scenarios.reply_timing import input_end_event
+
+    item = turn(
+        tmp_path,
+        1,
+        [
+            event("first_audio_sent", 0),
+            event(
+                "input_audio_frame_sent",
+                0,
+                stream="uplink",
+                samples=960,
+                sample_rate=RATE,
+                pcm_offset_samples=0,
+                listen_turn_id=1,
+            ),
+            event("input_chunk_finished", 0.06),
+            event("listen_stop_sent", 0.06),
+            event(
+                "input_audio_frame_sent",
+                0.12,
+                stream="uplink",
+                samples=960,
+                sample_rate=RATE,
+                pcm_offset_samples=1920,
+                listen_turn_id=1,
+            ),
+            event("input_chunk_finished", 0.18),
+            event("listen_stop_sent", 0.18),
+            event("audio_send_completed", 0.18),
+        ],
+        [],
+        [],
+        input_settings={"mode": "manual"},
+    )
+    path = tmp_path / "chunks.wav"
+    wav(path, [12000] * 960 + [0] * 960 + [18000] * 960)
+    item["audio"].pop("input")
+    item["audio"]["uplink"] = str(path)
+    playback = prepare_session_playback({"turns": [item]}, tmp_path)
+    assert not any(
+        e["code"] == "input_audio_unavailable" for e in playback["limitations"]
+    )
+    left, _ = samples(tmp_path, playback)
+    assert left[:960] == (12000,) * 960
+    assert left[1920:2880] == (18000,) * 960
+    assert input_end_event(item) == "audio_send_completed"
+
+
 def event(name, seconds, **data):
     return {"event": name, "at_ns": BASE + round(seconds * 1e9), "data": data}
 

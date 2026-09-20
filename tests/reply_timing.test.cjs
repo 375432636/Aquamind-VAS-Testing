@@ -19,7 +19,7 @@ for (const status of ['invalid', 'estimated', 'partial', 'valid']) {
     if (usable) {
       assert.match(target.innerHTML, /report\.html\?t=14\.500#session-timeline/);
       assert.match(target.innerHTML, /14\.50 s → 14\.60 s/);
-      assert.match(target.innerHTML, status === 'partial' ? /未确认尾部/ : /时间与会话播放保持一致/);
+      assert.match(target.innerHTML, status === 'partial' ? /未确认区间/ : /时间与会话播放保持一致/);
     } else {
       assert.match(target.innerHTML, /播放时刻无法确认/);
       assert.match(target.innerHTML, /未记录播放时间/);
