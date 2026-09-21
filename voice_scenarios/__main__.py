@@ -11,40 +11,18 @@ from xml.etree import ElementTree as ET
 
 import yaml
 
+from aquamind_voice_report import generate_report
+
 from .dev_stack import ROOT, serve_stack
 from .failure_summary import failure_reasons
 from .model import SENSOR_COMMANDS, Scenario, Turn
-from .reply_audio import prepare_reply_audio
-from .report import build_report, evaluate
-from .report_archive import restore_audio
 from .runner import run_scenario
-from .session_chain import build_session_chain
-from .session_timing import prepare_session_playback
 from .websocket import WebSocketTransport
 
 
 def create_report(directory):
     directory = Path(directory)
-    restore_audio(directory)
-    result = json.loads((directory / "result.json").read_text())
-    path = directory / "vas-events.jsonl"
-    events = (
-        [json.loads(line) for line in path.read_text().splitlines()]
-        if path.exists()
-        else []
-    )
-    report = evaluate(result, events)
-    prepare_reply_audio(report, directory)
-    prepare_session_playback(report, directory)
-    report["session_chain"] = build_session_chain(report)
-    (directory / "report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2)
-    )
-    build_report(report, directory / "report.html")
-    metrics = {t["id"]: t["metrics"] for t in report["turns"]}
-    (directory / "metrics.json").write_text(
-        json.dumps(metrics, ensure_ascii=False, indent=2)
-    )
+    report = generate_report(directory)
     suite = ET.Element(
         "testsuite", name=report["name"], tests=str(len(report["turns"]) + 1)
     )

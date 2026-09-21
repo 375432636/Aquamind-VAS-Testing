@@ -1,16 +1,9 @@
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
+from aquamind_voice_report.events import Event
+
 from .model import InputStream
-
-
-@dataclass(frozen=True)
-class Event:
-    kind: str
-    data: dict = field(default_factory=dict)
-    at_ns: int = field(default_factory=time.monotonic_ns)
 
 
 class ConversationTransport(Protocol):

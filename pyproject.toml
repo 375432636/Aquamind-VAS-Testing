@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "voice-scenario-tests"
 version = "0.1.0"
 description = "Reusable audio conversation scenarios with timed interruptions"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = ["websockets>=14,<16", "PyYAML>=6,<7", "opuslib-next>=1.1,<2", "aiohttp>=3.13,<4"]
 
 [project.optional-dependencies]
@@ -16,7 +16,7 @@ test = ["pytest>=8,<9", "pytest-cov>=5,<7", "black>=25,<26", "isort>=6,<7"]
 voice-scenarios = "voice_scenarios.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["voice_scenarios*"]
+include = ["voice_scenarios*", "aquamind_voice_report*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -27,3 +27,4 @@ profile = "black"
 
 [tool.setuptools.package-data]
 voice_scenarios = ["*.html", "*.js", "*.css"]
+aquamind_voice_report = ["*.html", "*.js", "*.css"]
