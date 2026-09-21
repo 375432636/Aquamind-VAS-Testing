@@ -91,7 +91,7 @@ function timeline(id, lanes) {
     detail.hidden = false;
   };
 }
-if (!turn) renderSessionTimeline($('session-timeline'), report.session_playback);
+if (!turn) renderSessionTimeline($('session-timeline'), report.session_playback, report.session_chain);
 if (turn) {
   renderReplyTiming($('reply-timing'), turn.reply_timing, report.session_playback, report.turn_index);
   const events = turn.events || [], vas = turn.vas_events || [];

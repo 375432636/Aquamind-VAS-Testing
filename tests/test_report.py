@@ -1,6 +1,28 @@
 from voice_scenarios.report import build_report, evaluate
 
 
+def test_overview_contains_whole_session_client_and_vas_tracks(tmp_path):
+    result = {
+        "name": "two turns",
+        "status": "passed",
+        "turns": [
+            {"id": "one", "listen_turn_id": 1, "status": "completed", "events": []},
+            {"id": "two", "listen_turn_id": 2, "status": "completed", "events": []},
+        ],
+    }
+    report = evaluate(result, [])
+    report["session_playback"] = {
+        "status": "ready",
+        "path": "session.played.wav",
+        "duration_seconds": 10,
+    }
+    build_report(report, tmp_path / "report.html")
+    page = (tmp_path / "report.html").read_text()
+    assert 'id="session-vas-tracks"' in page
+    assert page.index('id="session-canvas"') < page.index('id="session-vas-tracks"')
+    assert "session_chain" in page
+
+
 def test_session_player_prefers_mixed_audio_and_retains_split_download(tmp_path):
     report = evaluate({"name": "完整对话", "status": "passed", "turns": []}, [])
     report["session_playback"] = {

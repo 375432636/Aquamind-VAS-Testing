@@ -28,6 +28,7 @@ async def run_scenario(
         "name": scenario.name,
         "status": "running",
         "turns": [],
+        "connection_started_at_ns": time.monotonic_ns(),
     }
     events = asyncio.Queue()
     collector = None
@@ -59,6 +60,10 @@ async def run_scenario(
         if getattr(transport, "diagnostics", "off") != "off":
             collector = DiagnosticCollector(output_dir, emit)
         result["session"] = await transport.connect(emit)
+        result["startup"] = {}
+        await _wait_for_greeting(
+            scenario, events, output_dir, player_factory, emit, result["startup"]
+        )
         for index, turn in enumerate(scenario.turns, 1):
             item = await _run_turn(
                 scenario,
@@ -94,6 +99,99 @@ async def run_scenario(
         journal.close()
         save_result(result, output_dir)
     return result
+
+
+async def _wait_for_greeting(scenario, events, directory, player_factory, sink, result):
+    """Consume connection output before any listen/start or microphone frames."""
+    started = time.monotonic_ns()
+    result.update(
+        status="waiting",
+        started_at_ns=started,
+        events=[],
+        audio={
+            "received": str(directory / "greeting.received.wav"),
+            "played": str(directory / "greeting.played.wav"),
+        },
+    )
+    player = player_factory(sink, directory / "greeting.played.wav")
+    writer = None
+    frames = 0
+    observed = stopped = drained = False
+    deadline = time.monotonic() + scenario.greeting_timeout_seconds
+    quiet = time.monotonic() + scenario.greeting_wait_seconds
+    try:
+        while True:
+            wake = min(deadline, quiet) if quiet is not None else deadline
+            try:
+                event = await asyncio.wait_for(
+                    events.get(), max(0, wake - time.monotonic())
+                )
+            except asyncio.TimeoutError:
+                if (
+                    quiet is not None
+                    and time.monotonic() >= quiet
+                    and (not observed or stopped and drained)
+                ):
+                    result["status"] = "completed" if observed else "not_observed"
+                    break
+                raise TimeoutError("greeting_timeout: first input was not sent")
+            data = {k: v for k, v in event.data.items() if k != "pcm"}
+            record = {"event": event.kind, "at_ns": event.at_ns, "data": data}
+            result["events"].append(record)
+            if (
+                event.kind == "vas_event"
+                and data.get("listen_turn_id") is None
+                and data.get("event")
+                in {"tts_first_text", "tts_text_enqueued", "tts_request_started"}
+            ):
+                observed = True
+                quiet = None
+            elif event.kind in {"tts_start", "tts_sentence_start", "pcm"}:
+                observed = True
+                quiet = None
+                if event.kind == "pcm":
+                    pcm, rate = event.data["pcm"], event.data["sample_rate"]
+                    if writer is None:
+                        writer = wave.open(result["audio"]["received"], "wb")
+                        writer.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+                    writer.writeframes(pcm)
+                    frames += 1
+                    data.update(
+                        bytes=len(pcm), output_kind="greeting", is_session_output=True
+                    )
+                    data["duration_ms"] = len(pcm) * 1000 / (rate * 2)
+                    record["event"] = "audio_received"
+                    player.feed(
+                        pcm,
+                        rate,
+                        {"audio_seq": data.get("audio_seq"), "is_session_output": True},
+                    )
+            elif event.kind == "tts_stop":
+                observed = stopped = True
+                result["server_stop_at_ns"] = event.at_ns
+                player.finish()
+                if not frames:
+                    drained = True
+                    result["playback_drained_at_ns"] = event.at_ns
+            elif event.kind == "playback_drained":
+                drained = True
+                result["playback_drained_at_ns"] = event.at_ns
+            elif event.kind in {"error", "disconnected"}:
+                raise RuntimeError(event.data.get("message", event.kind))
+            if stopped and drained:
+                quiet = time.monotonic() + scenario.settle_seconds
+        result["observed"] = observed
+        sink(
+            Event("greeting_ready", {"observed": observed, "status": result["status"]})
+        )
+    except Exception as exc:
+        result.update(status="failed", error=str(exc))
+        raise
+    finally:
+        await player.close()
+        if writer is not None:
+            writer.close()
+        result.update(ended_at_ns=time.monotonic_ns(), received_frames=frames)
 
 
 async def _run_turn(

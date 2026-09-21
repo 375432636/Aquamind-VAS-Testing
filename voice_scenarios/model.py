@@ -83,6 +83,8 @@ class Scenario:
     turn_timeout_seconds: float = 30
     settle_seconds: float = 0.2
     input: InputStream = field(default_factory=InputStream)
+    greeting_wait_seconds: float = 0.5
+    greeting_timeout_seconds: float = 60
 
     @classmethod
     def from_dict(cls, data, *, base_dir=Path.cwd()):
@@ -169,6 +171,14 @@ class Scenario:
                 data.get("settle_seconds", 0.2), "settle_seconds", allow_zero=True
             ),
             InputStream(**data.get("input", {})),
+            positive_number(
+                data.get("greeting_wait_seconds", 0.5),
+                "greeting_wait_seconds",
+                allow_zero=True,
+            ),
+            positive_number(
+                data.get("greeting_timeout_seconds", 60), "greeting_timeout_seconds"
+            ),
         )
 
     @classmethod

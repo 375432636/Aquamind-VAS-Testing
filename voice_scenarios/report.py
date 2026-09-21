@@ -8,6 +8,7 @@ from html import escape
 from pathlib import Path
 
 from .reply_timing import analyze_reply_timing, input_end_event
+from .session_chain import build_session_chain
 from .timeline import group_timeline_spans
 from .turn_attribution import attribute_mixed_turns
 
@@ -21,6 +22,9 @@ def delta(events, start, end, key):
 def evaluate(result, vas_events):
     report = copy.deepcopy(result)
     vas_events, failures = attribute_mixed_turns(report, vas_events)
+    report["session_vas_events"] = [
+        e for e in vas_events if e.get("listen_turn_id") is None
+    ]
     mixed = any(t.get("sensor") for t in report["turns"])
     tts_capabilities = next(
         (
@@ -413,7 +417,7 @@ def _overview(report):
         )
         + _session_panel(report)
         + '<section class="panel"><div class="section-heading"><div><h2>逐轮结果</h2>'
-        '<p>回听定位到整段会话；内部时序在独立页面查看。</p></div><span class="unit-label">时间单位 · 秒</span></div>'
+        '<p>上方总览覆盖全部轮次；可进入单轮查看详细事件。</p></div><span class="unit-label">时间单位 · 秒</span></div>'
         '<div class="table-scroll"><table class="turn-table"><thead><tr>'
         "<th>轮次 / 用户输入</th><th>首句声音</th><th>正式回复</th><th>过渡等待</th><th>结果</th><th></th>"
         "</tr></thead><tbody>"
@@ -462,8 +466,8 @@ def _session_panel(report):
     duration = playback.get("duration_seconds", 0)
     content = (
         '<section class="panel session-panel" id="session-timeline"><div class="section-heading">'
-        '<div><div class="eyebrow">SESSION PLAYBACK</div><h2>会话播放与等待</h2>'
-        "<p>客户端实时时间 · 开始发送音频 = 0 s</p></div>"
+        '<div><div class="eyebrow">SESSION TIMELINE</div><h2>完整会话 · 客户端与 VAS</h2>'
+        "<p>同一 session 的全部 turn · 上方客户端，下方 VAS · 共用横轴与缩放</p></div>"
         f'<span class="unit-label">全程 {_seconds(duration)} s</span></div>'
     )
     if path:
@@ -493,7 +497,8 @@ def _session_panel(report):
         '<div class="session-chart-layout"><div class="session-track-labels" aria-hidden="true">'
         '<span>用户语音</span><span>回复播放</span></div><div class="session-viewport" id="session-viewport">'
         '<div class="session-canvas" id="session-canvas" tabindex="0" role="group" '
-        'aria-label="会话时间轴，点击定位，拖动选择时间区间；也可在下方输入起止秒数"></div></div></div>'
+        'aria-label="会话时间轴，点击定位，拖动选择时间区间；也可在下方输入起止秒数"><div id="session-vas-tracks"></div></div></div></div>'
+        '<p id="session-alignment-note" class="session-capture-notice"></p>'
         '<div class="session-tools"><span class="measurement-hint">点击定位 · 拖动划线测量</span>'
         '<div class="measurement-controls" role="group" aria-label="时间区间测量">'
         '<label>起点 <input id="measure-start" type="number" min="0" step="0.01" placeholder="—" aria-label="测量起点，秒"> s</label>'
@@ -506,7 +511,7 @@ def _session_panel(report):
         '<details class="inline-disclosure"><summary>播放与计时口径</summary><div class="detail-body">'
         "<p>按客户端记录的发送、播放时间还原整段会话，保留句间与轮间空档。"
         "播放记录来自 Python 软件播放器，不代表设备扬声器的实测出声时刻。</p>"
-        "<p>语音输入结束是 WAV 素材发送结束，VAD 模式随后继续发送底噪。传感器以指令发出作为输入时刻，不生成输入音频。VAS 内部时钟在各轮详情中独立展示。</p>"
+        "<p>语音输入结束是 WAV 素材发送结束，VAD 模式随后继续发送底噪。上下两端通过双向收发事件估计同一时钟偏移，所有轮次使用同一个偏移，保留轮间间隔；跨端位置含网络时钟对齐误差，各阶段自身耗时来自 VAS 原始时钟。</p>"
     )
     if playback.get("playback_path"):
         content += "<p>默认回听混合用户与 VAS 的声音；分轨文件保留用户左声道、回复右声道的原始音频。</p>"
@@ -670,6 +675,7 @@ def build_report(report, path):
         )
     )
     display = copy.deepcopy(report)
+    display["session_chain"] = build_session_chain(display)
     for turn in display["turns"]:
         if "reply_timing" not in turn:
             turn["reply_timing"] = analyze_reply_timing(turn)
@@ -703,6 +709,9 @@ def build_report(report, path):
                     "turn": turn,
                     "turn_index": index + 1 if index is not None else None,
                     "session_playback": playback,
+                    "session_chain": (
+                        display["session_chain"] if index is None else None
+                    ),
                 },
                 ensure_ascii=False,
             )

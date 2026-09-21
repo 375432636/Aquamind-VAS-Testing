@@ -1,4 +1,4 @@
-function renderSessionTimeline(target, session = {}) {
+function renderSessionTimeline(target, session = {}, chain = {}) {
   if (!target) return;
   const canvas = document.getElementById('session-canvas');
   const viewport = document.getElementById('session-viewport');
@@ -9,7 +9,8 @@ function renderSessionTimeline(target, session = {}) {
   const result = document.getElementById('measure-duration');
   const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const seconds = value => value == null ? '—' : Number(value).toFixed(2) + ' s';
-  const duration = Math.max(0, Number(session.duration_seconds) || 0);
+  chain = chain || {};
+  const duration = Math.max(0, Number(session.duration_seconds) || 0, ...(chain.lanes || []).flatMap(lane => lane.segments.map(s => s.end_seconds)));
   const extent = Math.max(.01, duration);
   const percent = value => Math.max(0, Math.min(100, Number(value) / extent * 100));
   const clamp = value => Math.max(0, Math.min(duration, Number(value) || 0));
@@ -25,8 +26,9 @@ function renderSessionTimeline(target, session = {}) {
   function itemButton(item, className, caption, contents = '') {
     const id = items.push(item) - 1;
     const span = item.end_seconds - item.start_seconds;
-    const label = `第 ${item.turn_index} 轮 · ${item.label} · ${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} · ${seconds(span)}${item.text ? ' · ' + item.text : ''}`;
-    return `<button type="button" class="session-range ${className}" data-session-item="${id}" style="left:${percent(item.start_seconds)}%;width:${Math.max(0, span/extent*100)}%" title="${escape(label)}" aria-label="${escape(label)}">${contents}<span>${escape(caption)}</span></button>`;
+    const owner = item.turn_index ? `第 ${item.turn_index} 轮` : item.kind === 'greeting' ? '首次问候' : '会话事件';
+    const label = `${owner} · ${item.label} · ${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} · ${seconds(item.duration_seconds ?? span)}${item.text ? ' · ' + item.text : ''}`;
+    return `<button type="button" class="session-range ${className}" data-session-item="${id}" data-turn-index="${item.turn_index || 0}" style="left:${percent(item.start_seconds)}%;width:${Math.max(0, span/extent*100)}%;${span === 0 ? 'min-width:7px;' : ''}${item.subrow != null ? `top:${item.subrow*24}px;` : ''}" title="${escape(label)}" aria-label="${escape(label)}">${contents}<span>${escape(caption)}</span></button>`;
   }
   let inputBars = '', replyBars = '', turnLines = '', markers = '';
   turns.forEach(row => {
@@ -56,7 +58,35 @@ function renderSessionTimeline(target, session = {}) {
     const label = `第 ${row.turn_index} 轮 · ${markerLabels[row.kind] || row.kind} · ${seconds(row.at_seconds)}`;
     markers += `<button type="button" class="session-marker marker-${escape(row.kind)}" data-session-marker="${escape(row.kind)}" data-session-time="${Number(row.at_seconds)}" data-session-turn-index="${row.turn_index}" style="left:${percent(row.at_seconds)}%" title="${escape(label)}" aria-label="${escape(label)}"><i></i><span>${escape(markerLabels[row.kind] || row.kind)}</span></button>`;
   });
-  canvas.innerHTML = `<div class="session-ruler" id="session-ruler" aria-hidden="true"></div><div class="session-grid" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}<div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
+  let y = 218, clientTracks = '', vasTracks = '';
+  const labels = [{text:'客户端 · 输入',top:68},{text:'客户端 · 播放',top:137}];
+  function laneTrack(lane, vas) {
+    const ends = [];
+    const segments = [...(lane.segments || [])].sort((a,b)=>a.start_seconds-b.start_seconds);
+    const bars = segments.map(segment => {
+      let row = ends.findIndex(end => end <= segment.start_seconds);
+      if (row < 0) row = ends.length;
+      ends[row] = segment.end_seconds + (segment.end_seconds===segment.start_seconds ? extent*.005 : 0);
+      const item = {...segment,subrow:row,item_type:vas?'vas':'client',text:JSON.stringify(segment.data || {},null,2)};
+      return itemButton(item,`${vas?'range-vas':'range-client'} ${segment.start_seconds===segment.end_seconds?'range-event':''} ${segment.status==='unfinished'?'range-unfinished':''}`,`${segment.turn_index ? 'T'+segment.turn_index : '会话'} · ${segment.label}`);
+    }).join('');
+    const height = Math.max(24,ends.length*24);
+    labels.push({text:lane.label,top:y});
+    const html = `<div class="session-chain-track ${vas?'vas-track':'client-track'}" data-lane="${escape(lane.label)}" style="top:${y}px;height:${height}px">${bars}</div>`;
+    y += height+13;
+    return html;
+  }
+  (chain.client_lanes || []).forEach(lane => {clientTracks += laneTrack(lane,false);});
+  const divider = y + 9;
+  labels.push({text:'VAS 内部',top:divider,heading:true});
+  y += 44;
+  (chain.lanes || []).forEach(lane => {vasTracks += laneTrack(lane,true);});
+  if (!(chain.lanes || []).length) {vasTracks = `<div class="session-chain-empty" style="top:${y}px">VAS 时间轴缺少可对齐的诊断数据</div>`;y+=36;}
+  canvas.style.height = (y+24)+'px';
+  target.querySelector('.session-track-labels').innerHTML = labels.map(l=>`<span class="${l.heading?'track-heading':''}" style="top:${l.top}px">${escape(l.text)}</span>`).join('');
+  const alignment = chain.alignment || {};
+  document.getElementById('session-alignment-note').textContent = alignment.status === 'bounded' ? `VAS 与客户端使用同一会话横轴；收发事件估计的时钟对齐误差界限 ±${Number(alignment.uncertainty_ms).toFixed(2)} ms。所有 turn 共用一个偏移，未逐轮归零；阶段耗时取 VAS 原始记录。` : alignment.reason || '未采集 VAS 双向时间对齐证据。';
+  canvas.innerHTML = `<div class="session-ruler" id="session-ruler" aria-hidden="true"></div><div class="session-grid" aria-hidden="true"></div>${turnLines}<div class="session-input-track">${inputBars}</div><div class="session-reply-track">${replyBars}</div>${markers}${clientTracks}<div class="session-domain-divider" style="top:${divider}px"></div><div id="session-vas-tracks">${vasTracks}</div><div class="session-selection" id="session-selection" hidden><button type="button" class="measure-handle handle-start" data-measure-handle="start" aria-label="调整测量起点"></button><span id="selection-caption"></span><button type="button" class="measure-handle handle-end" data-measure-handle="end" aria-label="调整测量终点"></button></div><div class="session-playhead" id="session-playhead" aria-hidden="true"><span>0.00 s</span></div>`;
   const overlay = document.getElementById('session-selection');
   const caption = document.getElementById('selection-caption');
   const playhead = document.getElementById('session-playhead');
@@ -137,7 +167,7 @@ function renderSessionTimeline(target, session = {}) {
       body = `<p>${escape(descriptions[item.kind] || '未播放声音的等待区间')}</p>`;
     }
     const stats = item.item_type === 'input' && row ? `<div class="selected-turn-metrics"><span>输入结束 <b>${seconds(row.input_end_seconds)}</b></span><span>首包到达 <b>${seconds(row.first_received_seconds)}</b></span><span>首句播放 <b>${seconds(row.first_playback_seconds)}</b></span></div>` : '';
-    detail.innerHTML = `<div class="session-detail-heading"><span class="badge">第 ${item.turn_index} 轮</span><strong>${escape(item.label)}</strong><span class="detail-time">${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} <b>· ${seconds(item.end_seconds-item.start_seconds)}</b></span><a href="turn-${String(item.turn_index).padStart(3,'0')}.html">内部时序 ↗</a></div>${body}${stats}`;
+    detail.innerHTML = `<div class="session-detail-heading"><span class="badge">${item.turn_index ? '第 '+item.turn_index+' 轮' : item.kind === 'greeting' ? '首次问候' : '会话事件'}</span><strong>${escape(item.label)}</strong><span class="detail-time">${seconds(item.start_seconds)} → ${seconds(item.end_seconds)} <b>· ${item.status === 'unfinished' ? '未结束，图示截止采集末尾' : seconds(item.duration_seconds ?? (item.end_seconds-item.start_seconds))}</b></span>${item.turn_index ? `<a href="turn-${String(item.turn_index).padStart(3,'0')}.html">内部时序 ↗</a>` : ''}</div>${body}${stats}`;
   }
   function activate(element, time) {
     const itemButton = element.closest('[data-session-item]');

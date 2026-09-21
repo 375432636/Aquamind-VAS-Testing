@@ -18,6 +18,7 @@ from .reply_audio import prepare_reply_audio
 from .report import build_report, evaluate
 from .report_archive import restore_audio
 from .runner import run_scenario
+from .session_chain import build_session_chain
 from .session_timing import prepare_session_playback
 from .websocket import WebSocketTransport
 
@@ -35,6 +36,7 @@ def create_report(directory):
     report = evaluate(result, events)
     prepare_reply_audio(report, directory)
     prepare_session_playback(report, directory)
+    report["session_chain"] = build_session_chain(report)
     (directory / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2)
     )
