@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from voice_scenarios.web_server import ENDPOINTS, create_app
@@ -10,10 +11,10 @@ def test_live_exposes_both_5090_network_paths(tmp_path):
     async def run():
         async with TestClient(TestServer(create_app(tmp_path))) as client:
             config = await (await client.get("/api/config")).json()
-            assert config["endpoints"]["5090-tailscale"] == (
+            assert config["endpoints"]["5090-tailscale"]["ws_url"] == (
                 "wss://100.114.113.70:18443/looomyn/v1/"
             )
-            assert config["endpoints"]["5090-lan"] == (
+            assert config["endpoints"]["5090-lan"]["ws_url"] == (
                 "wss://10.10.95.179:18443/looomyn/v1/"
             )
             page = await (await client.get("/live/")).text()
@@ -30,7 +31,70 @@ def test_live_exposes_both_5090_network_paths(tmp_path):
                     },
                 )
                 assert response.status == 200
-                assert (await response.json())["ws_url"] == ENDPOINTS[environment]
+                assert (await response.json())["ws_url"] == ENDPOINTS[environment][
+                    "ws_url"
+                ]
+
+    asyncio.run(run())
+
+
+def test_live_supports_local_http_with_separate_ws_and_ota_ports(tmp_path):
+    async def run():
+        received = {}
+
+        async def ota(request):
+            received["headers"] = dict(request.headers)
+            received["body"] = await request.json()
+            return web.json_response(
+                {"websocket": {"url": "ws://127.0.0.1:8000/looomyn/v1/"}}
+            )
+
+        upstream = web.Application()
+        upstream.router.add_post("/looomyn/ota/", ota)
+        async with TestServer(upstream) as ota_server:
+            endpoints = {
+                "local": {
+                    "ws_url": "ws://127.0.0.1:8000/looomyn/v1/",
+                    "ota_url": str(ota_server.make_url("/looomyn/ota/")),
+                }
+            }
+            async with TestClient(
+                TestServer(create_app(tmp_path, endpoints=endpoints))
+            ) as client:
+                session_response = await client.post(
+                    "/api/sessions",
+                    json={
+                        "environment": "local",
+                        "device_id": "00:00:00:00:00:21",
+                        "recording": False,
+                    },
+                )
+                assert session_response.status == 200
+                assert (await session_response.json())["ws_url"] == endpoints["local"][
+                    "ws_url"
+                ]
+
+                ota_response = await client.post(
+                    "/api/ota",
+                    json={
+                        "environment": "local",
+                        "device_id": "00:00:00:00:00:21",
+                        "body": {
+                            "version": 2,
+                            "application": {
+                                "name": "aquamind-console",
+                                "version": "1.0.0",
+                            },
+                        },
+                    },
+                )
+                assert ota_response.status == 200
+                assert (await ota_response.json())["websocket"]["url"].startswith(
+                    "ws://"
+                )
+
+        assert received["headers"]["Device-Id"] == "00:00:00:00:00:21"
+        assert received["body"]["version"] == 2
 
     asyncio.run(run())
 
