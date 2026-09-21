@@ -11,10 +11,26 @@ from aiohttp import ClientSession, WSMsgType, web
 from .interactive_session import InteractiveSession
 
 ENDPOINTS = {
-    "dev": "wss://lumin-vas-aquamind-dev.deep-edge.cn/looomyn/v1/",
-    "main": "wss://lumin-vas-aquamind.deep-edge.cn/looomyn/v1/",
-    "5090-tailscale": "wss://100.114.113.70:18443/looomyn/v1/",
-    "5090-lan": "wss://10.10.95.179:18443/looomyn/v1/",
+    "dev": {
+        "ws_url": "wss://lumin-vas-aquamind-dev.deep-edge.cn/looomyn/v1/",
+        "ota_url": "https://lumin-vas-aquamind-dev.deep-edge.cn/looomyn/ota/",
+    },
+    "main": {
+        "ws_url": "wss://lumin-vas-aquamind.deep-edge.cn/looomyn/v1/",
+        "ota_url": "https://lumin-vas-aquamind.deep-edge.cn/looomyn/ota/",
+    },
+    "5090-tailscale": {
+        "ws_url": "wss://100.114.113.70:18443/looomyn/v1/",
+        "ota_url": "https://100.114.113.70:18443/looomyn/ota/",
+    },
+    "5090-lan": {
+        "ws_url": "wss://10.10.95.179:18443/looomyn/v1/",
+        "ota_url": "https://10.10.95.179:18443/looomyn/ota/",
+    },
+    "local": {
+        "ws_url": "ws://127.0.0.1:8000/looomyn/v1/",
+        "ota_url": "http://127.0.0.1:8003/looomyn/ota/",
+    },
 }
 
 
@@ -48,15 +64,16 @@ def create_app(output, endpoints=None):
             r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", config.get("device_id", "")
         ):
             raise web.HTTPBadRequest(text="请选择环境并填写有效 MAC")
+        endpoint = endpoints[config["environment"]]
         if config.get("recording", True) is False:
-            return web.json_response({"ws_url": endpoints[config["environment"]]})
+            return web.json_response({"ws_url": endpoint["ws_url"]})
         sid = uuid.uuid4().hex
         sessions[sid] = InteractiveSession(output / sid, config)
         return web.json_response(
             {
                 "id": sid,
                 "record_url": f"/api/sessions/{sid}/record",
-                "ws_url": endpoints[config["environment"]],
+                "ws_url": endpoint["ws_url"],
             }
         )
 
@@ -104,8 +121,10 @@ def create_app(output, endpoints=None):
         env = data.get("environment")
         if env not in endpoints:
             raise web.HTTPBadRequest()
-        uri = urlsplit(endpoints[env])
-        scheme = "https" if uri.scheme == "wss" else "http"
+        endpoint = endpoints[env]
+        ota_url = endpoint["ota_url"]
+        if urlsplit(ota_url).scheme not in {"http", "https"}:
+            raise web.HTTPBadRequest(text="OTA URL must use HTTP or HTTPS")
         headers = {
             "Device-Id": data.get("device_id", ""),
             "Client-Id": "aquamind-console",
@@ -115,7 +134,7 @@ def create_app(output, endpoints=None):
             headers["Authorization"] = "Bearer " + data["token"]
         async with ClientSession() as client:
             async with client.post(
-                f"{scheme}://{uri.netloc}/looomyn/ota/",
+                ota_url,
                 json=data.get("body", {}),
                 headers=headers,
                 timeout=15,

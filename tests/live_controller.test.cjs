@@ -36,6 +36,13 @@ test('5090 environment exposes Tailscale and LAN endpoint selection',async()=>{
  assert.equal(JSON.parse(requests.at(-1).body).environment,'5090-lan');
  assert.equal(elements.environment.disabled,true);assert.equal(elements['5090-address'].disabled,true);
 });
+test('local environment is sent without a 5090 address override',async()=>{
+ const {elements,requests}=await setup();await elements.finish.onclick();
+ elements.environment.value='local';elements.environment.onchange();
+ assert.equal(elements['5090-address-field'].hidden,true);
+ await elements.connect.onclick();
+ assert.equal(JSON.parse(requests.at(-1).body).environment,'local');
+});
 test('chat-only connects without diagnostics, clock sync, recording socket or reports',async()=>{
  const {elements,sent,record,peer,requests,sockets}=await setup({recording:false});
  assert.equal(JSON.parse(requests[0].body).recording,false);
