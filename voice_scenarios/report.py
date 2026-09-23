@@ -856,14 +856,19 @@ def _session_panel(report):
     playback = report.get("session_playback", {})
     trace = playback.get("vas_timeline", {})
     calibrated = (trace.get("clock_sync") or {}).get("status") == "calibrated"
+    alignment = trace.get("alignment") or {}
     clock_label = (
-        "北京时间 UTC+8 · 会话起点 = 0 s · "
-        + ("VAS 已校准至客户端" if calibrated else "两端未校时")
-        if trace.get("mode") == "wall"
+        f"相对时间 · 会话起点 = 0 s · 控制信号与同序号音频包近似对齐，偏移范围 ±{alignment['uncertainty_ms']:.3f} ms；单向网络耗时未采集"
+        if trace.get("mode") == "bounded"
         else (
-            "相对时间 · 客户端与 VAS 各自从 0 s 开始，不能跨来源相减"
-            if trace.get("lanes")
-            else "客户端实时时间 · 开始发送音频 = 0 s"
+            "北京时间 UTC+8 · 会话起点 = 0 s · "
+            + ("VAS 已校准至客户端" if calibrated else "两端未校时")
+            if trace.get("mode") == "wall"
+            else (
+                "相对时间 · 客户端与 VAS 各自从 0 s 开始，不能跨来源相减"
+                if trace.get("lanes")
+                else "客户端实时时间 · 开始发送音频 = 0 s"
+            )
         )
     )
     path = playback.get("playback_path") or playback.get("path")
@@ -1305,7 +1310,7 @@ def build_report(report, path):
             raw_turn, raw_display.get("client_clock")
         )
     raw_display["session_playback"]["vas_timeline"] = session_trace_timeline(
-        raw_display
+        raw_display, use_packet_alignment=False
     )
     add_key_moment_lanes(raw_display)
     environment = display.get("run_metadata", {}).get("environment", "本地报告")
@@ -1326,7 +1331,14 @@ def build_report(report, path):
             sync_label = f"跨端已校准 · 偏移 {sync['offset_ns']/1e9:+.6f} s · 采样不确定范围 ±{sync['uncertainty_ns']/1e9:.6f} s"
         elif sync.get("status") == "unstable":
             sync_label = "校准不稳定，已保留原始时间；请检查时钟变化或连接归属"
-        notice = f'<div class="notice"><span id="clock-sync-status">{_text(sync_label)}</span> · <a href="?clock=raw">原始时间</a> / <a href="?clock=calibrated">校准时间</a></div>'
+        alignment = playback.get("vas_timeline", {}).get("alignment") or {}
+        if alignment.get("status") == "bounded":
+            sync_label = (
+                "跨端已按控制信号与同序号音频包近似对齐 · "
+                f"偏移范围 ±{alignment['uncertainty_ms']:.3f} ms · "
+                "单向网络耗时未采集"
+            )
+        notice = f'<div class="notice"><span id="clock-sync-status">{_text(sync_label)}</span> · <a href="?clock=raw">原始时间</a> / <a href="?clock=calibrated">对齐时间</a></div>'
         encoded = (
             json.dumps(
                 {

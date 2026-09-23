@@ -15,19 +15,32 @@ def _first(items):
     return min(items, key=lambda p: p["plot_start_ns"], default=None)
 
 
-def _interval(left, right, absolute):
+def _interval(left, right, absolute, alignment=None):
     same = left["source"] == right["source"] and left.get("clock_id") == right.get(
         "clock_id"
     )
     same = same and (left["source"] == "client" or left.get("clock_id") is not None)
     calibration = left.get("clock_calibration") or right.get("clock_calibration")
+    bounded = (
+        alignment
+        and alignment.get("status") == "bounded"
+        and all(
+            point["source"] == "client"
+            or point.get("clock_id") == alignment.get("clock_id")
+            for point in (left, right)
+        )
+    )
     basis = (
         "monotonic"
         if same
         else (
-            ("wall_calibrated" if calibration else "wall_unaligned")
-            if absolute
-            else "unavailable"
+            "causal_bounded"
+            if bounded
+            else (
+                ("wall_calibrated" if calibration else "wall_unaligned")
+                if absolute
+                else "unavailable"
+            )
         )
     )
     delta = (
@@ -43,19 +56,29 @@ def _interval(left, right, absolute):
         duration_seconds=None if basis == "unavailable" else delta,
         clock_basis=basis,
         uncertainty_seconds=(
-            calibration["uncertainty_ns"] / 1e9 if calibration and not same else None
+            alignment["uncertainty_ms"] / 1000
+            if bounded and not same
+            else (
+                calibration["uncertainty_ns"] / 1e9
+                if calibration and not same
+                else None
+            )
         ),
         note=(
             "同一时钟的实际时间差"
             if same
             else (
-                (
-                    f"跨端校准估计，采样不确定范围 ±{calibration['uncertainty_ns'] / 1e9:.6f} 秒；不等同于纯网络耗时"
-                    if calibration
-                    else "跨端墙钟差，未校时；包含时钟偏差，不等同于网络耗时"
+                f"控制信号与同序号音频包的因果界限估计，偏移范围 ±{alignment['uncertainty_ms'] / 1000:.6f} 秒；不等同于纯网络耗时"
+                if bounded
+                else (
+                    (
+                        f"跨端校准估计，采样不确定范围 ±{calibration['uncertainty_ns'] / 1e9:.6f} 秒；不等同于纯网络耗时"
+                        if calibration
+                        else "跨端墙钟差，未校时；包含时钟偏差，不等同于网络耗时"
+                    )
+                    if absolute
+                    else "缺少共同墙钟，不计算跨端间隔"
                 )
-                if absolute
-                else "缺少共同墙钟，不计算跨端间隔"
             )
         ),
     )
@@ -111,7 +134,14 @@ def _turn_rows(turn, index, own, playback):
                 markers=points,
                 segments=[],
                 intervals=(
-                    [_interval(left, right, trace["mode"] == "wall")]
+                    [
+                        _interval(
+                            left,
+                            right,
+                            trace["mode"] == "wall",
+                            trace.get("alignment"),
+                        )
+                    ]
                     if left and right
                     else []
                 ),

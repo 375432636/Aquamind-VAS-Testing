@@ -3,6 +3,7 @@
 import copy
 
 from .reply_timing import playback_clock
+from .session_chain import build_session_chain
 from .timeline import group_timeline_spans, request_spans
 from .tts_evidence import tts_segment_evidence
 
@@ -184,10 +185,19 @@ def combined_timeline(turn, client_clock, clock_sync=None):
     }
 
 
-def session_trace_timeline(report):
+def session_trace_timeline(report, use_packet_alignment=True):
     """Retain every turn's lane structure on the unchanged session playback scale."""
     playback = report.get("session_playback", {})
     zero = playback.get("zero_at_ns")
+    alignment = None
+    if (
+        use_packet_alignment
+        and isinstance(zero, int)
+        and (report.get("clock_sync") or {}).get("status") != "calibrated"
+    ):
+        candidate = build_session_chain(report)["alignment"]
+        if candidate["status"] == "bounded":
+            alignment = candidate
     wall_zero = (
         client_wall_time(zero, report.get("client_clock")) if zero is not None else None
     )
@@ -224,8 +234,10 @@ def session_trace_timeline(report):
         )
         if chart["lanes"]:
             charts.append((index, chart))
-    absolute = wall_zero is not None and all(
-        chart["mode"] == "wall" for _, chart in charts
+    absolute = (
+        alignment is None
+        and wall_zero is not None
+        and all(chart["mode"] == "wall" for _, chart in charts)
     )
     local_zeros = {}
     for _, chart in charts:
@@ -245,11 +257,15 @@ def session_trace_timeline(report):
                     if f"{key}_ns" not in item:
                         continue
                     item[f"plot_{key}_ns"] = (
-                        item[f"plot_{key}_ns"]
-                        + chart["origin_wall_time_ns"]
-                        - wall_zero
-                        if absolute
-                        else item[f"{key}_ns"] - local_zeros[item.get("clock_id")]
+                        item[f"{key}_ns"] + alignment["offset_ns"] - zero
+                        if alignment and item.get("clock_id") == alignment["clock_id"]
+                        else (
+                            item[f"plot_{key}_ns"]
+                            + chart["origin_wall_time_ns"]
+                            - wall_zero
+                            if absolute
+                            else item[f"{key}_ns"] - local_zeros[item.get("clock_id")]
+                        )
                     )
                     bounds.append(item[f"plot_{key}_ns"] / 1e9)
             lanes.append(lane)
@@ -257,7 +273,8 @@ def session_trace_timeline(report):
     bounds.extend(m["at_seconds"] for m in playback.get("media_markers", []))
     return {
         "clock_sync": report.get("clock_sync"),
-        "mode": "wall" if absolute else "relative",
+        "alignment": alignment,
+        "mode": "bounded" if alignment else "wall" if absolute else "relative",
         "time_zone": "Asia/Shanghai",
         "origin_wall_time_ms": wall_zero / 1e6 if absolute else None,
         "axis_start_seconds": min(bounds),

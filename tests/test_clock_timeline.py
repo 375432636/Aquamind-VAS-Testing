@@ -163,6 +163,59 @@ def test_old_session_does_not_align_vas_to_client_turn_starts():
     assert chart["origin_wall_time_ms"] is None
 
 
+def test_session_uses_one_bounded_wire_offset_when_probe_is_missing():
+    report = session_example()
+    del report["client_clock"]
+    for index, turn in enumerate(report["turns"], 1):
+        client_at = (10 + 20 * (index - 1)) * SECOND
+        server_at = (100 + 20 * (index - 1)) * SECOND
+        turn["events"].extend(
+            [
+                {
+                    "event": "listen_start_sent",
+                    "at_ns": client_at,
+                    "data": {"listen_turn_id": index},
+                },
+                {
+                    "event": "audio_packet_received",
+                    "at_ns": client_at + 1_200_000_000,
+                    "data": {"audio_seq": index},
+                },
+            ]
+        )
+        turn["vas_events"].extend(
+            [
+                {
+                    "event": "listen_start_received",
+                    "monotonic_ns": server_at + 100_000_000,
+                    "clock_id": "vas-1",
+                    "listen_turn_id": index,
+                    "data": {},
+                },
+                {
+                    "event": "audio_output_frame",
+                    "monotonic_ns": server_at + SECOND,
+                    "clock_id": "vas-1",
+                    "listen_turn_id": index,
+                    "data": {"audio_seq": index},
+                },
+            ]
+        )
+    original = copy.deepcopy(report)
+    chart = session_trace_timeline(report)
+    assert chart["mode"] == "bounded"
+    assert chart["alignment"]["status"] == "bounded"
+    assert chart["alignment"]["uncertainty_ms"] == 150
+    assert [lane["segments"][0]["plot_start_ns"] for lane in chart["lanes"]] == [
+        50_000_000,
+        20 * SECOND + 50_000_000,
+    ]
+    assert report == original
+    assert (
+        session_trace_timeline(report, use_packet_alignment=False)["mode"] == "relative"
+    )
+
+
 def test_session_level_spans_before_playback_and_orphan_markers_are_retained():
     report = session_example()
     greeting = copy.deepcopy(report["turns"][0]["vas_events"])

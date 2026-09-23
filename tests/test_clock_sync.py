@@ -102,6 +102,20 @@ def test_timeline_subtitle_reports_applied_calibration():
     assert "两端未校时" in _session_panel({"session_playback": playback})
 
 
+def test_timeline_subtitle_identifies_packet_alignment_as_estimate():
+    from voice_scenarios.report import _session_panel
+
+    playback = {
+        "vas_timeline": {
+            "mode": "bounded",
+            "alignment": {"status": "bounded", "uncertainty_ms": 0.581},
+        }
+    }
+    html = _session_panel({"session_playback": playback})
+    assert "同序号音频包" in html
+    assert "±0.581 ms" in html
+
+
 def test_python_probe_correlates_and_keeps_five_samples():
     import asyncio
     import time

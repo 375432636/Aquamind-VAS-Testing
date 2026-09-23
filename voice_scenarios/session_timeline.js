@@ -42,7 +42,7 @@ function sessionTimelineScale(session) {
   };
 }
 function timelineLaneVisible(category, mode) {
-  return mode === 'all' || (mode === 'details' ? category !== 'key_moments' : category === 'key_moments');
+  return mode === 'all' || (mode === 'details' ? category !== 'key_moments' : category === 'key_moments' || category === 'tts_pipeline');
 }
 function timelineViewMode(preferred, lanes) {
   const mode = ['key','details','all'].includes(preferred) ? preferred : 'key';
@@ -87,7 +87,7 @@ function renderSessionTimeline(target, session = {}) {
   let viewMode = timelineViewMode(preferredView, vasLanes);
   target.querySelector('.session-tools').insertAdjacentHTML('afterend', `<div class="friendly-tools">
     <button data-friendly="expand" aria-pressed="false">展开时间轴</button><button data-friendly="snap" aria-pressed="true">磁吸：开</button><button data-friendly="current">定位当前轮</button>
-    <label class="timeline-view-picker">显示 <select data-timeline-view aria-label="时间轴显示内容"><option value="key">只看关键点</option><option value="details">只看详细环节</option><option value="all">全部显示</option></select></label>
+    <label class="timeline-view-picker">显示 <select data-timeline-view aria-label="时间轴显示内容"><option value="key">关键点与 TTS</option><option value="details">只看详细环节</option><option value="all">全部显示</option></select></label>
     <button data-friendly="zoom-selection">放大选区</button><button data-friendly="play-selection">播放选区</button>
     <button data-friendly="loop" aria-pressed="false">循环选区</button>
     <label>长等待 ≥ <input data-wait-threshold type="number" min="0" step="0.5" value="3"> s</label>
@@ -379,7 +379,7 @@ function renderSessionTimeline(target, session = {}) {
     mediaGroups = groupMediaMarkers(mediaPoints, extent, width*zoom);
     const mediaLayout=layoutTimelineFlags(mediaGroups.map(group=>({x:percent(group[0].at_seconds)/100*width*zoom,width:28})),width*zoom);
     vasTop=pinnedHeight+26+(mediaGroups.length?mediaLayout.rows*30+8:0);
-    if(vasLanes.length){const heading=canvas.querySelector('.session-vas-heading');heading.style.top=(vasTop-26)+'px';heading.textContent=viewMode==='key'?'关键时序 · 每行比较两个点 · 点击连线测量':viewMode==='details'?'详细环节 · 点击时间条展开事件':'关键点与详细环节';canvas.querySelector('#session-vas').style.top=vasTop+'px';labelRoot.querySelector('.session-vas-labels').style.top=vasTop+'px';}
+    if(vasLanes.length){const heading=canvas.querySelector('.session-vas-heading');heading.style.top=(vasTop-26)+'px';heading.textContent=viewMode==='key'?'关键时序与 TTS 事件 · 点击查看时间':viewMode==='details'?'详细环节 · 点击时间条展开事件':'关键点与详细环节';canvas.querySelector('#session-vas').style.top=vasTop+'px';labelRoot.querySelector('.session-vas-labels').style.top=vasTop+'px';}
     canvas.querySelector('.session-media-markers').innerHTML = mediaGroups.map((group,index)=> {
       const caption = group.map(marker=>`第 ${marker.turn_index} 轮期间 · ${marker.label} · ${seconds(marker.at_seconds)}`).join(' / ');
       return `<button type="button" class="session-media-marker" data-session-media="${index}" style="left:${percent(group[0].at_seconds)}%;top:${mediaLayout.items[index].row*30}px" title="${escape(caption)}" aria-label="${escape(caption)}">${mediaMarkerIcon(group)}</button>`;

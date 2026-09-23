@@ -15,6 +15,7 @@
 .session-vas-label{padding:10px 8px 8px 0;border-top:1px solid #edf0f5;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
 .session-vas{position:absolute;left:0;right:0}
 .session-vas .lane{display:block;min-height:76px;box-sizing:border-box}
+.session-vas .lane[hidden],.session-vas-label[hidden]{display:none}
 .session-vas .track{background:none}
 .session-vas .timeline-plot{position:relative}
 .session-vas-heading{position:absolute;left:0;right:0;font-size:11px;font-weight:600;color:#546c8b;padding:8px 0;border-top:2px solid #dce5f0;background:#f8fafd}

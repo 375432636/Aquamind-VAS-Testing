@@ -105,6 +105,13 @@ test('legacy relative chart keeps genuine server wall times only in details',()=
   assert.match(detail.textContent,/北京时间.*2026-09-15 00:00:00/);
 });
 
+test('bounded alignment labels server wall timestamps as raw in event details',()=>{
+  const {root,detail,render}=renderer();
+  render('combined',[{label:'VAS',segments:[],markers:[{label:'ASR',start:0,wall_time_ms:Date.UTC(2026,8,14,16,0,0)}]}],{mode:'bounded'});
+  root.onclick({target:{closest:()=>({dataset:{markerIndex:'0'}})}});
+  assert.match(detail.textContent,/VAS 原始北京时间/);
+});
+
 test('embedded VAS lanes use the session extent and common details without a second ruler',()=>{
   const {root,render,measurements}=renderer();
   const detail={hidden:true,textContent:''};

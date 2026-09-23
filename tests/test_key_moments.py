@@ -179,6 +179,23 @@ def test_relative_clocks_have_no_cross_domain_elapsed():
     assert all(i["duration_seconds"] is None for i in cross)
 
 
+def test_bounded_alignment_reports_cross_domain_uncertainty():
+    r = sample()
+    trace = r["session_playback"]["vas_timeline"]
+    trace["mode"] = "bounded"
+    trace["alignment"] = {"status": "bounded", "clock_id": "vas", "uncertainty_ms": 150}
+    rows = keys(r)
+    cross = [
+        i
+        for row in rows
+        for i in row["intervals"]
+        if i["clock_basis"] == "causal_bounded"
+    ]
+    assert len(cross) == 3
+    assert all(i["uncertainty_seconds"] == 0.15 for i in cross)
+    assert all("因果界限" in i["note"] for i in cross)
+
+
 def test_browser_ptt_uses_first_recorded_frame_not_keydown():
     r = sample()
     r["turns"][0]["events"][1]["event"] = "input_audio_frame_sent"

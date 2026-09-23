@@ -4,9 +4,8 @@ if (typeof location !== 'undefined' && /(?:[?&])clock=raw(?:&|$)/.test(location.
   const label = document.getElementById('clock-sync-status');
   if (label) label.textContent = '原始时间 · 未应用跨端校准';
   const timelineLabel = document.getElementById('session-clock-label');
-  if (timelineLabel?.textContent?.startsWith('北京时间')) {
-    timelineLabel.textContent = '北京时间 UTC+8 · 会话起点 = 0 s · 原始时间，未应用跨端校准';
-  }
+  if (timelineLabel && report.session_playback?.vas_timeline?.mode === 'relative') timelineLabel.textContent = '相对时间 · 客户端与 VAS 各自从 0 s 开始，不能跨来源相减';
+  else if (timelineLabel?.textContent?.startsWith('北京时间')) timelineLabel.textContent = '北京时间 UTC+8 · 会话起点 = 0 s · 原始时间，未应用跨端校准';
 }
 const turn = report.turn;
 const $ = id => document.getElementById(id);
@@ -108,7 +107,7 @@ function keyDuration(interval) {
   if(!interval) return '未采集';
   if(interval.duration_seconds==null) return '不可比较';
   const value=interval.duration_seconds.toFixed(3)+' s';
-  return interval.clock_basis==='wall_unaligned' ? '≈ '+value+' · 未校时' : value;
+  return interval.clock_basis==='wall_unaligned' ? '≈ '+value+' · 未校时' : interval.clock_basis==='causal_bounded' ? '≈ '+value+' ± '+(interval.uncertainty_seconds*1000).toFixed(3)+' ms' : value;
 }
 function traceLabel(lane) {
   if(lane.category==='key_moments') {
@@ -143,7 +142,7 @@ function timeline(id, lanes, clock = {}, options = {}) {
   const timeZero = options.time_zero_ns ?? zero;
   const range = Math.max(100000000, end-zero);
   const durationSeconds = item => item.duration_ms != null ? item.duration_ms/1000 : (item.end-item.start)/1e9;
-  const title = item => `${options.embedded ? (item.turn_index == null ? '会话级 · ' : '第 '+item.turn_index+' 轮 · ') : ''}${item.label}${item.thinking_mode && !item.label.includes(item.thinking_mode) ? ' · ' + item.thinking_mode : ''}${item.segment_number ? ' #' + item.segment_number : ''}${item.wall_time_ms != null ? ' · 北京时间 ' + beijingTime(item.wall_time_ms,true) : ''} · 开始 ${((item.start-timeZero)/1e9).toFixed(3)} s${item.end != null ? ' · 结束 ' + sec((item.end-timeZero)/1e9) + ' s · 耗时 ' + sec(durationSeconds(item)) + ' s' : ''}${item.status && item.status !== 'ok' ? ' · ' + item.status : ''}`;
+  const title = item => `${options.embedded ? (item.turn_index == null ? '会话级 · ' : '第 '+item.turn_index+' 轮 · ') : ''}${item.label}${item.thinking_mode && !item.label.includes(item.thinking_mode) ? ' · ' + item.thinking_mode : ''}${item.segment_number ? ' #' + item.segment_number : ''}${item.wall_time_ms != null ? (clock.mode === 'bounded' ? ' · VAS 原始北京时间 ' : ' · 北京时间 ') + beijingTime(item.wall_time_ms,true) : ''} · 开始 ${((item.start-timeZero)/1e9).toFixed(3)} s${item.end != null ? ' · 结束 ' + sec((item.end-timeZero)/1e9) + ' s · 耗时 ' + sec(durationSeconds(item)) + ' s' : ''}${item.status && item.status !== 'ok' ? ' · ' + item.status : ''}`;
   function bar(item, laneIndex) {
     const index = all.indexOf(item);
     const duration = item.end != null;

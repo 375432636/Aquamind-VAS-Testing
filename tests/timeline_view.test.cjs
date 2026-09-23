@@ -28,6 +28,20 @@ test('overview and turn views restore all three preferences, old reports keep th
   assert.equal(mode('key', [{category:'llm_request'}]), 'details');
 });
 
+test('default key view exposes observed TTS pipeline events alongside the TTS timing pair', () => {
+  const {timelineLaneVisible: visible, timelineViewMode: mode} = helpers();
+  const lanes = [{category:'key_moments'}, {category:'tts_pipeline'}, {category:'llm_request'}];
+  assert.equal(mode(null, lanes), 'key');
+  assert.equal(visible('tts_pipeline', 'key'), true);
+  assert.equal(visible('tts_pipeline', 'details'), true);
+  assert.equal(visible('llm_request', 'key'), false);
+});
+
+test('hidden timeline rows and labels are removed from layout by report CSS', () => {
+  const css = readFileSync('voice_scenarios/session_timeline.css', 'utf8');
+  assert.match(css, /\.session-vas \.lane\[hidden\]\s*,\s*\.session-vas-label\[hidden\]\s*\{\s*display:\s*none\s*;?\s*\}/);
+});
+
 test('opening and closing evidence details resizes matching labels and releases old height',()=>{
   const sync = vm.runInNewContext(readFileSync('voice_scenarios/session_timeline.js','utf8')+'\nsyncTimelineRowHeights;');
   function node(height,hidden=false){return {height,hidden,style:{minHeight:'400px'},getBoundingClientRect(){return {height:Math.max(this.height,parseFloat(this.style.minHeight)||0)};}};}
