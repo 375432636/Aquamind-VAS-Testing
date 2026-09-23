@@ -26,14 +26,16 @@ jobs:
         uses: ./.github/actions/test-image
       - name: 检查格式
         run: |
-          bash .github/actions/test-image/run.sh python -m black --check main.py voice_scenarios tests
-          bash .github/actions/test-image/run.sh python -m isort --check-only main.py voice_scenarios tests
+          bash .github/actions/test-image/run.sh python -m black --check main.py voice_scenarios tests scripts
+          bash .github/actions/test-image/run.sh python -m isort --check-only main.py voice_scenarios tests scripts
       - name: 测试时间轴交互
         run: node --test tests/*.test.cjs
       - name: 运行测试
         env:
           CI_REPORT_DIR: artifacts/ci-example
           CI_BATCH_REPORT_DIR: artifacts/batch-example
+          CI_PERSONA_REPORT_DIR: artifacts/persona-example
+          CI_TIMELINE_REPORT_DIR: artifacts/timeline-clock-example
         run: bash .github/actions/test-image/run.sh python -m pytest --cov-config=.coveragerc-client --cov=voice_scenarios --cov-fail-under=80 --cov-report=term-missing --cov-report=xml:artifacts/coverage.xml --junitxml=artifacts/junit.xml
       - name: 保存测试结果
         if: always()
@@ -45,5 +47,7 @@ jobs:
             artifacts/junit.xml
             artifacts/ci-example/
             artifacts/batch-example/
+            artifacts/persona-example/
+            artifacts/timeline-clock-example/
           if-no-files-found: warn
           retention-days: 14

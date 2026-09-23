@@ -1,0 +1,13 @@
+name: Looomyn · DEV 三轮冒烟
+device_id: "30:ED:A0:A6:23:A4"
+environment: dev
+input_mode: vad
+turn_timeout_seconds: 90
+evaluation:
+  persona: Looomyn
+  knowledge_base_count: 1
+  focus: 人设与 MCP 调用
+turns:
+  - {tool: 人设, text: 你是谁}
+  - {tool: MCP-黄历, text: 帮我看一下明天的黄历}
+  - {tool: MCP-天气, text: 明天深圳天气如何}

@@ -86,7 +86,7 @@ def test_milestones_use_request_and_segment_ids_and_keep_embedding_overlap():
         event("guardrail_released", None, 1.6),
     ]
     lanes = group_timeline_spans(spans, events)
-    llm = next(l for l in lanes if l["label"] == "LLM #1")
+    llm = next(l for l in lanes if l["label"] == "LLM #1 · 未采集")
     tts = next(l for l in lanes if l["category"] == "tts_request")
     guard = next(l for l in lanes if l["category"] == "guardrail_embedding")
     assert [m["event"] for m in llm["markers"]] == ["llm_first_token"]
@@ -140,3 +140,22 @@ def test_nonstream_asr_is_not_labelled_as_upload_time():
     request = span("asr_request", "local", 0, 10)
     request["data"]["mode"] = "NON_STREAM"
     assert group_timeline_spans([request], [])[0]["label"] == "ASR 识别请求"
+
+
+def test_vad_has_its_own_lane_and_distinct_role():
+    from voice_scenarios.timeline import group_timeline_spans
+
+    lanes = group_timeline_spans(
+        [],
+        [
+            {
+                "event": "local_vad_endpoint_detected",
+                "monotonic_ns": 100,
+                "clock_id": "s",
+                "data": {},
+                "status": "ok",
+            }
+        ],
+    )
+    assert lanes[0]["category"] == "vad"
+    assert lanes[0]["markers"][0]["role"] == "vad"

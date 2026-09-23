@@ -6,6 +6,8 @@ import wave
 from dataclasses import asdict
 from pathlib import Path
 
+from .clock_sync import ClockSyncSamples
+from .clock_timeline import client_wall_time
 from .diagnostics import DiagnosticCollector
 from .player import ClockedPlayer
 from .protocol import Event
@@ -23,18 +25,38 @@ async def run_scenario(
     """Run all turns on one connection; preserve partial results on failure."""
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Capture once before connecting. Optional server calibration stays separate;
+    # no extra wall-clock syscall per audio frame, playback stays monotonic.
+    client_clock = {
+        "monotonic_ns": time.monotonic_ns(),
+        "wall_time_ns": time.time_ns(),
+    }
     result = {
         "schema_version": 1,
         "name": scenario.name,
         "status": "running",
         "turns": [],
-        "connection_started_at_ns": time.monotonic_ns(),
+        "client_clock": client_clock,
+        "connection_started_at_ns": client_clock["monotonic_ns"],
     }
+    if scenario.evaluation:
+        result["evaluation"] = scenario.evaluation
+        result["evaluation_turns"] = [
+            {"id": turn.id, "tool": turn.tool, "input_text": turn.input_text}
+            for turn in scenario.turns
+        ]
     events = asyncio.Queue()
     collector = None
     journal = (output_dir / "client-events.jsonl").open("w")
 
+    clock_samples = ClockSyncSamples()
+
     def emit(event):
+        if event.kind == "clock_sync_samples":
+            clock_samples.samples.extend(event.data["samples"])
+            result["clock_sync"] = clock_samples.summary()
+        if event.kind == "connection_started":
+            result["connection_started_at_ns"] = event.at_ns
         if collector:
             if event.kind == "diagnostics_started":
                 collector.bind_session(event.data["server_session_id"])
@@ -49,20 +71,30 @@ async def run_scenario(
             "clock_id": "python-process",
             "event": event.kind,
             "monotonic_ns": event.at_ns,
+            "wall_time_ns": client_wall_time(event.at_ns, client_clock),
             "data": {k: v for k, v in event.data.items() if k != "pcm"},
         }
         if event.kind != "vas_event":
             journal.write(json.dumps(record, ensure_ascii=False) + "\n")
             journal.flush()
-        events.put_nowait(event)
+        if event.kind not in {"clock_sync_samples", "clock_sync_unavailable"}:
+            events.put_nowait(event)
 
     try:
         if getattr(transport, "diagnostics", "off") != "off":
             collector = DiagnosticCollector(output_dir, emit)
         result["session"] = await transport.connect(emit)
+        if hasattr(transport, "start_clock_sync"):
+            transport.start_clock_sync(client_clock)
         result["startup"] = {}
         await _wait_for_greeting(
-            scenario, events, output_dir, player_factory, emit, result["startup"]
+            scenario,
+            events,
+            output_dir,
+            player_factory,
+            emit,
+            result["startup"],
+            client_clock,
         )
         for index, turn in enumerate(scenario.turns, 1):
             item = await _run_turn(
@@ -74,11 +106,22 @@ async def run_scenario(
                 index,
                 player_factory,
                 emit,
+                client_clock=client_clock,
             )
             result["turns"].append(item)
             save_result(result, output_dir)
             if item["status"] == "failed":
-                break
+                if index < len(scenario.turns):
+                    item["recovery"] = await _recover_turn(
+                        transport,
+                        events,
+                        item,
+                        scenario.settle_seconds,
+                        client_clock=client_clock,
+                    )
+                    save_result(result, output_dir)
+                    if item["recovery"]["status"] != "recovered":
+                        break
         result["status"] = (
             "passed"
             if len(result["turns"]) == len(scenario.turns)
@@ -86,8 +129,27 @@ async def run_scenario(
             else "failed"
         )
     except Exception as exc:
-        result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        result.update(
+            status="failed",
+            failure_stage="run" if result.get("session") else "connection",
+            error=f"{type(exc).__name__}: {exc}",
+        )
     finally:
+        for turn in scenario.turns[len(result["turns"]) :]:
+            result["turns"].append(
+                {
+                    "id": turn.id,
+                    "input_text": turn.input_text,
+                    "tool": turn.tool,
+                    "sensor": turn.sensor,
+                    "expected": turn.expect,
+                    "status": "failed",
+                    "execution_status": "not_executed",
+                    "error": "未执行：会话未能安全恢复；没有重新连接或伪造上下文",
+                    "events": [],
+                    "audio": {},
+                }
+            )
         try:
             await transport.close()
         except Exception as exc:
@@ -101,7 +163,82 @@ async def run_scenario(
     return result
 
 
-async def _wait_for_greeting(scenario, events, directory, player_factory, sink, result):
+async def _recover_turn(
+    transport, events, item, settle_seconds, timeout=5, *, client_clock=None
+):
+    """Require a fresh stop and a quiet interval before reusing the connection."""
+    recovery = {"status": "failed", "discarded_events": 0}
+
+    def record(event):
+        recovery["discarded_events"] += 1
+        row = {
+            "event": "recovery_audio_discarded" if event.kind == "pcm" else event.kind,
+            "at_ns": event.at_ns,
+            "data": {
+                **{k: v for k, v in event.data.items() if k != "pcm"},
+                "recovery": True,
+            },
+        }
+        if client_clock:
+            row["wall_time_ns"] = client_wall_time(event.at_ns, client_clock)
+        item["events"].append(row)
+
+    if any(e["event"] == "disconnected" for e in item["events"]):
+        return {**recovery, "error": "connection_lost"}
+    try:
+        async with asyncio.timeout(timeout):
+            # VAD uplink may outlive send_audio(): stop its background producer.
+            if hasattr(transport, "stop_input"):
+                await transport.stop_input()
+            while not events.empty():
+                event = events.get_nowait()
+                record(event)
+                if event.kind == "disconnected":
+                    raise ConnectionError("connection_lost")
+            sent_at = time.monotonic_ns()
+            recovery["abort_requested_at_ns"] = sent_at
+            await transport.abort()
+            quiet_until = None
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        events.get(),
+                        (
+                            None
+                            if quiet_until is None
+                            else max(0, quiet_until - time.monotonic())
+                        ),
+                    )
+                except asyncio.TimeoutError:
+                    return {
+                        **recovery,
+                        "status": "recovered",
+                        "ended_at_ns": time.monotonic_ns(),
+                    }
+                record(event)
+                if event.kind in {"error", "disconnected"}:
+                    raise ConnectionError(event.data.get("message", event.kind))
+                if (
+                    event.kind == "tts_stop"
+                    and event.at_ns >= sent_at
+                    and not event.data.get("is_session_output")
+                    and event.data.get("response_listen_turn_id")
+                    in (None, item["listen_turn_id"])
+                ):
+                    recovery["server_stop_at_ns"] = event.at_ns
+                    quiet_until = time.monotonic() + max(0.25, settle_seconds)
+                elif event.kind in {"pcm", "tts_start"}:
+                    # A response after stop invalidates that boundary. Wait for
+                    # another stop rather than letting late audio enter next turn.
+                    quiet_until = None
+    except Exception as exc:
+        recovery["error"] = f"{type(exc).__name__}: {exc}"
+    return recovery
+
+
+async def _wait_for_greeting(
+    scenario, events, directory, player_factory, sink, result, client_clock
+):
     """Consume connection output before any listen/start or microphone frames."""
     started = time.monotonic_ns()
     result.update(
@@ -136,7 +273,12 @@ async def _wait_for_greeting(scenario, events, directory, player_factory, sink, 
                     break
                 raise TimeoutError("greeting_timeout: first input was not sent")
             data = {k: v for k, v in event.data.items() if k != "pcm"}
-            record = {"event": event.kind, "at_ns": event.at_ns, "data": data}
+            record = {
+                "event": event.kind,
+                "at_ns": event.at_ns,
+                "wall_time_ns": client_wall_time(event.at_ns, client_clock),
+                "data": data,
+            }
             result["events"].append(record)
             if (
                 event.kind == "vas_event"
@@ -195,7 +337,16 @@ async def _wait_for_greeting(scenario, events, directory, player_factory, sink, 
 
 
 async def _run_turn(
-    scenario, turn, transport, events, output_dir, index, player_factory, sink=None
+    scenario,
+    turn,
+    transport,
+    events,
+    output_dir,
+    index,
+    player_factory,
+    sink=None,
+    *,
+    client_clock=None,
 ):
     start_ns = time.monotonic_ns()
     prefix = output_dir / f"turn-{index:03d}"
@@ -223,6 +374,8 @@ async def _run_turn(
         "requested_interruption": asdict(turn.interrupt) if turn.interrupt else None,
         "input_settings": asdict(scenario.input),
     }
+    if turn.tool:
+        result["tool"] = turn.tool
     if turn.sensor:
         result.update(sensor=turn.sensor, input_settings={"mode": "sensor"})
     sink = sink or events.put_nowait
@@ -245,6 +398,7 @@ async def _run_turn(
         record = {
             "event": event.kind,
             "at_ns": event.at_ns,
+            "wall_time_ns": client_wall_time(event.at_ns, client_clock),
             "offset_ms": (event.at_ns - start_ns) / 1e6,
             "data": data,
         }
@@ -260,6 +414,12 @@ async def _run_turn(
             sink(Event("input_started"))
             if turn.sensor:
                 data = await transport.send_sensor(turn.sensor)
+            elif turn.chunks:
+                uplink = prefix.with_suffix(".uplink.wav")
+                result["audio"]["uplink"] = str(uplink)
+                data = await transport.send_audio_chunks(
+                    turn.chunks, input_stream=scenario.input, uplink_path=uplink
+                )
             elif scenario.input.mode == "vad":
                 uplink = prefix.with_suffix(".uplink.wav")
                 result["audio"]["uplink"] = str(uplink)
@@ -300,6 +460,12 @@ async def _run_turn(
                 if ack_deadline is not None and time.monotonic() >= ack_deadline:
                     raise TimeoutError("abort_ack_timeout")
                 raise TimeoutError("turn_timeout")
+            if event.kind == "input_audio_frame_sent" and event.data.get(
+                "listen_turn_id"
+            ) not in (None, index):
+                # A VAD tail can remain queued across turn consumers. Its raw
+                # event stays in the session journal, never in the next WAV lane.
+                continue
             record = record_event(event)
             data = record["data"]
             if event.kind not in {
@@ -355,6 +521,8 @@ async def _run_turn(
                 input_done = True
                 if "server_listen_turn_id" in data:
                     result["server_listen_turn_id"] = data["server_listen_turn_id"]
+                if "server_listen_turn_ids" in data:
+                    result["server_listen_turn_ids"] = data["server_listen_turn_ids"]
             elif event.kind == "vas_event":
                 row = event.data
                 if row.get("event") == "audio_output_started":

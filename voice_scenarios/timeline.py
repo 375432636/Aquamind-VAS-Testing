@@ -1,3 +1,500 @@
-"""Compatibility import for the shared report package."""
+"""Presentation lanes that retain each request's original timing and identity."""
 
-from aquamind_voice_report.timeline import *  # noqa: F403
+import math
+
+from .knowledge_evidence import knowledge_evidence
+from .llm_evidence import thinking_mode
+from .memory_evidence import candidate_decisions, memory_evidence
+
+
+def request_spans(events):
+    """Extract the same logical requests for turn and session-level diagnostics."""
+    starts = {
+        (e.get("span_id"), e["event"].removesuffix("_started")): e
+        for e in events
+        if e["event"].endswith("_started") and e.get("span_id")
+    }
+    spans, errors = [], []
+    memories = memory_evidence(events)
+    knowledge = knowledge_evidence(events)
+    candidates = candidate_decisions(events)
+    for end in events:
+        # HTTP phases / retries are milestones inside the logical request.
+        if end["event"].startswith("http_"):
+            continue
+        start = starts.get((end.get("span_id"), end["event"].removesuffix("_finished")))
+        if (
+            not start
+            or end["event"] != start["event"].removesuffix("_started") + "_finished"
+        ):
+            continue
+        if start["clock_id"] != end["clock_id"]:
+            errors.append("span 的时钟来源不一致")
+            continue
+        spans.append(
+            {
+                "name": start["event"].removesuffix("_started"),
+                "start_ns": start["monotonic_ns"],
+                "end_ns": end["monotonic_ns"],
+                "duration_ms": (end["monotonic_ns"] - start["monotonic_ns"]) / 1e6,
+                "status": end.get("status"),
+                "data": {**start.get("data", {}), **end.get("data", {})},
+                "clock_id": start.get("clock_id"),
+                "span_id": end.get("span_id"),
+                "parent_span_id": start.get("parent_span_id"),
+            }
+        )
+        data = spans[-1]["data"]
+        key = (start.get("clock_id"), start.get("span_id"))
+        if key in knowledge:
+            spans[-1]["knowledge_evidence"] = knowledge[key]
+        if data.get("memory_lookup_id") in memories:
+            spans[-1]["memory_evidence"] = memories[data["memory_lookup_id"]]
+        if data.get("pipeline_attempt_id") in candidates:
+            data.update(candidates[data["pipeline_attempt_id"]])
+    return spans, errors
+
+
+def media_timeline_markers(events):
+    """Media URL arrival is a client event, not server send/load/playback time."""
+    markers = []
+    labels = {"image": "图片", "video": "视频"}
+    counts = dict.fromkeys(labels, 0)
+    for event in events:
+        at = event.get("at_ns")
+        if (
+            event.get("event") not in ("image", "display")
+            or type(at) not in (int, float)
+            or not math.isfinite(at)
+        ):
+            continue
+        data = event.get("data")
+        if not isinstance(data, dict):
+            continue
+        items = (
+            [{"kind": "image", "url": data.get("url")}]
+            if event["event"] == "image"
+            else data.get("items")
+        )
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or item.get("kind") not in ("image", "video"):
+                continue
+            kind = item["kind"]
+            counts[kind] += 1
+            url = item.get("url")
+            markers.append(
+                {
+                    "label": f"{labels[kind]} #{counts[kind]} 到达",
+                    "kind": kind,
+                    "start_ns": at,
+                    "wall_time_ns": event.get("wall_time_ns"),
+                    "url": url if isinstance(url, str) else None,
+                }
+            )
+    return markers
+
+
+MILESTONE_LABELS = {
+    "speech_chunk_started": "语音片段开始 · ASR 持续接收",
+    "speech_chunk_ended": "短暂停顿 · 开始续说窗口",
+    "speech_continuation_detected": "窗口内续说 · 保留 ASR",
+    "utterance_text_merged": "当前识别文本 · 提前启动回复",
+    "workflow_cancel_requested": "撤销旧回复版本",
+    "asr_continuation_commit": "续说窗口结束 · 发送 ASR 结束指令",
+    "reply_gate_opened": "最终文本确认 · 正式回复可放行",
+    "answer_audio_released": "正式音频缓冲已放行",
+    "filler_prepare_started": "临时回复开始预生成",
+    "filler_prepared": "临时回复预生成完成",
+    "filler_released": "临时回复放行",
+    "tool_pre_speech_released": "工具过渡语放行 · 不等待窗口或护栏",
+    "speech_workflow_error": "回复工作流失败",
+    "memory_lookup_result": "Memory 查询结果",
+    "llm_candidate_adopted": "候选回答已选定",
+    "llm_candidate_released": "回答放行 · 开始消费",
+    "llm_candidate_discarded": "候选回答已弃用",
+    "llm_candidate_cancel_requested": "取消旧候选 · 立即失效",
+    "llm_candidate_transport_finished": "候选网络请求已结束",
+    "llm_connection_warmup_result": "连接预热结果",
+    "llm_request_started": "LLM 请求提交",
+    "llm_request_finished": "LLM 请求结束",
+    "tts_request_finished": "TTS 请求结束",
+    "asr_request_finished": "ASR 请求结束",
+    "memory_request_started": "Memory 请求开始",
+    "memory_request_finished": "Memory 请求结束",
+    "tool_call_started": "工具调用开始",
+    "tool_call_finished": "工具调用结束",
+    "llm_first_token": "LLM 首个有效增量（First Token）",
+    "llm_first_sse": "首个完整 SSE 数据块",
+    "llm_first_output": "首个有效 SSE 增量",
+    "llm_usage": "Token / 缓存用量",
+    "http_request_finished": "HTTP 请求结束",
+    "http_tcp_started": "TCP 开始",
+    "http_tcp_finished": "TCP 完成",
+    "http_tls_started": "TLS 开始",
+    "http_tls_finished": "TLS 完成",
+    "http_transport_error": "HTTP 传输失败",
+    "http_transport_retry_started": "传输重试等待",
+    "http_transport_retry_finished": "传输重试继续",
+    "tts_first_text": "首个播报文本",
+    "tts_text_complete": "文本结束提交",
+    "tts_segment_ready": "TTS 分段就绪（消费侧）",
+    "tts_request_started": "TTS 请求开始",
+    "tts_first_pcm": "VAS 收到 TTS 首个可解码音频",
+    "http_session_created": "HTTP 会话创建",
+    "http_request_started": "HTTP 请求开始",
+    "http_pool_wait_started": "等待连接池",
+    "http_pool_wait_finished": "取得连接池名额",
+    "http_connection_started": "开始建连",
+    "http_connection_ready": "连接建立",
+    "http_connection_reused": "复用连接",
+    "http_dns_started": "DNS 开始",
+    "http_dns_finished": "DNS 完成",
+    "http_request_headers_sent": "请求头发送",
+    "http_request_body_sent": "请求体发送",
+    "http_response_headers": "响应头到达",
+    "http_request_error": "HTTP 请求失败",
+    "http_request_redirected": "HTTP 重定向",
+    "listen_stop_received": "VAS 收到停止",
+    "listen_stop_enqueued": "停止消息入队",
+    "listen_stop_dequeued": "停止消息出队",
+    "listen_finalize_started": "开始处理语音结束",
+    "audio_input_completed": "上行音频接收完成",
+    "asr_request_started": "ASR 请求开始",
+    "asr_connection_opened": "ASR 连接建立",
+    "asr_connection_closed": "ASR 连接关闭",
+    "asr_session_config_requested": "ASR VAD 请求设置",
+    "asr_session_config_confirmed": "ASR VAD 服务端确认",
+    "asr_first_audio_sent": "ASR 首帧提交",
+    "asr_commit_sent": "ASR 提交结束",
+    "asr_partial": "ASR 首字（首个非空中间结果）",
+    "asr_final": "ASR 最终识别结果",
+    "asr_speech_started": "ASR VAD 语音开始",
+    "asr_endpoint_detected": "ASR VAD 结束",
+    "local_vad_speech_started": "本地 VAD 语音开始",
+    "local_vad_last_voice": "本地 VAD 最后语音帧",
+    "local_vad_endpoint_detected": "本地 VAD 结束",
+    "guardrail_released": "护栏放行",
+    "guardrail_blocked": "护栏拦截",
+    "guardrail_cancelled": "护栏取消",
+    "guardrail_embedding_cache": "护栏向量缓存",
+    "guardrail_embedding_wait_started": "等待规则向量",
+    "guardrail_embedding_wait_finished": "规则向量等待结束",
+}
+
+
+def group_timeline_spans(spans, events):
+    ordered = sorted(spans, key=lambda span: span["start_ns"])
+    nodes = {span["span_id"]: span for span in ordered}
+    starts = {
+        event["span_id"]: event
+        for event in events
+        if event.get("span_id") in nodes
+        and event["event"] == nodes[event["span_id"]]["name"] + "_started"
+    }
+    llm_numbers = {
+        span["span_id"]: index
+        for index, span in enumerate(
+            (span for span in ordered if span["name"] == "llm_request"), 1
+        )
+    }
+
+    def llm_parent(span):
+        parent = starts.get(span["span_id"], {}).get("parent_span_id") or span.get(
+            "parent_span_id"
+        )
+        visited = set()
+        while parent and parent not in visited:
+            if parent in llm_numbers:
+                return parent
+            visited.add(parent)
+            parent = starts.get(parent, {}).get("parent_span_id") or nodes.get(
+                parent, {}
+            ).get("parent_span_id")
+        return None
+
+    lanes = {}
+    span_lanes = {}
+    speech_spans = {}
+    knowledge = knowledge_evidence(events)
+    for span in ordered:
+        event = starts.get(span["span_id"], {})
+        segment = dict(
+            span,
+            output_id=event.get("output_id"),
+            output_kind=event.get("output_kind"),
+        )
+        evidence = knowledge.get((span.get("clock_id"), span.get("span_id")))
+        if evidence is not None:
+            segment["knowledge_evidence"] = evidence
+        name = span["name"]
+        owner = llm_parent(span) if name == "tts_request" else None
+        key = ("span", span["span_id"])
+        label = "流式 ASR 全程（含音频上传）" if name == "asr_request" else name
+        if name == "llm_request":
+            segment["thinking_mode"] = thinking_mode(
+                event.get("data", span.get("data"))
+            )
+            label = f"LLM #{llm_numbers[span['span_id']]} · {segment['thinking_mode']}"
+            generation = event.get("data", {}).get("workflow_version")
+            if generation is not None:
+                label += f" · 回复版本 G{generation}"
+            selection = span.get("data", {}).get("selection")
+            if selection:
+                label += " · 已弃用" if selection == "discarded" else " · 已采用"
+            if span.get("data", {}).get("pipeline_role") == "memory_replacement":
+                label += " · 补充 Memory 重发"
+            elif span.get("data", {}).get("pipeline_role") == "guardrail_replacement":
+                label += " · 护栏回复重发"
+        elif name == "llm_connection_warmup":
+            label = "LLM 连接预热（不生成回复）"
+        elif name == "llm_prompt_runtime_warmup":
+            label = "LLM 分词器预热"
+        elif name == "memory_request":
+            evidence = span.get("memory_evidence", {})
+            label = "Memory · " + evidence.get("label", "结果未采集")
+        elif name == "asr_request":
+            key = ("asr",)
+            if span.get("data", {}).get("mode") not in (None, "STREAM"):
+                label = "ASR 识别请求"
+        elif name == "guardrail_embedding":
+            key = ("guardrail",)
+            label = "护栏 Embedding"
+        elif name == "tool_call":
+            label = span.get("data", {}).get("tool_name", "工具调用")
+        elif name == "tts_request":
+            parent = event.get("parent_span_id") or span.get("parent_span_id")
+            if owner:
+                key = ("llm", owner)
+                label = f"LLM #{llm_numbers[owner]} 的 TTS"
+            elif parent:
+                key = ("parent", parent)
+                label = "TTS · 同一父请求"
+            elif event.get("output_id"):
+                key = ("output", event["output_id"])
+                kind = {"pre_speech": "过渡语", "answer": "正式回答"}.get(
+                    event.get("output_kind"), "同一输出"
+                )
+                label = f"TTS · {kind}"
+            else:
+                label = "TTS · 未关联片段"
+            segment_id = span.get("data", {}).get("segment_id")
+            if segment_id:
+                speech_spans.setdefault(segment_id, span)
+        if key not in lanes:
+            lanes[key] = dict(
+                label=label, category=name, llm_span_id=owner, segments=[], markers=[]
+            )
+        if name == "llm_request":
+            lanes[key]["thinking_mode"] = segment["thinking_mode"]
+        lanes[key]["segments"].append(segment)
+        span_lanes[span["span_id"]] = lanes[key]
+
+    logical_llm = {
+        (e.get("clock_id"), e.get("span_id")): e
+        for e in events
+        if e["event"] == "llm_request_started" and e.get("span_id")
+    }
+    seen_partial = set()
+    for event in sorted(events, key=lambda e: e.get("monotonic_ns", 0)):
+        name = event["event"]
+        at = event.get("monotonic_ns")
+        if name not in MILESTONE_LABELS or at is None:
+            continue
+        request = nodes.get(event.get("span_id"))
+        if name.startswith("llm_candidate_") or name == "memory_lookup_result":
+            field = (
+                "memory_lookup_id"
+                if name == "memory_lookup_result"
+                else "pipeline_attempt_id"
+            )
+            identity = event.get("data", {}).get(field)
+            request = next(
+                (
+                    s
+                    for s in ordered
+                    if identity and s.get("data", {}).get(field) == identity
+                ),
+                None,
+            )
+        if name == "tts_segment_ready":
+            request = speech_spans.get(event.get("data", {}).get("segment_id"), request)
+        if (
+            request
+            and request.get("clock_id")
+            and event.get("clock_id") != request["clock_id"]
+        ):
+            continue
+        lane = span_lanes.get(request["span_id"]) if request else None
+        if lane is None and name == "tts_text_complete" and event.get("output_id"):
+            matches = [
+                candidate
+                for candidate in lanes.values()
+                if candidate["category"] == "tts_request"
+                and any(
+                    segment.get("output_id") == event["output_id"]
+                    and (
+                        not segment.get("clock_id")
+                        or segment["clock_id"] == event.get("clock_id")
+                    )
+                    for segment in candidate["segments"]
+                )
+            ]
+            if len(matches) == 1:
+                lane = matches[0]
+        if name.startswith(
+            (
+                "speech_",
+                "utterance_",
+                "workflow_",
+                "reply_gate_",
+                "answer_audio_",
+                "filler_",
+            )
+        ) or name in {"asr_continuation_commit", "tool_pre_speech_released"}:
+            lane = lanes.setdefault(
+                ("speech_turn",),
+                dict(
+                    label="续说窗口与回复版本",
+                    category="asr_request",
+                    segments=[],
+                    markers=[],
+                ),
+            )
+        elif name.startswith("local_vad_") or name in {
+            "asr_speech_started",
+            "asr_endpoint_detected",
+        }:
+            lane = lanes.setdefault(
+                ("vad",),
+                dict(
+                    label="VAD · 语音活动检测", category="vad", segments=[], markers=[]
+                ),
+            )
+        elif name.startswith("guardrail_"):
+            lane = lanes.setdefault(
+                ("guardrail",),
+                dict(
+                    label="护栏 Embedding",
+                    category="guardrail_embedding",
+                    segments=[],
+                    markers=[],
+                ),
+            )
+        elif lane is None and name.startswith(
+            ("asr_", "local_vad_", "listen_", "audio_input_")
+        ):
+            lane = lanes.setdefault(
+                ("asr",),
+                dict(
+                    label="ASR / 输入结束",
+                    category="asr_request",
+                    segments=[],
+                    markers=[],
+                ),
+            )
+        if lane is None:
+            # Keep evidence from cancelled/incomplete requests without guessing a
+            # neighbouring request. Each orphan retains its own span identity.
+            key = ("unmatched", event.get("span_id"))
+            lane = lanes.setdefault(
+                key,
+                dict(
+                    label="未完成 / 未关联请求",
+                    category="unmatched",
+                    segments=[],
+                    markers=[],
+                ),
+            )
+        if (
+            name == "memory_lookup_result"
+            and request
+            and request.get("memory_evidence")
+        ):
+            lane["memory_evidence"] = request["memory_evidence"]
+        if lane["category"] == "unmatched":
+            start = logical_llm.get((event.get("clock_id"), event.get("span_id")))
+            if start:
+                lane["thinking_mode"] = thinking_mode(start.get("data"))
+                lane["label"] = f"LLM · 未完成请求 · {lane['thinking_mode']}"
+        partial_key = (
+            event.get("clock_id"),
+            event.get("listen_turn_id"),
+            event.get("span_id"),
+        )
+        if name == "asr_partial":
+            data = event.get("data", {})
+            # Old recordings may omit character counts; retain their evidence.
+            if data.get("text_chars") == 0 or data.get("text") == "":
+                continue
+            if partial_key in seen_partial:
+                continue
+            seen_partial.add(partial_key)
+        marker = dict(
+            event=name,
+            label=MILESTONE_LABELS[name],
+            start_ns=at,
+            clock_id=event.get("clock_id"),
+            span_id=event.get("span_id"),
+            data=event.get("data", {}),
+            status=event.get("status"),
+            since_request_seconds=None,
+        )
+        if name == "memory_lookup_result" and request:
+            marker["memory_evidence"] = request.get("memory_evidence")
+        if request and request["name"] == "tts_request":
+            marker["span_id"] = request["span_id"]
+            marker["segment_number"] = next(
+                index
+                for index, segment in enumerate(lane["segments"], 1)
+                if segment["span_id"] == request["span_id"]
+            )
+            if name == "tts_segment_ready" and "tts_evidence" in request:
+                marker["tts_evidence"] = request["tts_evidence"]
+        if lane.get("thinking_mode"):
+            marker["thinking_mode"] = lane["thinking_mode"]
+        if (
+            name == "asr_partial"
+            and not event.get("data", {}).get("text_chars")
+            and not event.get("data", {}).get("text")
+        ):
+            marker["label"] = "ASR 首个中间结果（字数未采集）"
+        if request and at >= request["start_ns"]:
+            marker["since_request_seconds"] = (at - request["start_ns"]) / 1e9
+        marker["role"] = (
+            "vad"
+            if name.startswith("local_vad_")
+            or name in {"asr_speech_started", "asr_endpoint_detected"}
+            else (
+                "primary"
+                if name.endswith(("_request_started", "_request_finished"))
+                or name
+                in {
+                    "llm_first_token",
+                    "tts_first_pcm",
+                    "tts_segment_ready",
+                    "asr_final",
+                    "asr_partial",
+                    "tool_call_started",
+                    "tool_call_finished",
+                }
+                else "secondary"
+            )
+        )
+        marker["severity"] = (
+            "error"
+            if event.get("status") == "error"
+            else (
+                "warning"
+                if event.get("status") in {"cancelled", "closed_early"}
+                or "retry" in name
+                else "info"
+            )
+        )
+        marker["turn_id"] = event.get("listen_turn_id")
+        lane["markers"].append(marker)
+    for lane in lanes.values():
+        if lane["category"] == "tts_request":
+            lane["label"] += f" · {len(lane['segments'])} 段"
+    return list(lanes.values())

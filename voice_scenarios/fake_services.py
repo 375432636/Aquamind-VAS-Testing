@@ -69,6 +69,9 @@ def create_app(script=None, pcm_fixture=None):
                 "prompt": {
                     "enable_langfuse": False,
                     "enable_voiceid": False,
+                    "enable_intelligent_interruption": bool(
+                        script.get("enable_intelligent_interruption", False)
+                    ),
                     "enable_safety_filter": bool(script.get("guardrail")),
                     "guardrail": script.get("guardrail", {}),
                     "max_turns": 20,
@@ -99,13 +102,21 @@ def create_app(script=None, pcm_fixture=None):
 
     async def memory(request):
         body = await request.json()
+        fixture = script.get("memory_by_query", {}).get(body.get("query"), {})
         record(
             "memory",
             operation=request.match_info["name"],
             query=body.get("query"),
             session_id=(body.get("session") or {}).get("session_id"),
         )
-        await asyncio.sleep(script.get("memory_delay_ms", 80) / 1000)
+        await asyncio.sleep(
+            fixture.get("delay_ms", script.get("memory_delay_ms", 80)) / 1000
+        )
+        if fixture.get("http_status"):
+            return web.json_response(
+                {"error": "injected Memory failure"}, status=fixture["http_status"]
+            )
+        observations = [{"text": text} for text in fixture.get("observations", [])]
         return web.json_response(
             {
                 "status": "success",
@@ -113,6 +124,7 @@ def create_app(script=None, pcm_fixture=None):
                 "entities": [],
                 "conversations": [],
                 "observations": [],
+                "results": [{"observations": observations}] if observations else [],
                 "stage": "complete",
             }
         )
@@ -233,7 +245,18 @@ def create_app(script=None, pcm_fixture=None):
             tool_results=len(results),
             available_tools=names,
         )
-        speech = turn.get("reply", "好的，已完成本地测试。")
+        has_memory = any(
+            "<relevant_memory>" in json.dumps(m.get("content"), ensure_ascii=False)
+            for m in body.get("messages", [])
+            if m.get("role") == "system"
+        )
+        record("llm_memory", user=text, has_relevant_memory=has_memory)
+        speech = (
+            turn.get("reply_with_memory", turn.get("reply"))
+            if has_memory
+            else turn.get("reply")
+        )
+        speech = speech or "好的，已完成本地测试。"
         tool_name, args = None, None
         if body.get("model") == "fake-intent":
             content = json.dumps(
@@ -243,6 +266,8 @@ def create_app(script=None, pcm_fixture=None):
             steps = turn.get("tool_rounds", [])
             # Each scripted round is exactly one call; duplicate or missing names fail explicitly.
             step = steps[len(results)] if len(results) < len(steps) else None
+            if not has_memory and turn.get("speculative_tool"):
+                step = turn["speculative_tool"]
             if step:
                 tool_name, args = step["name"], dict(step.get("arguments", {}))
                 if tool_name not in names:

@@ -258,7 +258,7 @@ def test_failed_summary_groups_frames_keeps_turn_error_and_omits_asserted_text(
     assert "report.html" in summary
 
 
-def test_cross_turn_failure_has_actual_reason_in_junit(tmp_path):
+def test_unverified_server_counter_mismatch_is_not_a_functional_failure(tmp_path):
     from xml.etree import ElementTree as ET
 
     result = {
@@ -297,11 +297,9 @@ def test_cross_turn_failure_has_actual_reason_in_junit(tmp_path):
         + "\n"
     )
     report = create_report(tmp_path)
-    assert report["status"] == "failed"
-    failure = ET.parse(tmp_path / "junit.xml").find(".//failure")
-    assert "迟到音频" in failure.get("message")
-    assert "2 条" in failure.get("message")
-    assert "report.html" in failure.text
+    assert not report["failure_groups"]["functional"]
+    assert ET.parse(tmp_path / "junit.xml").find(".//failure") is None
+    assert report["turns"][0]["events"] == result["turns"][0]["events"]
 
 
 def test_failure_reasons_cap_categories_and_redact_credentials(monkeypatch):

@@ -10,6 +10,8 @@
 !voice_scenarios/**
 !tests/
 !tests/**
+!scripts/
+!scripts/**
 !config/
 !config/**
 !fixtures/

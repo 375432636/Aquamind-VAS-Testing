@@ -1,0 +1,32 @@
+name: 5090 Zoomi · 最终 ASR 准入 · VAD 十轮
+device_id: C2:B8:56:7B:95:7C
+environment: dev
+input_mode: vad
+turn_timeout_seconds: 120
+evaluation:
+  persona: Zoomi（5090）
+  knowledge_base_count: 4
+  focus: 最终 ASR 准入、RAG、上下文、打断和续说
+turns:
+- {tool: 人设, text: 你是谁}
+- {tool: 人设, text: 你可以做什么}
+- {tool: 知识库-图文, text: 请查一下上海有多少家门店}
+- {tool: 知识库-图文, text: 哪家门店周六最早开门}
+- {tool: 知识库-图文, text: 你们有哪些防水的耳机}
+- {tool: LLM, text: 其中最便宜的是哪一款，多少钱}
+- tool: LLM
+  text: 详细介绍第一款，适合游泳的时候戴吗
+  interrupt_after_seconds: 2
+  output_kind: answer
+- {tool: 知识库-图文, text: 先不要推荐耳机，帮我推荐适合送女朋友的产品}
+- {tool: 知识库-图文, text: 如何成为会员}
+- tool: 知识库-图文
+  chunks:
+  - text: 给我推荐一款耳机
+  - text: 要能录音转文字的
+    resume_after_endpoint_ms: 150
+  - text: 还要告诉我价格
+    resume_after_endpoint_ms: 150
+  expect:
+    speech_utterances: 1
+    speech_chunks_min: 3

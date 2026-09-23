@@ -10,6 +10,7 @@ import opuslib_next as opuslib
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
+from .clock_sync import collect_clock_samples
 from .fake_device import TOOLS, FakeDevice
 from .model import sensor_command
 from .protocol import Event
@@ -25,9 +26,11 @@ class WebSocketTransport:
         diagnostics="off",
         connect_timeout=15,
         fake_device_tools=False,
+        clock_sync=True,
     ):
         if diagnostics not in {"off", "stage", "frame"}:
             raise ValueError("diagnostics must be off, stage or frame")
+        self.clock_sync_enabled = clock_sync
         self.url = url
         self.device_id = device_id
         self.token = token
@@ -35,6 +38,10 @@ class WebSocketTransport:
         self.connect_timeout = connect_timeout
         self.fake_device_tools = fake_device_tools
         self.mcp_tasks = set()
+        self.clock_pending = {}
+        self.clock_task = None
+        self.clock_samples = []
+        self.clock_anchor = None
         self.ws = None
         self.reader = None
         self.closing = False
@@ -42,11 +49,13 @@ class WebSocketTransport:
         self.diagnostics_ended = asyncio.Event()
         self.turn_sequence = 0
         self.listen_sequence = 0
+        self.response_turns = {}
         self.audio_sequence = 0
         self.microphone_task = None
         self.pending_response_turn = None
         self.output_response_turn = None
         self.output_active = False
+        self.speech_endpoints = asyncio.Queue(maxsize=64)
 
     async def connect(self, emit):
         self.emit = emit
@@ -89,6 +98,22 @@ class WebSocketTransport:
             }
         )
         return await asyncio.wait_for(self.hello, self.connect_timeout)
+
+    def start_clock_sync(self, anchor):
+        if self.diagnostics != "off" and self.clock_sync_enabled:
+            self.clock_anchor = anchor
+            self.clock_task = asyncio.create_task(self._calibrate_clock("start"))
+
+    async def _calibrate_clock(self, phase):
+        try:
+            samples = await collect_clock_samples(
+                self._send_json, self.clock_pending, self.clock_anchor, phase
+            )
+            self.clock_samples.extend(samples)
+            self.emit(Event("clock_sync_samples", {"samples": samples}))
+        except Exception as exc:
+            # Optional diagnostics must never break an otherwise healthy turn.
+            self.emit(Event("clock_sync_unavailable", {"error": type(exc).__name__}))
 
     async def _send_json(self, message):
         await self.ws.send(json.dumps(message, ensure_ascii=False))
@@ -133,6 +158,11 @@ class WebSocketTransport:
                     continue
                 message = json.loads(raw)
                 kind = message.get("type")
+                if kind == "clock_sync":
+                    future = self.clock_pending.get(message.get("request_id"))
+                    if future is not None and not future.done():
+                        future.set_result((message, at_ns))
+                    continue
                 if kind == "diagnostics":
                     state = message.get("state")
                     if state == "started":
@@ -149,6 +179,11 @@ class WebSocketTransport:
                         ):
                             self.diagnostics_ready.set_result(message)
                     elif state == "events":
+                        for row in message.get("events", []):
+                            if row.get("event") == "speech_chunk_ended":
+                                if self.speech_endpoints.full():
+                                    self.speech_endpoints.get_nowait()
+                                self.speech_endpoints.put_nowait((row, at_ns))
                         self.emit(Event("diagnostics", message, at_ns))
                         if message.get("finished") and message.get(
                             "next_seq"
@@ -185,7 +220,16 @@ class WebSocketTransport:
                         # VAS sends STT before a question's reply. Hello's greeting
                         # has no STT. Latch the stream until stop: STT and duplicate
                         # starts can arrive while the greeting is still playing.
-                        self.output_response_turn = self.pending_response_turn
+                        if "response_listen_turn_id" in message:
+                            owner = message["response_listen_turn_id"]
+                            if owner is not None and (
+                                type(owner) is not int
+                                or owner not in self.response_turns
+                            ):
+                                raise ValueError("unknown_response_listen_turn_id")
+                            self.output_response_turn = self.response_turns.get(owner)
+                        else:
+                            self.output_response_turn = self.pending_response_turn
                         self.output_active = True
                     self.emit(
                         Event(
@@ -295,8 +339,13 @@ class WebSocketTransport:
                 raise ValueError("input must be nonempty mono PCM16 WAV at 16000 Hz")
             samples = audio.getnframes()
             encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
+            # Opus delays the final source samples by its lookahead. Existing
+            # last-frame padding may drain them; otherwise send one more frame
+            # before listen/stop so the ASR receives the end of the utterance.
+            encoded_samples = samples + encoder.lookahead
             self.turn_sequence += 1
             self.listen_sequence += 1
+            self.response_turns[self.listen_sequence] = self.turn_sequence
             await self._send_json(
                 {"type": "listen", "state": "start", "mode": "manual"}
             )
@@ -305,26 +354,28 @@ class WebSocketTransport:
             )
             started = time.monotonic()
             count = 0
-            while pcm := audio.readframes(960):
+            while count * 960 < encoded_samples:
+                pcm = audio.readframes(960)
                 await asyncio.sleep(max(0, started + count * 0.06 - time.monotonic()))
                 packet = encoder.encode(pcm.ljust(1920, b"\0"), 960)
                 await self.ws.send(packet)
                 count += 1
                 last_sent = time.monotonic_ns()
-                self.emit(
-                    Event(
-                        "input_audio_frame_sent",
-                        {
-                            "pcm_offset_samples": (count - 1) * 960,
-                            "samples": len(pcm) // 2,
-                            "sample_rate": 16000,
-                            "stream": "input",
-                            "is_speech": True,
-                            "listen_turn_id": self.turn_sequence,
-                        },
-                        last_sent,
+                if pcm:
+                    self.emit(
+                        Event(
+                            "input_audio_frame_sent",
+                            {
+                                "pcm_offset_samples": (count - 1) * 960,
+                                "samples": len(pcm) // 2,
+                                "sample_rate": 16000,
+                                "stream": "input",
+                                "is_speech": True,
+                                "listen_turn_id": self.turn_sequence,
+                            },
+                            last_sent,
+                        )
                     )
-                )
                 if count == 1:
                     self.emit(
                         Event(
@@ -348,10 +399,38 @@ class WebSocketTransport:
                 "server_listen_turn_id": self.listen_sequence,
             }
             self.emit(Event("audio_send_completed", metadata, last_sent))
-            await asyncio.sleep(max(0, started + samples / 16000 - time.monotonic()))
+            await asyncio.sleep(
+                max(0, started + encoded_samples / 16000 - time.monotonic())
+            )
             await self._send_json({"type": "listen", "state": "stop"})
             self.emit(Event("listen_stop_sent", metadata))
             return metadata
+
+    async def send_audio_chunks(self, chunks, *, input_stream, uplink_path):
+        from .chunk_input import stream_chunks
+
+        await self._stop_microphone()
+        while not self.speech_endpoints.empty():
+            self.speech_endpoints.get_nowait()
+        self.turn_sequence += 1
+        completed = asyncio.get_running_loop().create_future()
+
+        async def run():
+            try:
+                await stream_chunks(self, chunks, input_stream, uplink_path, completed)
+            except Exception as error:
+                if not completed.done():
+                    completed.set_exception(error)
+                else:
+                    self.emit(
+                        Event("error", {"message": f"chunk_input_failed: {error}"})
+                    )
+            finally:
+                if not completed.done():
+                    completed.cancel()
+
+        self.microphone_task = asyncio.create_task(run())
+        return await completed
 
     async def _send_vad_audio(self, path, settings, output):
         from .vad_input import stream_microphone
@@ -360,8 +439,9 @@ class WebSocketTransport:
             raise ValueError("VAD input requires an explicit uplink_path")
         await self._stop_microphone()
         self.turn_sequence += 1
-        await self._send_json({"type": "listen", "state": "start", "mode": "auto"})
         self.listen_sequence += 1
+        self.response_turns[self.listen_sequence] = self.turn_sequence
+        await self._send_json({"type": "listen", "state": "start", "mode": "auto"})
         self.emit(
             Event(
                 "listen_start_sent",
@@ -399,13 +479,23 @@ class WebSocketTransport:
             await asyncio.gather(self.microphone_task, return_exceptions=True)
             self.microphone_task = None
 
+    async def stop_input(self):
+        """Stop background VAD audio before recovering a failed turn."""
+        await self._stop_microphone()
+
     async def abort(self):
-        await self._send_json({"type": "abort", "reason": "test_interrupt"})
+        # Timed/manual control uses the same immediate-abort contract as Console.
+        # Other reasons are interpreted as speech requiring a trigger word.
+        await self._send_json({"type": "abort", "reason": "wake_word_detected"})
         self.emit(Event("abort_wire_sent"))
         await self.device.stop("interrupt")
 
     async def close(self):
         await self._stop_microphone()
+        if self.clock_task is not None:
+            await self.clock_task
+            if self.clock_samples:
+                await self._calibrate_clock("end")
         self.closing = True
         if (
             self.ws is not None
@@ -414,7 +504,9 @@ class WebSocketTransport:
         ):
             try:
                 await self._send_json({"type": "diagnostics", "state": "finish"})
-                await asyncio.wait_for(self.diagnostics_ended.wait(), 15)
+                # VAS allows up to 20 s for persistence spans, then flushes its
+                # terminal batch. This wait starts only after the session ends.
+                await asyncio.wait_for(self.diagnostics_ended.wait(), 25)
             except (TimeoutError, ConnectionError, ConnectionClosed):
                 # The collector marks a missing terminal batch as incomplete.
                 pass

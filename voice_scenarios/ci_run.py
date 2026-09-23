@@ -9,8 +9,6 @@ import math
 import os
 import re
 import shutil
-import subprocess
-import tempfile
 import wave
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -18,9 +16,12 @@ from urllib.parse import urlsplit
 import yaml
 
 from .__main__ import create_report
+from .assertions import validate_business_assertions
+from .evaluation import validate_evaluation, validate_tool
 from .failure_summary import failure_reasons
 from .model import SENSOR_COMMANDS, Scenario, sensor_command
 from .runner import run_scenario, save_result
+from .speech import SPEECH_ENGINE, synthesize
 from .websocket import WebSocketTransport
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,8 @@ ENDPOINTS = {
     "main": "wss://lumin-vas-aquamind.deep-edge.cn/looomyn/v1/",
 }
 NUMERIC_METRICS = {
+    "image_items",
+    "video_items",
     "first_playback_ms",
     "first_answer_playback_ms",
     "stop_queue_ms",
@@ -46,6 +49,8 @@ NUMERIC_METRICS = {
     "pre_speech_outputs",
     "filler_outputs",
     "knowledge_base_calls",
+    "speech_utterances",
+    "speech_chunks",
     "interrupt_lateness_ms",
 }
 
@@ -54,11 +59,16 @@ def _validate_expect(expected, diagnostics):
     if not isinstance(expected, dict):
         raise ValueError("expect must be an object")
     for name, value in expected.items():
+        if name == "business":
+            validate_business_assertions(value)
+            continue
         metric = name.removeprefix("max_").removesuffix("_min")
         if diagnostics == "off" and metric not in {
             "first_playback_ms",
             "interrupt_lateness_ms",
             "asr_text",
+            "image_items",
+            "video_items",
         }:
             raise ValueError(
                 "Internal metric assertions require stage/frame diagnostics"
@@ -134,7 +144,7 @@ def settings_from_env(env):
         "input_mode": mode,
         "diagnostics": diagnostics,
         "turn_timeout_seconds": timeout,
-        "speech_engine": "espeak-ng/cmn",
+        "speech_engine": SPEECH_ENGINE,
         "greeting_wait_seconds": _number(
             env.get("VAS_GREETING_WAIT_SECONDS", "5"), "greeting wait", 0, 30
         ),
@@ -152,6 +162,7 @@ def validate_turns(raw, settings):
     if not isinstance(turns, list) or not 1 <= len(turns) <= 30:
         raise ValueError("VAS_TURNS_JSON requires 1–30 turns")
     allowed = {
+        "chunks",
         "text",
         "audio",
         "sensor",
@@ -159,6 +170,7 @@ def validate_turns(raw, settings):
         "interrupt_after_seconds",
         "output_kind",
         "expect",
+        "tool",
     }
     normalized, ids = [], set()
     for index, turn in enumerate(turns, 1):
@@ -166,7 +178,7 @@ def validate_turns(raw, settings):
             turn = {"text": turn}
         if not isinstance(turn, dict) or set(turn) - allowed:
             raise ValueError(f"turn {index}: unsupported fields")
-        if sum(key in turn for key in ("text", "audio", "sensor")) != 1:
+        if sum(key in turn for key in ("text", "audio", "sensor", "chunks")) != 1:
             raise ValueError(
                 f"turn {index}: provide exactly one of text, audio or sensor"
             )
@@ -181,7 +193,46 @@ def validate_turns(raw, settings):
             )
         ids.add(turn_id)
         item = {"id": turn_id}
-        if "sensor" in turn:
+        if "tool" in turn:
+            item["tool"] = validate_tool(turn["tool"])
+        if "chunks" in turn:
+            parts = turn["chunks"]
+            if not isinstance(parts, list) or not 2 <= len(parts) <= 8:
+                raise ValueError("chunks requires 2–8 segments")
+            normalized_parts = []
+            for number, part in enumerate(parts):
+                if not isinstance(part, dict) or set(part) - {
+                    "text",
+                    "audio",
+                    "resume_after_endpoint_ms",
+                }:
+                    raise ValueError(
+                        "chunk accepts text/audio and resume_after_endpoint_ms"
+                    )
+                delay = _number(
+                    part.get("resume_after_endpoint_ms", 0),
+                    "resume_after_endpoint_ms",
+                    0,
+                    5000,
+                )
+                if number == 0 and delay:
+                    raise ValueError("first chunk has no resume delay")
+                source = {
+                    key: value
+                    for key, value in part.items()
+                    if key != "resume_after_endpoint_ms"
+                }
+                normalized_parts.append(
+                    dict(
+                        validate_turns(json.dumps([source]), settings)[0],
+                        resume_after_endpoint_ms=delay,
+                    )
+                )
+            item["chunks"] = normalized_parts
+            item["input_text"] = "\n".join(
+                part.get("input_text", "音频片段") for part in normalized_parts
+            )
+        elif "sensor" in turn:
             item["sensor"] = sensor_command(turn["sensor"])
             item["input_text"] = f"传感器 · {SENSOR_COMMANDS[item['sensor']]}"
         elif "text" in turn:
@@ -233,54 +284,6 @@ def validate_turns(raw, settings):
     return normalized
 
 
-def synthesize(text, target):
-    """Write real Mandarin speech; text goes over stdin, never into shell code."""
-    if not shutil.which("espeak-ng") or not shutil.which("ffmpeg"):
-        raise RuntimeError("Install espeak-ng and ffmpeg before generating speech")
-    with tempfile.TemporaryDirectory(prefix="vas-speech-") as temporary:
-        intermediate = Path(temporary) / "speech.wav"
-        subprocess.run(
-            [
-                "espeak-ng",
-                "-v",
-                "cmn",
-                "-s",
-                "165",
-                "-b",
-                "1",
-                "-w",
-                str(intermediate),
-                "--stdin",
-            ],
-            input=text,
-            text=True,
-            check=True,
-            capture_output=True,
-            timeout=60,
-        )
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-nostdin",
-                "-v",
-                "error",
-                "-y",
-                "-i",
-                str(intermediate),
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-c:a",
-                "pcm_s16le",
-                str(target),
-            ],
-            check=True,
-            capture_output=True,
-            timeout=60,
-        )
-
-
 def validate_audio(path, timeout):
     with wave.open(str(path), "rb") as audio:
         if (
@@ -310,6 +313,16 @@ def prepare(output, env, *, name=None):
     for index, turn in enumerate(turns, 1):
         if "sensor" in turn:
             continue
+        if "chunks" in turn:
+            for number, chunk in enumerate(turn["chunks"], 1):
+                audio = inputs / f"turn-{index:03d}-chunk-{number:02d}.wav"
+                if "source_audio" in chunk:
+                    shutil.copyfile(chunk.pop("source_audio"), audio)
+                else:
+                    synthesize(chunk["input_text"], audio)
+                validate_audio(audio, settings["turn_timeout_seconds"])
+                chunk["audio"] = audio.relative_to(output).as_posix()
+            continue
         audio = inputs / f"turn-{index:03d}.wav"
         if "source_audio" in turn:
             shutil.copyfile(turn.pop("source_audio"), audio)
@@ -321,11 +334,15 @@ def prepare(output, env, *, name=None):
         "name": name
         or f"Aquamind {settings['environment'].upper()} · {len(turns)} 轮语音测试",
         "turn_timeout_seconds": settings["turn_timeout_seconds"],
-        "input": {"mode": settings["input_mode"]},
         "greeting_wait_seconds": settings["greeting_wait_seconds"],
         "greeting_timeout_seconds": settings["greeting_timeout_seconds"],
+        "input": {"mode": settings["input_mode"]},
         "turns": turns,
     }
+    if env.get("VAS_EVALUATION_JSON"):
+        scenario["evaluation"] = validate_evaluation(
+            json.loads(env["VAS_EVALUATION_JSON"])
+        )
     (output / "scenario.yaml").write_text(
         yaml.safe_dump(scenario, allow_unicode=True, sort_keys=False)
     )
@@ -341,17 +358,23 @@ async def execute(output, env):
 
 
 async def execute_prepared(output, env, settings, scenario):
-    """Execute a validated session; callers can prepare a complete batch first."""
+    """Execute one validated session using its own WebSocket connection."""
     transport = WebSocketTransport(
         settings["endpoint"],
         device_id=settings["device_id"],
         token=env.get("VAS_TOKEN") or None,
         diagnostics=settings["diagnostics"],
+        clock_sync=env.get("VAS_CLOCK_SYNC", "1") != "0",
     )
     result = await run_scenario(scenario, transport, output)
     result["run_metadata"] = settings
     save_result(result, Path(output))
-    report = create_report(output)
+    try:
+        report = create_report(output)
+    except Exception as exc:
+        from .session_failure import SessionStageError
+
+        raise SessionStageError("report", str(exc)) from exc
     if report["status"] == "failed":
         for reason in failure_reasons(report, token=env.get("VAS_TOKEN", "")):
             logging.error("失败原因 | %s", reason)

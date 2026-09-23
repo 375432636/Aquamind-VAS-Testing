@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import platform
+import shutil
 import statistics
 from datetime import datetime
 from pathlib import Path
@@ -11,18 +12,38 @@ from xml.etree import ElementTree as ET
 
 import yaml
 
-from aquamind_voice_report import generate_report
-
 from .dev_stack import ROOT, serve_stack
 from .failure_summary import failure_reasons
 from .model import SENSOR_COMMANDS, Scenario, Turn
+from .reply_audio import prepare_reply_audio
+from .report import build_report, evaluate
+from .report_archive import restore_audio
 from .runner import run_scenario
+from .session_timing import prepare_session_playback
 from .websocket import WebSocketTransport
 
 
 def create_report(directory):
     directory = Path(directory)
-    report = generate_report(directory)
+    restore_audio(directory)
+    result = json.loads((directory / "result.json").read_text())
+    path = directory / "vas-events.jsonl"
+    events = (
+        [json.loads(line) for line in path.read_text().splitlines()]
+        if path.exists()
+        else []
+    )
+    report = evaluate(result, events, artifact_dir=directory)
+    prepare_reply_audio(report, directory)
+    prepare_session_playback(report, directory)
+    (directory / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2)
+    )
+    build_report(report, directory / "report.html")
+    metrics = {t["id"]: t["metrics"] for t in report["turns"]}
+    (directory / "metrics.json").write_text(
+        json.dumps(metrics, ensure_ascii=False, indent=2)
+    )
     suite = ET.Element(
         "testsuite", name=report["name"], tests=str(len(report["turns"]) + 1)
     )
@@ -31,7 +52,9 @@ def create_report(directory):
             suite, "testcase", name=turn["id"], classname="voice_scenario"
         )
         failed = [c["name"] for c in turn["checks"] if not c["passed"]]
-        if turn["status"] == "failed" or failed:
+        if turn.get("execution_status") == "not_executed":
+            ET.SubElement(case, "skipped", message=turn["error"])
+        elif turn["status"] == "failed" or failed:
             ET.SubElement(
                 case, "failure", message=turn.get("error") or ", ".join(failed)
             ).text = json.dumps(turn["checks"], ensure_ascii=False)
@@ -46,6 +69,7 @@ def create_report(directory):
             "\n".join(reasons) + "\n详细报告：report.html"
         )
     suite.set("failures", str(len(suite.findall(".//failure"))))
+    suite.set("skipped", str(len(suite.findall(".//skipped"))))
     ET.ElementTree(suite).write(
         directory / "junit.xml", encoding="utf-8", xml_declaration=True
     )
@@ -85,7 +109,7 @@ async def run(args):
         if args.scenario
         else (
             Scenario.from_dict({"name": "sensor", "turns": [{"sensor": args.sensor}]})
-            if args.sensor
+            if getattr(args, "sensor", None)
             else Scenario("single-audio", (Turn("audio", args.audio.resolve()),))
         )
     )
@@ -109,6 +133,7 @@ async def run(args):
             device_id=args.device_id or config.get("device_id", "AA:BB:CC:DD:EE:91"),
             token=config.get("token"),
             diagnostics=diagnostics,
+            clock_sync=config.get("clock_sync", True),
             fake_device_tools=args.fake_device
             or config.get("fake_device_tools", False),
         )
@@ -165,11 +190,53 @@ def main():
     stack.add_argument("--base-port", type=int, default=19080)
     reportp = sub.add_parser("report")
     reportp.add_argument("directory", type=Path)
+    rebuild = sub.add_parser("rebuild")
+    rebuild.add_argument("directory", type=Path)
+    rebuild.add_argument("--output", type=Path, required=True)
+    webp = sub.add_parser("web")
+    webp.add_argument("--output", type=Path, default=ROOT / "artifacts/live")
+    webp.add_argument("--host", default="127.0.0.1")
+    webp.add_argument("--port", type=int, default=19225)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
-        if args.command == "stack":
+        if args.command == "web":
+            from .web_server import serve
+
+            serve(args.output, args.host, args.port)
+            code = 0
+        elif args.command == "stack":
             asyncio.run(serve_stack(args.vas_root, args.script, args.base_port))
+            code = 0
+        elif args.command == "rebuild":
+            from .excel_report import export_excel
+            from .replay_clock import reconstruct_simulated_playback
+
+            if (
+                args.output.resolve() == args.directory.resolve()
+                or args.output.exists()
+            ):
+                raise ValueError("Rebuild requires a new output directory")
+            shutil.copytree(args.directory, args.output)
+            result = json.loads((args.output / "result.json").read_text())
+            journal = [
+                json.loads(line)
+                for line in (args.output / "client-events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            changed = reconstruct_simulated_playback(result, journal)
+            shutil.copy2(
+                args.output / "result.json", args.output / "result.original.json"
+            )
+            (args.output / "result.json").write_text(
+                json.dumps(result, ensure_ascii=False)
+            )
+            report = create_report(args.output)
+            export_excel([report], args.output / "evaluation.xlsx")
+            logging.warning(
+                "Rebuilt %s frames | %s", changed, args.output / "report.html"
+            )
             code = 0
         elif args.command == "report":
             report = create_report(args.directory)

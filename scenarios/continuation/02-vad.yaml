@@ -1,0 +1,17 @@
+name: 续说窗口 · VAD
+device_id: "30:ED:A0:A6:23:A4"
+environment: dev
+input_mode: vad
+turn_timeout_seconds: 90
+turns:
+  - text: 请用一句话介绍自己
+  - chunks:
+      - text: 请给我介绍一下
+      - text: 红茶和绿茶有什么区别
+        resume_after_endpoint_ms: 150
+  - chunks:
+      - text: 请告诉我
+      - text: 泡绿茶
+        resume_after_endpoint_ms: 150
+      - text: 应该用多少度的水
+        resume_after_endpoint_ms: 150

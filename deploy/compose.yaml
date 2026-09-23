@@ -1,0 +1,30 @@
+name: aquamind-vas-testing
+services:
+  web:
+    image: ${APP_IMAGE:?Set APP_IMAGE}
+    command: [python, scripts/serve_deployment.py]
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    restart: unless-stopped
+    init: true
+    env_file: ${DEPLOY_ROOT:?Set DEPLOY_ROOT}/private/web.env
+    environment:
+      APP_REVISION: ${APP_REVISION:?Set APP_REVISION}
+      REPORT_DIR: /data/reports
+    ports:
+      - "127.0.0.1:19225:8080"
+    volumes:
+      - ${DEPLOY_ROOT}/data/reports:/data/reports
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 45s
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'

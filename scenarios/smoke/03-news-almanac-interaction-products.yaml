@@ -6,20 +6,16 @@ turns:
   - id: news
     text: 帮我看一下今天的新闻
     expect:
-      llm_requests_min: 1
-      tts_requests_min: 1
+      business:
+        reply:
+          contains_all: [[星象, 星盘, 星座, 太阳处女, 月亮天秤, 水星逆行]]
   - id: almanac
     text: 帮我看一下今天的黄历。
     expect:
-      llm_requests_min: 1
-      tts_requests_min: 1
+      business:
+        recognition:
+          contains_all: [[黄历, 通胜, 老黄历]]
   - id: head-touch
     sensor: touch-head
-    expect:
-      llm_requests_min: 1
-      tts_requests_min: 1
   - id: products
     text: 给我介绍一下产品，这有什么好玩的？
-    expect:
-      llm_requests_min: 1
-      tts_requests_min: 1

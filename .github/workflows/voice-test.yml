@@ -2,6 +2,9 @@ name: VAS 批量语音测试
 run-name: VAS · 批量场景 · ${{ github.run_number }}
 
 on:
+  schedule:
+    # GitHub cron uses UTC: 23:00 UTC is 07:00 the following day in Shanghai.
+    - cron: '0 23 * * *'
   workflow_dispatch:
     inputs:
       scenario_path:
@@ -13,101 +16,67 @@ on:
 permissions:
   contents: read
 
-# Saved sessions can target different devices; serialize both manual workflows.
+# Saved sessions can target different devices; serialize scheduled and manual tests.
 concurrency:
   group: voice-tests
   cancel-in-progress: false
 
 jobs:
-  plan:
-    name: 校验会话列表
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      sessions: ${{ steps.sessions.outputs.matrix }}
-    steps:
-      - name: 获取测试工具
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: 准备缓存的 Docker 测试环境
-        uses: ./.github/actions/test-image
-      - name: 校验全部场景并分配独立 session
-        id: sessions
-        env:
-          SCENARIO_PATH: ${{ inputs.scenario_path }}
-        run: |
-          bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --matrix-output artifacts/session-matrix.json
-          python3 - <<'PYTHON'
-          import json, os
-          from pathlib import Path
-          matrix = json.loads(Path("artifacts/session-matrix.json").read_text())
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as target:
-              target.write("matrix=" + json.dumps(matrix, ensure_ascii=False) + "\n")
-          PYTHON
-
   test:
-    name: ${{ matrix.environment }} · ${{ matrix.device_id }} · ${{ matrix.name }}
-    needs: plan
+    name: 全量校验与逐会话测试
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    strategy:
-      # One physical device: sessions must not overlap; a failure must not cancel later sessions.
-      max-parallel: 1
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.sessions) }}
     steps:
       - name: 获取测试工具
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: 准备缓存的 Docker 测试环境
+      - name: 准备一次缓存的 Docker 测试环境
         id: image
         uses: ./.github/actions/test-image
 
-      - name: 执行会话测试
+      - name: 校验全部场景并逐会话运行
+        id: batch
+        continue-on-error: true
         env:
-          SCENARIO_PATH: ${{ matrix.source }}
+          SCENARIO_PATH: ${{ inputs.scenario_path }}
           VAS_DIAGNOSTICS: frame
           VAS_TOKEN: ${{ secrets.VAS_TOKEN }}
           VAS_DEV_URL: ${{ vars.VAS_DEV_URL }}
           VAS_MAIN_URL: ${{ vars.VAS_MAIN_URL }}
-        run: bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --scenarios "$SCENARIO_PATH" --output artifacts/run
+        run: bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --scenarios "${SCENARIO_PATH:-scenarios/smoke}" --output artifacts/run
 
-      - name: 无损压缩本会话音频
+      - name: 逐会话压缩音频并保留失败原件
         id: package
         if: ${{ !cancelled() && steps.image.outcome == 'success' }}
-        run: bash .github/actions/test-image/run.sh python -m voice_scenarios.report_archive artifacts/run --single-batch --output artifacts/download
+        continue-on-error: true
+        run: bash .github/actions/test-image/run.sh python -m voice_scenarios.report_archive artifacts/run --batch --output artifacts/download
 
-      - name: 保存本 session 报告与压缩音频
+      - name: 保存批量报告与音频
         id: report
-        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vas-${{ matrix.environment }}-${{ matrix.id }}-${{ github.run_number }}-${{ github.run_attempt }}
-          path: artifacts/download/
+          name: vas-batch-${{ github.run_number }}-${{ github.run_attempt }}
+          # Catastrophic packaging errors retain the entire original run.
+          path: ${{ hashFiles('artifacts/download/archive-complete.json') != '' && 'artifacts/download/' || 'artifacts/' }}
           if-no-files-found: error
-          compression-level: 9
+          compression-level: 0
           retention-days: 14
 
-      - name: 压缩失败时保留原始诊断
-        if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: vas-${{ matrix.environment }}-${{ matrix.id }}-${{ github.run_number }}-${{ github.run_attempt }}-raw-fallback
-          path: artifacts/run/
-          retention-days: 14
-
-      - name: 在运行结果中展示本 session 报告
+      - name: 展示批量结果
+        id: summary
         if: always()
         env:
           REPORT_ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
         run: |
-          if test -f artifacts/download/report.json; then
-            bash .github/actions/test-image/run.sh python -m voice_scenarios.ci_run --summarize artifacts/download
-          elif docker image inspect aquamind-vas-testing:local >/dev/null 2>&1; then
-            bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --summarize artifacts/run
+          if docker image inspect aquamind-vas-testing:local >/dev/null 2>&1; then
+            if test -f artifacts/download/batch.json; then
+              bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --summarize artifacts/download
+            else
+              bash .github/actions/test-image/run.sh python -m voice_scenarios.batch_run --summarize artifacts/run
+            fi
           fi
           python3 - <<'PYTHON'
           import os
@@ -115,7 +84,20 @@ jobs:
           url = os.environ.get("REPORT_ARTIFACT_URL", "")
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
               if url:
-                  summary.write(f"\n[下载本 session 报告与音频]({url})\n\n解压后打开 `report.html`。音频为无损 FLAC，包含全部轮次。\n")
+                  summary.write(f"\n[下载批量 HTML、Excel 与音频]({url})\n\n解压后打开 `index.html`，每个 session 独立查看。压缩失败的会话保留在 `raw-fallback/`；整体打包异常时另保留 `run/`。\n")
               else:
-                  summary.write("\n本会话未生成压缩报告，请查看失败日志及原始诊断 artifact。\n")
+                  summary.write("\n报告上传失败，请查看执行日志。\n")
           PYTHON
+
+      - name: 检查批量最终结果
+        if: always()
+        env:
+          IMAGE_OUTCOME: ${{ steps.image.outcome }}
+          BATCH_OUTCOME: ${{ steps.batch.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+          REPORT_OUTCOME: ${{ steps.report.outcome }}
+          SUMMARY_OUTCOME: ${{ steps.summary.outcome }}
+        run: >-
+          python3 scripts/check_batch_result.py artifacts/run artifacts/download
+          --outcome "$IMAGE_OUTCOME" --outcome "$BATCH_OUTCOME"
+          --outcome "$PACKAGE_OUTCOME" --outcome "$REPORT_OUTCOME" --outcome "$SUMMARY_OUTCOME"

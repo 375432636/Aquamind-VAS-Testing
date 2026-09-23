@@ -4,6 +4,9 @@ from pathlib import Path
 
 import yaml
 
+from .assertions import validate_business_assertions
+from .evaluation import validate_evaluation, validate_tool
+
 SENSOR_COMMANDS = {
     "touch-head": "摸头",
     "touch-hand": "摸手",
@@ -38,6 +41,19 @@ class Interruption:
 
 
 @dataclass(frozen=True)
+class AudioChunk:
+    audio: Path
+    resume_after_endpoint_ms: float = 0
+
+    def __post_init__(self):
+        positive_number(
+            self.resume_after_endpoint_ms, "resume_after_endpoint_ms", allow_zero=True
+        )
+        if self.resume_after_endpoint_ms > 5000:
+            raise ValueError("resume_after_endpoint_ms must not exceed 5000")
+
+
+@dataclass(frozen=True)
 class Turn:
     id: str
     audio: Path | None = None
@@ -46,12 +62,23 @@ class Turn:
     completion_goal: str = "audio_completed"
     input_text: str | None = None
     sensor: str | None = None
+    tool: str | None = None
+    chunks: tuple[AudioChunk, ...] = ()
 
     def __post_init__(self):
-        if (self.audio is None) == (self.sensor is None):
-            raise ValueError("turn requires exactly one of audio or sensor")
+        if (
+            sum((self.audio is not None, self.sensor is not None, bool(self.chunks)))
+            != 1
+        ):
+            raise ValueError("turn requires exactly one of audio, sensor or chunks")
         if self.sensor is not None:
             sensor_command(self.sensor)
+        if not isinstance(self.expect, dict):
+            raise ValueError("expect must be an object")
+        if "business" in self.expect:
+            validate_business_assertions(self.expect["business"])
+        if self.tool is not None:
+            validate_tool(self.tool)
 
 
 @dataclass(frozen=True)
@@ -83,6 +110,7 @@ class Scenario:
     turn_timeout_seconds: float = 30
     settle_seconds: float = 0.2
     input: InputStream = field(default_factory=InputStream)
+    evaluation: dict = field(default_factory=dict)
     greeting_wait_seconds: float = 0.5
     greeting_timeout_seconds: float = 60
 
@@ -98,13 +126,29 @@ class Scenario:
         for index, value in enumerate(data["turns"], 1):
             if (
                 not isinstance(value, dict)
-                or sum(key in value for key in ("audio", "sensor")) != 1
+                or sum(key in value for key in ("audio", "sensor", "chunks")) != 1
             ):
                 raise ValueError("turn requires exactly one of audio or sensor")
             sensor = sensor_command(value["sensor"]) if "sensor" in value else None
             path = (
-                (Path(base_dir) / value["audio"]).resolve() if sensor is None else None
+                (Path(base_dir) / value["audio"]).resolve()
+                if "audio" in value
+                else None
             )
+            chunks = ()
+            if "chunks" in value:
+                raw_chunks = value["chunks"]
+                if not isinstance(raw_chunks, list) or not 2 <= len(raw_chunks) <= 8:
+                    raise ValueError("chunks requires 2–8 audio segments")
+                chunks = tuple(
+                    AudioChunk(
+                        (Path(base_dir) / part["audio"]).resolve(),
+                        part.get("resume_after_endpoint_ms", 0),
+                    )
+                    for part in raw_chunks
+                )
+                if any(not part.audio.is_file() for part in chunks):
+                    raise ValueError("chunk input audio does not exist")
             if path is not None and not path.is_file():
                 raise ValueError(f"input audio does not exist: {path}")
             turn_id = str(value.get("id", f"turn-{index}"))
@@ -159,6 +203,8 @@ class Scenario:
                     value.get("input_text")
                     or (f"传感器 · {SENSOR_COMMANDS[sensor]}" if sensor else None),
                     sensor,
+                    value.get("tool"),
+                    chunks,
                 )
             )
         return cls(
@@ -171,6 +217,7 @@ class Scenario:
                 data.get("settle_seconds", 0.2), "settle_seconds", allow_zero=True
             ),
             InputStream(**data.get("input", {})),
+            validate_evaluation(data["evaluation"]) if "evaluation" in data else {},
             positive_number(
                 data.get("greeting_wait_seconds", 0.5),
                 "greeting_wait_seconds",

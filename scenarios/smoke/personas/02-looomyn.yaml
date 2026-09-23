@@ -1,0 +1,18 @@
+name: Looomyn · MCP 调用
+device_id: "00:00:00:00:00:22"
+environment: main
+input_mode: vad
+evaluation:
+  persona: Looomyn
+  knowledge_base_count: 1
+  focus: MCP调用
+turns:
+  - {tool: 人设, text: 你是谁}
+  - {tool: 人设, text: 你能做什么？}
+  - {tool: MCP-占星, text: 我是1988年8月29日6点50分广州出生的，我今天运势如何}
+  - {tool: MCP-黄历, text: 帮我看一下明天的黄历}
+  - {tool: MCP-抽签, text: 帮我抽支签吧}
+  - {tool: MCP-天气, text: 明天天气如何？}
+  - {tool: MCP-新闻, text: 今天有什么新闻？}
+  - {tool: MCP-音乐, text: 我累了}
+  - {tool: 人设, text: 我能成为百万富翁吗？}

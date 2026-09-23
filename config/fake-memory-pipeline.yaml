@@ -1,0 +1,45 @@
+llm_memory_pipeline:
+  enabled: true
+  memory_timeout_seconds: 2
+  llm_timeout_seconds: 15
+vad_silence_seconds: 0.6
+embedding_delay_ms: 300
+tts_duration_seconds: 0.6
+tts_chunk_delay_ms: 30
+memory_by_query:
+  你好，请介绍一下自己。:
+    delay_ms: 400
+  我喜欢什么饮料？:
+    delay_ms: 450
+    observations: [用户喜欢绿茶]
+  那再帮我查一下上海天气。:
+    delay_ms: 400
+    observations: [用户计划去上海散步]
+guardrail:
+  semantic_constraints:
+    - name: Fake 拦截规则
+      sentences: [FAKE-BLOCKED]
+      strictness: 5
+      response: 测试护栏已拦截。
+      is_enabled: true
+turns:
+  - text: 你好，请介绍一下自己。
+    reply: 我是本地语音测试助手。
+    llm_first_delay_ms: 120
+    llm_chunk_delay_ms: 3
+  - text: 我喜欢什么饮料？
+    reply: 这是需要被弃用的旧回答。
+    reply_with_memory: 你喜欢绿茶。
+    llm_first_delay_ms: 100
+    llm_chunk_delay_ms: 3
+    speculative_tool:
+      name: self_music_play
+      arguments: {track: fixture}
+  - text: 那再帮我查一下上海天气。
+    reply: 上海晴天，可以去散步。
+    llm_first_delay_ms: 100
+    llm_chunk_delay_ms: 3
+    tool_rounds:
+      - name: self_test_weather
+        arguments: {city: 上海}
+        pre_speech: 我来查询上海天气。

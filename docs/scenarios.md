@@ -24,7 +24,7 @@ turns:
 
 `text` 会离线合成为中文 WAV。也可把某轮换成 `audio: fixtures/my-question.wav`；这里的 WAV 路径相对于**仓库根目录**，必须留在仓库内。每轮恰好填写 `text`、`audio` 之一。固定真人录音可以保存在 `scenarios/audio/`；文件夹递归加载只读取 YAML/JSON，不会把 WAV 当成场景。
 
-文件必须设置 `device_id`（冒号分隔的 MAC）、`environment`（`dev` 或 `main`）和 `turns`；可选 `name`、`input_mode`、`turn_timeout_seconds`。省略名称使用文件名，省略输入模式和超时使用 `manual` / 90 秒。这些用例配置不会被本机默认环境或设备覆盖；每轮可设置 `id`、`text` 或 `audio`、`interrupt_after_seconds`、`output_kind`、`expect`。未知字段、重复 turn ID 和非法阈值都会在连接 VAS 之前被拒绝。
+文件必须设置 `device_id`（冒号分隔的 MAC）、`environment`（`dev` 或 `main`）和 `turns`；可选 `name`、`input_mode`、`turn_timeout_seconds`、`evaluation`。省略名称使用文件名，省略输入模式和超时使用 `manual` / 90 秒。这些用例配置不会被本机默认环境或设备覆盖；每轮可设置 `id`、`text` 或 `audio`、`interrupt_after_seconds`、`output_kind`、`expect`、`tool`。未知字段、重复 turn ID 和非法阈值都会在连接 VAS 之前被拒绝。
 
 ```bash
 export VAS_DIAGNOSTICS=frame
@@ -48,7 +48,9 @@ junit.xml                    汇总所有 session 的测试结果
 sessions/<场景路径标识>/       独立的报告、原始记录和音频
 ```
 
-批量 Action 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`、`scenarios/products`，或 `scenarios` 一次运行全部。每个 session 单独上传 FLAC 压缩报告，两种手动 Action 共用执行队列。两个测试 Action 均没有定时触发，由用户手动运行。
+批量 Action 默认运行 `scenarios/smoke`，也可选择 `scenarios/vad`、`scenarios/products`，或 `scenarios` 一次运行全部。每个 session 单独上传 FLAC 压缩报告，两种手动 Action 共用执行队列。批量 Action 另在每天北京时间 07:00 自动运行 `scenarios/smoke`；临时对话只由用户手动运行。
+
+可选的 `evaluation` 和 `tool` 用于人设表格与 Excel 导出，详见[人设冒烟与 Excel](persona-smoke.md)。
 
 ## 固定音频的多轮对话
 
@@ -95,6 +97,53 @@ diagnostics: frame
 ```
 
 `expect` 沿用原有机器格式，时间阈值单位为毫秒；报告展示为秒。除上例外，可断言 `asr_text`、`llm_requests`、`tools`、`memory_requests_min`、`pre_speech_outputs_min`、`filler_outputs_min`。完整示例在 [`config/regression.example.yaml`](../config/regression.example.yaml)；示例的 Fake 预期结果不适用于真实 DEV 的自由回答。
+
+## 可选业务断言
+
+`expect.business` 对 Actions 文本场景和底层 WAV 场景通用，省略后沿用旧行为。下面的工具名必须替换为**该场景设备当前配置**中的真实名称，不能根据另一人设或一次错误调用猜测：
+
+```yaml
+expect:
+  llm_requests_min: 1
+  tts_requests_min: 1
+  business:
+    recognition:
+      contains_all: [[新闻, 要闻, 资讯]]
+    tools:
+      required:
+        - name: 实际新闻工具名
+          # 可选：只验证必要参数；键名与值须来自该工具契约
+          arguments: {topic: today}
+      forbidden: [DrawLots-drawLot]
+    reply:
+      contains_all: [[新闻, 要闻, 资讯]]
+      output_kind: answer
+    audio:
+      ending: normal
+      min_duration_ms: 1
+```
+
+`contains_all` 外层各组都要命中，组内任一同义表达即可；匹配前统一 Unicode 宽度、大小写和空白，不做全文精确匹配，也不把这种规则检查当成事实核验。复杂回复可列多个必要信息组，例如黄历的 `[[宜, 适宜], [忌, 不宜]]`。新闻时效、事实正确性仍需额外核验。
+
+`tools.required` 要求观察到指定工具开始及成功结束；`arguments` 仅检查列出的标量关键参数。`tools.forbidden` 检查不应调用的工具。两者都为空时明确显示不适用，不宣称已验证工具行为。缺少参数采集、执行结束或完整诊断时显示“未知”，不会把没有记录当成没有调用；已观察到的禁止工具调用即使诊断不完整也会功能失败。VAS 默认不记录工具参数，需要在服务端公共诊断配置的 `audio_diagnostics.tool_argument_allowlist` 显式允许对应工具的必要键，例如 `{Tung-Shing-get-tung-shing: [days, includeHours]}`。不要加入 Prompt、认证信息、用户私密资料或完整自由文本参数。
+
+`reply` 默认只检查通过音频包顺序归属的正式回答，开场白与临时播报不能满足必要信息断言。未采集到正式回复归属时显示未知；明确要检查所有本轮播报时可设置 `output_kind: any`。`audio` 校验接收文件可解码、PCM 与记录的帧一致、本轮非空及最小时长，排除开场白、其他轮次和打断后丢弃的帧。`ending: normal` 要求服务端结束和本地播放排空；预期打断使用 `ending: interrupted`，并要求已请求打断、本地停播和服务端停止确认。文件缺失属于采集证据缺失，音频损坏或错误结束属于功能失败。
+
+传感器输入没有 ASR。摸头轮次可写 `recognition: {sensor: touch-head}`；检查实际 `sensor_sent` 和可用的服务端 `detected_action.sensor_name` 回显。匹配时识别项显示“不适用（传感器指令已匹配）”，命令不符仍失败，发送证据缺失显示未知；实际人设的互动响应由 `reply` 检查。不要用服务端回显的互动 Prompt 冒充识别文本。
+
+尚未核实的设备要求显式写成：
+
+```yaml
+tools:
+  verified: false
+  reason: 当前设备的新闻工具契约尚未核实
+```
+
+每项可附 `source` 记录无敏感信息的配置证据。`verified: false` 返回 `configuration_unverified`，不会通过。确认配置后填入真实要求并移除该标记；更换设备或人设时必须同步更新断言。
+
+`report.json` 的每个 check 保留兼容的 `name / expected / actual / passed`，业务项另有 `category`（识别、工具、回复、音频）、`status`、`failure_kind` 和 `reason`。功能错误是 `functional`，证据缺失是 `diagnostic_missing`，设备契约未确认是 `configuration_unverified`；延迟阈值单独归类。非通过结果使报告失败，但原因不会混成一个“链路失败”。识别和音频断言在诊断关闭时仍能利用客户端证据；无法证明的内部工具及回答归属保持未知。
+
+反例回归 `tests/test_business_assertions.py::test_news_misrecognized_as_heart_wrong_tool_cannot_pass_successful_llm_tts` 固定“新闻 → 心 → 抽签工具”：即使 LLM/TTS 请求成功且收到有效音频，识别、工具和回复断言仍失败。
 
 ## VAD 场景
 
@@ -159,12 +208,14 @@ Fake 服务通过 HTTP / WebSocket 模拟 UMS、Memory、ASR、LLM、TTS 和工�
 
 | 外部服务脚本 | 客户端场景 | 覆盖内容 |
 | --- | --- | --- |
-| `fake-regression.yaml` | `regression.example.yaml` | 多轮、Memory、工具循环、打断、音乐 MCP |
+| `fake-regression.yaml` | `regression.example.yaml` | 六轮、Memory 轮内缓存与跨轮隔离、工具循环、打断、音乐 MCP |
 | `fake-filler.yaml` | `filler.example.yaml` | 临时回复与正式回复 |
 | `fake-vad.yaml` | `vad.example.yaml` | 连续音频、底噪、VAD 端点、多轮 |
 | `fake-milestones.yaml` | `milestones.example.yaml` | 两轮上下文、护栏向量、空 LLM 首块、文本分片、天气工具、TTS 空音频块、连接复用 |
 
 公共时序节点开发可把上面两条命令中的脚本换成 `config/fake-milestones.yaml`、场景换成 `config/milestones.example.yaml`，并使用支持新节点的 VAS。Fake `/v1/embeddings` 支持固定向量及延迟/错误；LLM 支持 `llm_metadata_first`、每轮 `text_chunks`；TTS 支持 `headers_delay_seconds`、`empty_audio_chunks`、`force_close`。这些配置只影响本地 Fake 服务。新增真实 VAS 回归为 `tests/test_local_stack.py::test_real_stack_public_milestones_and_guardrail`。
+
+当前 dev 按 `(turn_id, query)` 复用同轮 Memory 结果。回归中的工具循环要求 `memory_requests: 1`，同时保留 3 次 LLM、天气和知识库各 1 次的检查。第 3 轮紧接着重复第 2 轮相同的问题，确认新轮会重新查询。集成测试同时核对 Fake HTTP 收到的原问句序列、每轮成功查询及缓存命中次数；不能仅放宽到 `memory_requests_min: 1`，否则会漏掉重复查询的性能回退。
 
 真实 VAS 的集成回归需要上述 checkout，公开 CI 默认不拉取私有服务端：
 
@@ -174,3 +225,7 @@ python -m pytest --cov=voice_scenarios --cov-fail-under=80
 ```
 
 `stack` 的服务日志保存在 `artifacts/stack-<端口>/`，按 Ctrl-C 仅停止本次启动的子进程。
+
+### 图片与视频冒烟
+
+需要验证返回媒体时，每轮只需增加 `expect: {image_items_min: 1}` 或 `expect: {video_items_min: 1}`。统计本轮客户端收到的 `image` 及 `display.items`，按媒体项计数，不按 URL 去重；一条 `display` 可以包含多个项。这两项不依赖 VAS 内部诊断。没有收到时检查失败，单有文字回复不能通过。计数不验证链接有效性、下载完成或真实视频播放。

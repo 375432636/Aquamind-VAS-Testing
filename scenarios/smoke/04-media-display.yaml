@@ -1,0 +1,14 @@
+name: 图片与视频 · 连续产品展示
+device_id: "FF:FF:FF:FF:FF:11"
+environment: dev
+turns:
+  - id: choose-product
+    text: 请推荐一款有图片和演示视频的产品，简单介绍一下。
+  - id: show-image
+    text: 请给我看看刚才这款产品的图片。
+    expect:
+      image_items_min: 1
+  - id: show-video
+    text: 再给我看看同一款产品的演示视频。
+    expect:
+      video_items_min: 1

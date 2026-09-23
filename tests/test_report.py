@@ -1,26 +1,124 @@
 from voice_scenarios.report import build_report, evaluate
 
 
-def test_overview_contains_whole_session_client_and_vas_tracks(tmp_path):
+def test_continuation_assertion_fails_if_vad_created_two_utterances():
+    import json
+
+    from voice_scenarios.ci_run import validate_turns
+
+    validate_turns(
+        json.dumps(
+            [
+                {
+                    "text": "查询门店",
+                    "expect": {"speech_utterances": 1, "speech_chunks_min": 2},
+                }
+            ]
+        ),
+        {"diagnostics": "frame", "turn_timeout_seconds": 90},
+    )
     result = {
-        "name": "two turns",
+        "name": "续说断言",
         "status": "passed",
         "turns": [
-            {"id": "one", "listen_turn_id": 1, "status": "completed", "events": []},
-            {"id": "two", "listen_turn_id": 2, "status": "completed", "events": []},
+            {
+                "id": "one",
+                "status": "completed",
+                "events": [],
+                "expected": {"speech_utterances": 1, "speech_chunks_min": 2},
+            }
         ],
     }
-    report = evaluate(result, [])
-    report["session_playback"] = {
-        "status": "ready",
-        "path": "session.played.wav",
-        "duration_seconds": 10,
+    rows = [
+        {
+            "event": "speech_chunk_started",
+            "listen_turn_id": 1,
+            "clock_id": "vas",
+            "monotonic_ns": n,
+            "data": {"utterance_id": uid},
+        }
+        for n, uid in enumerate(("a", "b"))
+    ]
+    failed = evaluate(result, rows)
+    assert failed["status"] == "failed"
+    assert failed["turns"][0]["metrics"]["speech_utterances"] == 2
+    rows[1].update(event="speech_continuation_detected", data={"utterance_id": "a"})
+    assert evaluate(result, rows)["status"] == "passed"
+
+
+def test_filler_during_continuation_keeps_signed_client_latency():
+    events = [
+        {"event": "input_chunk_finished", "at_ns": 1_000_000_000, "data": {}},
+        {"event": "playback_started", "at_ns": 1_100_000_000, "data": {}},
+        {"event": "audio_send_completed", "at_ns": 3_000_000_000, "data": {}},
+    ]
+    result = {
+        "name": "提前临时回复",
+        "status": "passed",
+        "turns": [
+            {
+                "id": "one",
+                "status": "completed",
+                "events": events,
+                "input_settings": {"mode": "manual"},
+            }
+        ],
     }
-    build_report(report, tmp_path / "report.html")
-    page = (tmp_path / "report.html").read_text()
-    assert 'id="session-vas-tracks"' in page
-    assert page.index('id="session-canvas"') < page.index('id="session-vas-tracks"')
-    assert "session_chain" in page
+    assert evaluate(result, [])["turns"][0]["metrics"]["first_playback_ms"] == -1900
+
+
+def test_continuous_asr_summary_uses_latest_corrected_text_keeps_revisions():
+    events = [
+        {"event": "stt", "at_ns": index, "data": {"text": text}}
+        for index, text in enumerate(
+            ("上海金安店的地只", "上海静安店的地址和营业时间是什么")
+        )
+    ]
+    result = {
+        "name": "续说",
+        "status": "passed",
+        "turns": [{"id": "one", "status": "completed", "events": events}],
+    }
+    turn = evaluate(result, [])["turns"][0]
+    assert turn["metrics"]["asr_text"] == "上海静安店的地址和营业时间是什么"
+    assert turn["events"] == events
+
+
+def test_rag_count_recognizes_legacy_name_without_counting_other_mcp_tools():
+    names = ("rag-lightrag_search", "rag-lightrag_search", "rag-admin", "weather")
+    rows = []
+    for index, name in enumerate(names):
+        common = {"listen_turn_id": 1, "span_id": str(index), "clock_id": "vas"}
+        rows.extend(
+            [
+                {
+                    **common,
+                    "event": "tool_call_started",
+                    "monotonic_ns": index * 10,
+                    "data": {"tool_name": name, "category": "other"},
+                },
+                {
+                    **common,
+                    "event": "tool_call_finished",
+                    "monotonic_ns": index * 10 + 1,
+                    "status": "ok",
+                    "data": {},
+                },
+            ]
+        )
+    result = {
+        "name": "RAG",
+        "status": "passed",
+        "turns": [{"id": "one", "status": "completed", "events": []}],
+    }
+    turn = evaluate(result, rows)["turns"][0]
+    assert turn["metrics"]["knowledge_base_calls"] == 2
+    assert turn["metrics"]["tools"] == {
+        "rag-lightrag_search": 2,
+        "rag-admin": 1,
+        "weather": 1,
+    }
+    assert all(row["data"].get("category", "other") == "other" for row in rows)
 
 
 def test_session_player_prefers_mixed_audio_and_retains_split_download(tmp_path):
@@ -333,7 +431,10 @@ def test_session_has_one_player_shared_clock_and_measurement_controls(tmp_path):
     assert 'id="measure-duration"' in overview
     assert '"clock": "client_monotonic"' in overview
     assert "setPointerCapture" in overview and "pointerup" in overview
-    assert "<audio " not in second
+    assert second.count("<audio ") == 1
+    assert 'id="session-timeline"' in second
+    assert 'id="session-player"' in second
+    assert 'src="session.played.wav"' in second
     assert 'href="report.html?t=12.000#session-timeline"' in second
     assert "输入结束 = 0 s" not in second
     assert "仅属于第一轮的回复" in overview
@@ -403,3 +504,215 @@ def test_unadapted_tts_reports_unknown_metrics_without_false_cross_turn_failure(
     assert report["turns"][0]["checks"][0]["passed"] is False
     assert len(report["failures"]) == 1
     assert "tts_requests" in report["failures"][0]
+
+
+def test_offline_report_bundles_executable_timeline_dependencies(tmp_path):
+    """Execute the generated bundle, not separately loaded source modules."""
+    import re
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to execute the generated offline report")
+    report = evaluate({"name": "离线报告", "status": "passed", "turns": []}, [])
+    page = tmp_path / "report.html"
+    build_report(report, page)
+    scripts = re.findall(r"<script([^>]*)>(.*?)</script>", page.read_text(), re.S)
+    bundle = tmp_path / "bundle.js"
+    bundle.write_text(
+        "\n".join(body for attrs, body in scripts if "application/json" not in attrs)
+    )
+    validation = r"""
+const fs=require('node:fs'), vm=require('node:vm'), assert=require('node:assert/strict');
+const root={innerHTML:'',clientWidth:1000};
+const context={document:{
+  getElementById:id=>id==='data'?{textContent:'{"turn":null}'}:id==='chart'?root:null,
+  addEventListener(){}
+},window:{addEventListener(){}}};
+vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8')+`
+  timeline('chart',[{label:'VAS · ASR',segments:[{label:'ASR',start:0,end:1e9}],
+    markers:[{label:'VAD 开始',role:'vad',start:0}]}],{},
+    {embedded:true,start_ns:0,end_ns:2e9,detail:{},expandedLanes:new Set([0])});
+  timelineSnap(.1,[{time:.1,label:'ASR'}],100);
+  waitEvidence({turn_index:1,start_seconds:0,end_seconds:1},[]);
+`,context);
+assert.match(root.innerHTML,/data-event-index/);
+assert.match(root.innerHTML,/VAD 开始/);
+"""
+    process = subprocess.run(
+        [node, "-e", validation, str(bundle)], capture_output=True, text=True
+    )
+    assert process.returncode == 0, process.stderr
+
+
+def test_manual_recording_report_distinguishes_stop_from_disabling_all_vad(tmp_path):
+    result = {
+        "name": "按住说话",
+        "status": "passed",
+        "turns": [
+            {
+                "id": "turn-001",
+                "status": "completed",
+                "input_type": "audio",
+                "input_settings": {"mode": "manual"},
+                "events": [{"event": "listen_stop_sent", "at_ns": 10, "data": {}}],
+            }
+        ],
+    }
+    rows = [
+        {
+            "event": name,
+            "listen_turn_id": 1,
+            "monotonic_ns": index,
+            "clock_id": "vas",
+            "data": data,
+        }
+        for index, (name, data) in enumerate(
+            [
+                ("asr_session_config_requested", {"vad_enabled": False}),
+                ("asr_session_config_confirmed", {"vad_enabled": None}),
+                ("local_vad_speech_started", {}),
+                ("listen_stop_received", {}),
+                ("asr_commit_sent", {}),
+                ("asr_final", {}),
+            ]
+        )
+    ]
+    report = evaluate(result, rows)
+    assert report["turns"][0]["input_control"]["local_vad"] == "observed"
+    build_report(report, tmp_path / "report.html")
+    for name in ["report.html", "turn-001.html"]:
+        page = (tmp_path / name).read_text()
+        assert "录音结束控制" in page
+        assert "已发 1 次 / VAS 已收 1 次" in page
+        assert "请求关闭 · 未明确回显" in page
+        assert "仍在运行 · 1 个事件" in page
+        assert "收到 stop → 提交 ASR → 最终结果" in page
+
+
+def test_old_ptt_recording_gains_boundary_markers_in_overview_and_each_turn(tmp_path):
+    import json
+    import re
+
+    report = evaluate(
+        dict(
+            name="PTT",
+            status="passed",
+            turns=[
+                dict(
+                    id=f"turn-{index}",
+                    status="completed",
+                    input_type="audio",
+                    input_settings={"mode": "manual"},
+                    events=[
+                        dict(event="listen_start_sent", at_ns=index * 10**9, data={}),
+                        dict(
+                            event="listen_stop_sent",
+                            at_ns=index * 10**9 + 500_123_000,
+                            data={},
+                        ),
+                    ],
+                )
+                for index in (1, 2)
+            ],
+        ),
+        [],
+    )
+    report["session_playback"] = dict(
+        zero_at_ns=0,
+        duration_seconds=3,
+        status="ready",
+        path="session.wav",
+        turns=[dict(index=i, start_seconds=i, end_seconds=i + 0.6) for i in (1, 2)],
+        markers=[
+            dict(turn_index=i, kind="input_end", at_seconds=i + 0.500123)
+            for i in (1, 2)
+        ],
+    )
+    build_report(report, tmp_path / "report.html")
+    for name, indices in [
+        ("report.html", [1, 2]),
+        ("turn-001.html", [1]),
+        ("turn-002.html", [2]),
+    ]:
+        page = (tmp_path / name).read_text()
+        data = json.loads(
+            re.search(
+                r'<script id="data" type="application/json">(.*?)</script>', page, re.S
+            ).group(1)
+        )
+        markers = data["session_playback"]["markers"]
+        assert markers == [
+            m
+            for i in indices
+            for m in [
+                dict(turn_index=i, kind="ptt_start", at_seconds=i),
+                dict(
+                    turn_index=i,
+                    kind="ptt_stop",
+                    at_seconds=(i * 10**9 + 500_123_000) / 1e9,
+                ),
+            ]
+        ]
+        assert "PTT 语音开始" in page and "PTT 语音结束" in page
+    # Rendering old recordings must not alter their raw evidence.
+    assert all(m["kind"] == "input_end" for m in report["session_playback"]["markers"])
+
+
+def test_static_overview_preserves_all_turns_in_one_session(tmp_path):
+    import json
+    import re
+
+    report = evaluate(
+        {
+            "name": "two turns",
+            "status": "passed",
+            "turns": [
+                {"id": "one", "listen_turn_id": 1, "status": "completed", "events": []},
+                {"id": "two", "listen_turn_id": 2, "status": "completed", "events": []},
+            ],
+        },
+        [],
+    )
+    report["session_playback"] = {
+        "status": "ready",
+        "path": "session.played.wav",
+        "duration_seconds": 10,
+    }
+    build_report(report, tmp_path / "report.html")
+    page = (tmp_path / "report.html").read_text()
+    embedded = json.loads(
+        re.search(r'<script id="data"[^>]*>(.*?)</script>', page, re.S).group(1)
+    )
+    assert embedded["turn"] is None
+    assert 'href="turn-001.html"' in page
+    assert 'href="turn-002.html"' in page
+    assert "vas_timeline" in embedded["session_playback"]
+    assert page.count('id="session-canvas"') == 1
+
+
+def test_confirmed_interruption_does_not_show_not_triggered_badge(tmp_path):
+    report = evaluate(
+        {
+            "name": "confirmed interrupt",
+            "status": "passed",
+            "turns": [
+                {
+                    "id": "turn-03",
+                    "status": "interrupted",
+                    "requested_interruption": {"after_playback_seconds": 1},
+                    "interruption": {"abort_requested_at_ns": 2000000000},
+                    "events": [],
+                }
+            ],
+        },
+        [],
+    )
+    build_report(report, tmp_path / "report.html")
+    for name in ("report.html", "turn-001.html"):
+        page = (tmp_path / name).read_text()
+        assert "已打断" in page
+        assert "打断未触发" not in page
