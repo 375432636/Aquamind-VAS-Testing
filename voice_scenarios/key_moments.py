@@ -319,6 +319,31 @@ def _turn_rows(turn, index, own, playback):
     for (parent, _, _, kind), segments in groups.items():
         if parent is None:
             output_rows(None, segments, kind)
+    for lane in own:
+        if lane.get("category") != "tts_pipeline" or not lane.get("missing"):
+            continue
+        markers = lane.get("markers", [])
+        ready = _first([m for m in markers if m["event"] == "tts_segment_ready"])
+        frame = _first([m for m in markers if m["event"] == "audio_output_frame"])
+        kind = {
+            "answer": "正式回答",
+            "pre_speech": "过渡语",
+            "filler": "临时回复",
+            "greeting": "欢迎语",
+        }.get(lane.get("output_kind"), "未关联输出")
+        pair(
+            "tts_observed",
+            f"TTS · {kind} · 已观测链路",
+            dict(ready, source="server", label="分句就绪") if ready else None,
+            dict(frame, source="server", label="首帧发送") if frame else None,
+            ["分句就绪或首帧发送未采集"],
+        )
+        rows[-1]["missing"] = lane["missing"] + rows[-1]["missing"]
+        if rows[-1]["intervals"]:
+            rows[-1]["intervals"][0]["note"] = (
+                "分句就绪到首帧发送的累计间隔；包含合成、排队和发送准备，"
+                "不能作为纯 TTS 合成耗时"
+            )
     return rows
 
 

@@ -221,7 +221,8 @@ function timeline(id, lanes, clock = {}, options = {}) {
     const memories=segments.filter(item=>item.memory_evidence).map(item=>item.memory_evidence);
     const memory=expandedLanes.has(index)?memories.map(item=>`<details class="memory-evidence"><summary>${esc(item.label)} · 查看返回内容与采用内容</summary><pre>${esc(memoryDetails(item))}</pre></details>`).join(''):'';
     const knowledge=expandedLanes.has(index)?segments.filter(item=>item.knowledge_evidence).map(item=>`<details class="memory-evidence knowledge-evidence"><summary>知识库 · ${esc(item.knowledge_evidence.label)} · 查看查询与返回内容</summary><pre>${esc(knowledgeDetails(item.knowledge_evidence))}</pre></details>`).join(''):'';
-    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key${segments.some(item=>item.tts_evidence)?' has-tts-text':''}">${keys}</div>${memory}${knowledge}`;
+    const missing=(lane.missing || []).length ? '<div class="key-notes">未采集：'+esc(lane.missing.join('、'))+'</div>' : '';
+    return `${markers(lane,index)}<div class="track">${segments.map(item=>bar(item,index)).join('')}</div><div class="segment-key${segments.some(item=>item.tts_evidence)?' has-tts-text':''}">${keys}</div>${missing}${memory}${knowledge}`;
   }
   const axis = clock.mode === 'wall' ? [0,range/2,range].map(offset=>`<span>${beijingTime(clock.origin_wall_time_ms+(zero+offset)/1e6)}<small>+${sec(offset/1e9)} s</small></span>`).join('') : `<span>0 s</span><span>${sec(range/1e9/2)} s</span><span>${sec(range/1e9)} s</span>`;
   root.innerHTML = `<div class="timeline-plot">${options.embedded ? '' : '<div class="axis">'+axis+'</div>'}` + lanes.map((lane,index) => {

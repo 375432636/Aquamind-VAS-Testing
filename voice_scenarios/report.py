@@ -1055,6 +1055,8 @@ def _turn_page(report, index):
             if report.get("run_metadata", {}).get("diagnostics") == "off"
             else metrics.get(key)
         )
+        if value is None:
+            value = "未采集"
         content += f"<span>{label}<b>{_text(value)}</b></span>"
     content += (
         "</div>"

@@ -187,6 +187,99 @@ def test_empty_trace_leaves_playback_extent_unchanged():
     assert chart["axis_end_seconds"] == 8
 
 
+def test_report_shows_uninstrumented_tts_in_overview_and_turn_details(tmp_path):
+    report = session_example()
+    report.update(name="本地 TTS 两轮", status="passed")
+    report["session_playback"].update(status="ready", path="session.mixed.wav")
+    all_events = []
+    for index, turn in enumerate(report["turns"], 1):
+        turn.update(id=f"turn-{index}", status="completed")
+        for event in turn["vas_events"]:
+            event["listen_turn_id"] = index
+            event["span_id"] = f"llm-{index}"
+            all_events.append(event)
+        for name, offset in (
+            ("tts_segment_ready", 3),
+            ("tts_audio_enqueued", 4),
+            ("tts_audio_dequeued", 5),
+            ("audio_output_frame", 6),
+        ):
+            event = {
+                "event": name,
+                "clock_id": "vas-1",
+                "listen_turn_id": index,
+                "output_id": f"answer-{index}",
+                "output_kind": "answer",
+                "monotonic_ns": (100 + 20 * (index - 1) + offset) * SECOND,
+                "wall_time_ns": EPOCH + (offset + 3 + 20 * (index - 1)) * SECOND,
+                "data": {},
+            }
+            all_events.append(event)
+    all_events.append(
+        {
+            "event": "diagnostic_capabilities",
+            "clock_id": "vas-1",
+            "monotonic_ns": 140 * SECOND,
+            "data": {"component": "tts", "provider": "openai", "request_timing": False},
+        }
+    )
+    evaluated = evaluate(report, all_events)
+    build_report(evaluated, tmp_path / "report.html")
+
+    def trace(path):
+        html = (tmp_path / path).read_text()
+        data = json.loads(
+            re.search(
+                r'<script id="data" type="application/json">(.*?)</script>', html
+            )[1]
+        )
+        return data["session_playback"]["vas_timeline"]["lanes"]
+
+    overview = [
+        lane for lane in trace("report.html") if lane["category"] == "tts_pipeline"
+    ]
+    assert [lane["turn_index"] for lane in overview] == [1, 2]
+    assert [lane["missing"] for lane in overview] == [
+        ["合成请求耗时未采集"],
+        ["合成请求耗时未采集"],
+    ]
+    assert [m["event"] for m in overview[0]["markers"]] == [
+        "tts_segment_ready",
+        "tts_audio_enqueued",
+        "tts_audio_dequeued",
+        "audio_output_frame",
+    ]
+    key_rows = [
+        lane for lane in trace("report.html") if lane.get("key_id") == "tts_observed"
+    ]
+    assert [lane["turn_index"] for lane in key_rows] == [1, 2]
+    assert all(lane["missing"] == ["合成请求耗时未采集"] for lane in key_rows)
+    assert all(
+        "不能作为纯 TTS 合成耗时" in lane["intervals"][0]["note"] for lane in key_rows
+    )
+    assert "TTS<b>未采集</b>" in (tmp_path / "turn-001.html").read_text()
+    assert (
+        len(
+            [
+                lane
+                for lane in trace("turn-001.html")
+                if lane["category"] == "tts_pipeline"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                lane
+                for lane in trace("turn-002.html")
+                if lane["category"] == "tts_pipeline"
+            ]
+        )
+        == 1
+    )
+
+
 def test_overview_contains_all_turn_traces_but_detail_keeps_only_its_own(tmp_path):
     source = session_example()
     source.update(name="连续两轮", status="passed")

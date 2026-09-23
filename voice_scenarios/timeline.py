@@ -1,6 +1,7 @@
 """Presentation lanes that retain each request's original timing and identity."""
 
 import math
+from collections import defaultdict
 
 from .knowledge_evidence import knowledge_evidence
 from .llm_evidence import thinking_mode
@@ -184,6 +185,110 @@ MILESTONE_LABELS = {
 }
 
 
+def _tts_pipeline_lanes(spans, events):
+    """Show observed TTS progress even when the provider has no request spans.
+
+    Queue and frame events can be numerous. Keep their first and last observation
+    and the event count; neither boundary is a synthesis request boundary.
+    """
+    names = {
+        "tts_segment_ready": "TTS 分段就绪（消费侧）",
+        "tts_audio_enqueued": "音频队列入队",
+        "tts_audio_dequeued": "音频队列出队",
+        "audio_output_started": "音频发送开始",
+        "audio_output_frame": "音频帧发送",
+    }
+    buckets = defaultdict(lambda: defaultdict(list))
+    kinds = {}
+    for event in events:
+        if event.get("event") not in names or event.get("monotonic_ns") is None:
+            continue
+        key = (
+            event.get("clock_id"),
+            event.get("listen_turn_id"),
+            event.get("output_id"),
+            event.get("output_kind") if event.get("output_id") is None else None,
+        )
+        buckets[key][event["event"]].append(event)
+        if event.get("output_kind"):
+            kinds.setdefault(key, event["output_kind"])
+
+    timed_outputs = {
+        (
+            event.get("clock_id"),
+            event.get("listen_turn_id"),
+            event.get("output_id"),
+        )
+        for event in events
+        if event.get("event") == "tts_request_started"
+        and event.get("output_id") is not None
+        and any(
+            span.get("name") == "tts_request"
+            and span.get("span_id") == event.get("span_id")
+            and span.get("clock_id") == event.get("clock_id")
+            for span in spans
+        )
+    }
+    lanes = []
+    for key, observed in buckets.items():
+        clock_id, turn_id, output_id, _ = key
+        output_kind = kinds.get(key)
+        kind = {
+            "answer": "正式回答",
+            "pre_speech": "过渡语",
+            "filler": "临时回复",
+            "greeting": "欢迎语",
+        }.get(output_kind, "未关联输出")
+        has_request = (clock_id, turn_id, output_id) in timed_outputs
+        markers = []
+        for name, label in names.items():
+            rows = sorted(observed[name], key=lambda row: row["monotonic_ns"])
+            if has_request and name == "tts_segment_ready":
+                continue
+            selected = rows if name == "tts_segment_ready" else rows[:1] + rows[-1:]
+            if len(rows) == 1 and name != "tts_segment_ready":
+                selected = rows
+            for index, row in enumerate(selected):
+                caption = label
+                if len(rows) > 1 and name != "tts_segment_ready":
+                    caption += (
+                        f" · {'首次' if index == 0 else '末次'}（共 {len(rows)} 项）"
+                    )
+                markers.append(
+                    dict(
+                        event=name,
+                        label=caption,
+                        start_ns=row["monotonic_ns"],
+                        clock_id=clock_id,
+                        span_id=row.get("span_id"),
+                        output_id=output_id,
+                        data={**row.get("data", {}), "observed_count": len(rows)},
+                        status=row.get("status"),
+                        role=(
+                            "primary"
+                            if name in {"tts_segment_ready", "audio_output_frame"}
+                            else "secondary"
+                        ),
+                        severity="info",
+                        turn_id=turn_id,
+                        since_request_seconds=None,
+                    )
+                )
+        if markers:
+            lanes.append(
+                dict(
+                    label=f"TTS · {kind} · 分句、排队与发送",
+                    category="tts_pipeline",
+                    output_id=output_id,
+                    output_kind=output_kind,
+                    segments=[],
+                    markers=sorted(markers, key=lambda marker: marker["start_ns"]),
+                    missing=[] if has_request else ["合成请求耗时未采集"],
+                )
+            )
+    return lanes
+
+
 def group_timeline_spans(spans, events):
     ordered = sorted(spans, key=lambda span: span["start_ns"])
     nodes = {span["span_id"]: span for span in ordered}
@@ -320,6 +425,10 @@ def group_timeline_spans(spans, events):
             )
         if name == "tts_segment_ready":
             request = speech_spans.get(event.get("data", {}).get("segment_id"), request)
+            if not request or request["name"] != "tts_request":
+                # An LLM span can share this ID, but it did not synthesize audio.
+                # The pipeline lane presents the observation under TTS.
+                continue
         if (
             request
             and request.get("clock_id")
@@ -497,4 +606,4 @@ def group_timeline_spans(spans, events):
     for lane in lanes.values():
         if lane["category"] == "tts_request":
             lane["label"] += f" · {len(lane['segments'])} 段"
-    return list(lanes.values())
+    return list(lanes.values()) + _tts_pipeline_lanes(spans, events)

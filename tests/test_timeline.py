@@ -1,4 +1,4 @@
-from voice_scenarios.timeline import group_timeline_spans
+from voice_scenarios.timeline import group_timeline_spans, request_spans
 
 
 def span(name, span_id, start, end, parent=None):
@@ -159,3 +159,66 @@ def test_vad_has_its_own_lane_and_distinct_role():
     )
     assert lanes[0]["category"] == "vad"
     assert lanes[0]["markers"][0]["role"] == "vad"
+
+
+def test_tts_without_request_timing_still_shows_recorded_pipeline():
+    def observed(name, at, **data):
+        return dict(
+            event=name,
+            clock_id="vas",
+            listen_turn_id=1,
+            output_id="answer",
+            output_kind="answer",
+            monotonic_ns=at * 1_000_000_000,
+            data=data,
+        )
+
+    events = [
+        observed("tts_segment_ready", 1, segment_id="segment-1"),
+        observed("tts_audio_enqueued", 2),
+        observed("tts_audio_enqueued", 3),
+        observed("tts_audio_dequeued", 4),
+        observed("audio_output_started", 5),
+        observed("audio_output_frame", 6, audio_seq=1),
+        observed("audio_output_frame", 7, audio_seq=2),
+    ]
+    events[1].pop("output_kind")  # Some queue observations omit the reply type.
+    lanes = group_timeline_spans([], events)
+    tts = next(lane for lane in lanes if lane["category"] == "tts_pipeline")
+    assert "合成请求耗时未采集" in tts["missing"]
+    assert [m["event"] for m in tts["markers"]] == [
+        "tts_segment_ready",
+        "tts_audio_enqueued",
+        "tts_audio_enqueued",
+        "tts_audio_dequeued",
+        "audio_output_started",
+        "audio_output_frame",
+        "audio_output_frame",
+    ]
+    assert tts["markers"][1]["data"]["observed_count"] == 2
+    assert all(not lane["segments"] for lane in lanes)
+
+
+def test_http_transport_is_not_a_second_llm_request():
+    def observed(name, at):
+        return dict(
+            event=name,
+            span_id="llm-1",
+            clock_id="vas",
+            monotonic_ns=at * 1_000_000_000,
+            data={},
+        )
+
+    events = [
+        observed("llm_request_started", 1),
+        observed("http_request_started", 2),
+        observed("http_request_finished", 3),
+        observed("llm_request_finished", 4),
+    ]
+    spans, errors = request_spans(events)
+    assert errors == []
+    assert [(span["name"], span["duration_ms"]) for span in spans] == [
+        ("llm_request", 3000)
+    ]
+    lanes = group_timeline_spans(spans, events)
+    assert [lane["category"] for lane in lanes] == ["llm_request"]
