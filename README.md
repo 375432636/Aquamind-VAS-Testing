@@ -148,6 +148,8 @@ First Token 指 VAS 公共包装收到首个有效输出增量，可能是工具
 
 默认播放及下载的 `session.mixed.wav` 同时包含用户语音与 VAS 回复，单声道设备也能完整回听。原始左右分轨文件 `session.played.wav` 保留用于诊断，可在“播放与计时口径”中下载。两个文件使用相同时间轴；旧报告执行 `python main.py report <结果目录>` 即可生成混音版，无需重跑 VAS。
 
+报告总览与单轮页首显示测试设备 MAC 和 WebSocket 地址。新测试会在 `result.json` 保存这两项，URL 的认证信息、查询参数和片段不会写入结果。旧产物可在结果目录添加 `connection.json`（包含 `device_mac` 和 `websocket_url`），再运行 `python main.py report <结果目录>` 补入报告；原始 `result.json` 不会改动。
+
 ## 下载与音频压缩
 
 Actions 每批只准备一次 Docker，在一个 Linux job 中串行执行，并上传一个 artifact。同一文件中的多轮对话仍在同一个连接中执行，回听也是完整 session。

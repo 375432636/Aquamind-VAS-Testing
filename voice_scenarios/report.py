@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .assertions import evaluate_business_assertions
 from .clock_timeline import combined_timeline, session_trace_timeline
+from .connection import connection_details
 from .evaluation import TOOL_NAMES, tool_check
 from .excel_report import export_excel
 from .input_control import inspect_input_control, refresh_ptt_markers
@@ -673,6 +674,26 @@ def _input_control_panel(turns):
     )
 
 
+def _connection_strip(report):
+    recorded = report.get("connection") or {}
+    run = report.get("run_metadata") or {}
+    details = connection_details(
+        recorded.get("device_mac") or run.get("device_id"),
+        recorded.get("websocket_url") or run.get("endpoint"),
+    )
+    if not details:
+        return ""
+    fields = []
+    for label, key in (("设备 MAC", "device_mac"), ("测试 WebSocket", "websocket_url")):
+        if details.get(key):
+            fields.append(f"<span>{label} <code>{_text(details[key])}</code></span>")
+    return (
+        '<div class="connection-strip" aria-label="测试连接信息">'
+        + "".join(fields)
+        + "</div>"
+    )
+
+
 def _overview(report):
     turns = report["turns"]
     values = [_timing_values(turn) for turn in turns]
@@ -688,6 +709,7 @@ def _overview(report):
         '<div class="page-heading"><div><div class="eyebrow">SESSION OVERVIEW</div>'
         f'<h1>{_text(report.get("name", "语音测试"))}</h1><p>整段会话 · 用户语音、回复播放与 VAS 全链路时序。</p></div>'
         f'{_badge("测试通过", "success") if report.get("status") == "passed" else _badge("需要检查", "danger")}</div>'
+        + _connection_strip(report)
         + _notices(report)
         + (
             '<p><a href="evaluation.xlsx" download>下载 Excel 评测表</a></p>'
@@ -962,6 +984,7 @@ def _turn_page(report, index):
         f'TURN {index + 1:02} <span>/ {len(report["turns"]):02}</span></div>'
         f'<h1>第 {index + 1} 轮对话</h1><div class="badges">{_turn_badges(turn)}</div></div>'
         f'<div class="page-switch">{previous}{following}</div></div>'
+        + _connection_strip(report)
         + _notices(report, turn)
         + '<section class="question-panel"><div class="question-kicker">用户输入</div>'
         f"<p>{_text(_question(turn))}</p>"

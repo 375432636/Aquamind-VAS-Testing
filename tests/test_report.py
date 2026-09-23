@@ -137,6 +137,66 @@ def test_session_player_prefers_mixed_audio_and_retains_split_download(tmp_path)
     assert page.count("<audio ") == 1
 
 
+def test_connection_details_are_visible_on_overview_and_turn_page(tmp_path):
+    result = {
+        "name": "连接信息",
+        "status": "passed",
+        "connection": {
+            "device_mac": "20:7C:61:D2:D5:2D",
+            "websocket_url": "wss://100.114.113.70:18443/looomyn/v1/",
+        },
+        "turns": [{"id": "one", "status": "completed", "events": []}],
+    }
+    build_report(evaluate(result, []), tmp_path / "report.html")
+    for name in ("report.html", "turn-001.html"):
+        page = (tmp_path / name).read_text()
+        assert "设备 MAC" in page
+        assert "20:7C:61:D2:D5:2D" in page
+        assert "测试 WebSocket" in page
+        assert "wss://100.114.113.70:18443/looomyn/v1/" in page
+
+
+def test_historical_report_can_add_connection_without_changing_raw_result(tmp_path):
+    import json
+
+    from voice_scenarios.__main__ import create_report
+
+    result = {"name": "旧报告", "status": "passed", "turns": []}
+    source = json.dumps(result, ensure_ascii=False)
+    (tmp_path / "result.json").write_text(source)
+    (tmp_path / "connection.json").write_text(
+        json.dumps(
+            {
+                "device_mac": "20:7C:61:D2:D5:2D",
+                "websocket_url": "wss://user:secret@example.test:18443/looomyn/v1/?token=private",
+            }
+        )
+    )
+    create_report(tmp_path)
+    page = (tmp_path / "report.html").read_text()
+    assert "20:7C:61:D2:D5:2D" in page
+    assert "wss://example.test:18443/looomyn/v1/" in page
+    assert "secret" not in page
+    assert "token=private" not in page
+    assert (tmp_path / "result.json").read_text() == source
+
+
+def test_batch_report_uses_saved_endpoint_settings(tmp_path):
+    result = {
+        "name": "批量连接",
+        "status": "passed",
+        "run_metadata": {
+            "device_id": "AA:BB:CC:DD:EE:11",
+            "endpoint": "wss://vas.example.test:18443/looomyn/v1/",
+        },
+        "turns": [],
+    }
+    build_report(evaluate(result, []), tmp_path / "report.html")
+    page = (tmp_path / "report.html").read_text()
+    assert "AA:BB:CC:DD:EE:11" in page
+    assert "wss://vas.example.test:18443/looomyn/v1/" in page
+
+
 def test_vad_report_uses_speech_boundary_and_separate_server_endpoint_clock(tmp_path):
     result = {
         "name": "vad",

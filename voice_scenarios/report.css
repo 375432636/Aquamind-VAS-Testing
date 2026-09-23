@@ -46,3 +46,7 @@
 .memory-evidence { position:sticky; left:0; max-width:680px; margin:6px 0; padding:8px 12px; border:1px solid #d8cde5; border-radius:8px; background:#faf8fd; font-size:13px; }
 .memory-evidence summary { cursor:pointer; color:#725591; font-weight:600; }
 .memory-evidence pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; max-height:260px; overflow:auto; margin:10px 0 0; }
+
+.connection-strip{display:flex;flex-wrap:wrap;gap:8px 22px;margin:0 0 18px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:#f7f9fc;color:var(--muted);font-size:12px}
+.connection-strip span{display:flex;flex-wrap:wrap;align-items:baseline;gap:7px;min-width:0}
+.connection-strip code{color:var(--ink);font-size:13px;overflow-wrap:anywhere}

@@ -85,6 +85,29 @@ def test_first_input_waits_for_greeting_stop_and_playback_drain(tmp_path):
     assert result["startup"]["playback_drained_at_ns"] <= peer.inputs[0]["at_ns"]
 
 
+def test_connection_details_persist_without_url_credentials(tmp_path):
+    scenario = Scenario.from_dict(
+        {
+            "turns": [{"audio": str(audio_fixture(tmp_path))}],
+            "turn_timeout_seconds": 1,
+        }
+    )
+    peer = ScriptedVAS(replies=(0.01,))
+    peer.device_id = "20:7C:61:D2:D5:2D"
+    peer.url = "wss://user:secret@example.test:18443/looomyn/v1/?token=private#part"
+    output = tmp_path / "connection"
+    result = asyncio.run(run_scenario(scenario, peer, output))
+    expected = {
+        "device_mac": peer.device_id,
+        "websocket_url": "wss://example.test:18443/looomyn/v1/",
+    }
+    assert result["connection"] == expected
+    saved = (output / "result.json").read_text()
+    assert json.loads(saved)["connection"] == expected
+    assert "secret" not in saved
+    assert "token=private" not in saved
+
+
 def test_delayed_greeting_is_waited_for_before_first_input(tmp_path):
     class DelayedGreetingVAS(ScriptedVAS):
         async def connect(self, emit):

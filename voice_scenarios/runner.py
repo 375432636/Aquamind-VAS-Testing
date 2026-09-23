@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .clock_sync import ClockSyncSamples
 from .clock_timeline import client_wall_time
+from .connection import connection_details
 from .diagnostics import DiagnosticCollector
 from .player import ClockedPlayer
 from .protocol import Event
@@ -39,6 +40,11 @@ async def run_scenario(
         "client_clock": client_clock,
         "connection_started_at_ns": client_clock["monotonic_ns"],
     }
+    connection = connection_details(
+        getattr(transport, "device_id", None), getattr(transport, "url", None)
+    )
+    if connection:
+        result["connection"] = connection
     if scenario.evaluation:
         result["evaluation"] = scenario.evaluation
         result["evaluation_turns"] = [

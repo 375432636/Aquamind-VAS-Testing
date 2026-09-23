@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 
 import yaml
 
+from .connection import connection_details
 from .dev_stack import ROOT, serve_stack
 from .failure_summary import failure_reasons
 from .model import SENSOR_COMMANDS, Scenario, Turn
@@ -34,6 +35,16 @@ def create_report(directory):
         else []
     )
     report = evaluate(result, events, artifact_dir=directory)
+    historical_connection = directory / "connection.json"
+    if not report.get("connection") and historical_connection.is_file():
+        declared = json.loads(historical_connection.read_text())
+        if not isinstance(declared, dict):
+            raise ValueError("connection.json must be an object")
+        details = connection_details(
+            declared.get("device_mac"), declared.get("websocket_url")
+        )
+        if details:
+            report["connection"] = details
     prepare_reply_audio(report, directory)
     prepare_session_playback(report, directory)
     (directory / "report.json").write_text(
