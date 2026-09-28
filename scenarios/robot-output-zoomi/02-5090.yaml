@@ -1,0 +1,56 @@
+name: Zoomi robot_output · 5090 · 10 场景
+device_id: "C2:B8:56:7B:95:7C"
+environment: main
+input_mode: manual
+turn_timeout_seconds: 90
+turns:
+  - id: basic-greeting-8b
+    text: 你好 Zoomi，请跟我打个招呼，并做一个开心的表情。
+    expect:
+      business:
+        robot_output: {called: true, expression: true, product_refs: false, navigation: false}
+  - id: basic-wave-8b
+    text: 请向我挥手，并做一个开心的表情。
+    expect:
+      business:
+        robot_output: {called: true, action: true, expression: true, product_refs: false, navigation: false}
+  - id: basic-wave-again-8b
+    text: 请再向我挥一次手，这次做一个惊讶的表情。
+    expect:
+      business:
+        robot_output: {called: true, action: true, expression: true, product_refs: false, navigation: false}
+  - id: product-waterproof-27b
+    text: 请推荐一款适合跑步的防水耳机，并给我展示商品图片，不要带我去别的地方。
+    expect:
+      business:
+        robot_output: {called: true, product_refs: true, navigation: false}
+  - id: product-x7air-27b
+    text: 请介绍奢音 X7Air 骨传导运动耳机，并展示这款商品的图片。
+    expect:
+      business:
+        robot_output: {called: true, product_refs: true, navigation: false}
+  - id: product-gift-27b
+    text: 请推荐一款适合送女朋友的耳机，并展示推荐商品的图片。
+    expect:
+      business:
+        robot_output: {called: true, product_refs: true, navigation: false}
+  - id: product-nothing-27b
+    text: 你们有 Nothing Ear 3 耳机吗？请介绍它并展示产品图片。
+    expect:
+      business:
+        robot_output: {called: true, product_refs: true, navigation: false}
+  - id: navigation-experience-27b
+    text: 请带我去数码体验区。
+    expect:
+      business:
+        robot_output: {called: true, action: false, product_refs: false, navigation: true}
+  - id: navigation-second-zone-27b
+    text: 请带我去顾客服务台。
+    expect:
+      business:
+        robot_output: {called: true, action: false, product_refs: false, navigation: true}
+  - id: product-no-navigation-27b
+    text: 请推荐一款耳机，但不要带我去任何地方，只介绍产品即可。
+    expect:
+      business:
+        robot_output: {called: true, navigation: false}
