@@ -1,12 +1,12 @@
-name: Zoomi robot_output · 5090 · 用户原句与有效区域对照
+name: Zoomi robot_output · 5090 · 平台展馆导览的三个用户场景
 device_id: "C2:B8:56:7B:95:7C"
 environment: main
 features:
   scene_navigation: true
-input_mode: manual
+input_mode: text
 turn_timeout_seconds: 90
 turns:
-  - id: navigation-a-zone-unknown
+  - id: navigation-a-zone
     text: 带我到 A 区。
     expect:
       business:
@@ -21,8 +21,3 @@ turns:
     expect:
       business:
         robot_output: {called: true, action: true, expression: true}
-  - id: navigation-valid-zone-control
-    text: 带我到数码体验区。
-    expect:
-      business:
-        robot_output: {called: true, navigation: true}

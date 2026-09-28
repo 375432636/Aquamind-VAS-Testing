@@ -101,6 +101,8 @@ turns:
 
 批量 Action 只保留 `scenario_path` 一个输入。每个用例必须写 `device_id` 和 `environment`，本机同名环境变量不会覆盖它们。`name` 可省略并使用文件名；`input_mode: manual`、`turn_timeout_seconds: 90` 是默认值，通常不必写。测试 VAD 或调整超时时再添加。工作流文件分别为 [`voice-test.yml`](.github/workflows/voice-test.yml) 和 [`voice-inline-test.yml`](.github/workflows/voice-inline-test.yml)。
 
+保存的批量场景也可设置 `input_mode: text`。此时每轮使用 `text` 字段，客户端原样发送 VAS 原生 `listen/detect` 文本消息，不生成输入 WAV，也不经过 ASR；报告以 `text_sent` 为输入时间点。适合单独验证 LLM、`robot_output` 和设备控制消息。`manual`、`vad` 模式下的 `text` 仍会合成为语音，以便测试语音链路。示例见 [`Zoomi 三句文字场景`](scenarios/robot-output-zoomi/03-5090-user-cases.yaml)。
+
 `interrupt_after_seconds` 可省略；`output_kind` 可选 `answer`（正式回答）、`filler`（临时回复）、`pre_speech`（工具过渡语）或 `any`（任意语音）。如果指定类型没有出现，或回复在打断时间前已结束，报告会记录未触发打断，而不会把它算作成功。
 
 每个 session 支持 1–30 个 turn，单轮超时范围为 5–120 秒。批量入口支持 1–100 个文件；Actions 整批 job 最长 120 分钟。Actions 与本地使用同一流程：先统一静态校验全部场景，再逐会话准备音频、连接 VAS、生成报告。静态错误会在合成和联网前终止整批；单轮执行失败后，停止上行和播放、发送 abort，最多等待 5 秒；收到新的停止确认并静默至少 0.25 秒后，继续同一连接的下一轮。恢复失败或断线时，剩余轮次标记“未执行”，后面的会话继续；不会重连并冒充原上下文。失败轮保留原始错误和恢复记录，整批最终仍为失败，但报告照常上传。超大批次请拆分目录运行。
@@ -214,7 +216,7 @@ python -m voice_scenarios.batch_run \
   --output artifacts/my-batch
 ```
 
-将 `--scenarios` 换成单个文件只运行该 session。`--prepare-only` 只校验场景并生成输入 WAV，不连接 VAS。每次使用新的输出目录，避免覆盖历史结果。
+将 `--scenarios` 换成单个文件只运行该 session。`--prepare-only` 只校验场景并准备输入，不连接 VAS；文字模式不生成输入 WAV。每次使用新的输出目录，避免覆盖历史结果。
 
 临时文本输入使用：
 

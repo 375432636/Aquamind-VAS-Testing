@@ -5,6 +5,42 @@ the last value. Raw records retain that ID; client_turn_index is report-only.
 """
 
 from collections import defaultdict
+from bisect import bisect_right
+
+
+def attribute_text_turns(report, events):
+    """Map native text turns when VAS leaves listen_turn_id empty for detect."""
+
+    turns = report.get("turns", [])
+    if not turns or any(turn.get("input_type") != "text" for turn in turns):
+        return events, []
+    detects = [row for row in events if row.get("event") == "listen_detect_received"]
+    if not detects and any(row.get("listen_turn_id") is not None for row in events):
+        # Browser sessions can already provide verified server turn IDs.
+        return events, []
+    if detects and all(row.get("listen_turn_id") is not None for row in detects):
+        # A future VAS may label native text turns itself.
+        return events, []
+    sent = [
+        sum(row.get("event") == "text_sent" for row in turn.get("events", []))
+        for turn in turns
+    ]
+    if (
+        len(detects) != len(turns)
+        or any(count != 1 for count in sent)
+        or any(row.get("listen_turn_id") is not None for row in detects)
+        or any(type(row.get("seq")) is not int for row in events)
+    ):
+        return events, [
+            "文字会话的 listen/detect 诊断与客户端轮次不匹配，无法可靠归属 robot_output。"
+        ]
+    boundaries = [row["seq"] for row in detects]
+    if boundaries != sorted(set(boundaries)):
+        return events, ["文字会话的 listen/detect 诊断顺序无效，无法可靠归属。"]
+    return [
+        dict(row, client_turn_index=bisect_right(boundaries, row["seq"]))
+        for row in events
+    ], []
 
 
 def attribute_mixed_turns(report, events):

@@ -26,7 +26,11 @@ from .reply_timing import (
 )
 from .timeline import group_timeline_spans, media_timeline_markers, request_spans
 from .tts_evidence import tts_segment_evidence
-from .turn_attribution import attribute_mixed_turns, attribute_reused_listen_turns
+from .turn_attribution import (
+    attribute_mixed_turns,
+    attribute_reused_listen_turns,
+    attribute_text_turns,
+)
 
 
 def delta(events, start, end, key, *, signed=False):
@@ -41,7 +45,9 @@ def delta(events, start, end, key, *, signed=False):
 
 def evaluate(result, vas_events, *, artifact_dir=None):
     report = copy.deepcopy(result)
-    vas_events, failures = attribute_mixed_turns(report, vas_events)
+    vas_events, failures = attribute_text_turns(report, vas_events)
+    vas_events, mixed_failures = attribute_mixed_turns(report, vas_events)
+    failures.extend(mixed_failures)
     vas_events, reused_failures = attribute_reused_listen_turns(report, vas_events)
     failures.extend(reused_failures)
     attribution_complete = not failures

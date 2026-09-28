@@ -135,8 +135,8 @@ def settings_from_env(env):
             "VAS_DEVICE_ID is required and must be a valid device identifier"
         )
     mode = env.get("VAS_INPUT_MODE", "manual")
-    if mode not in {"manual", "vad"}:
-        raise ValueError("VAS_INPUT_MODE must be manual or vad")
+    if mode not in {"manual", "vad", "text"}:
+        raise ValueError("VAS_INPUT_MODE must be manual, vad or text")
     diagnostics = env.get("VAS_DIAGNOSTICS", "frame")
     if diagnostics not in {"off", "stage", "frame"}:
         raise ValueError("VAS_DIAGNOSTICS must be off, stage or frame")
@@ -198,6 +198,8 @@ def validate_turns(raw, settings):
             raise ValueError(
                 f"turn {index}: provide exactly one of text, audio or sensor"
             )
+        if settings["input_mode"] == "text" and ("audio" in turn or "chunks" in turn):
+            raise ValueError(f"turn {index}: text mode requires text or sensor input")
         turn_id = turn.get("id", f"turn-{index:03d}")
         if (
             not isinstance(turn_id, str)
@@ -260,6 +262,8 @@ def validate_turns(raw, settings):
             ):
                 raise ValueError(f"turn {index}: text must contain 1–1000 characters")
             item["input_text"] = text.strip()
+            if settings["input_mode"] == "text":
+                item["text"] = text.strip()
         else:
             if not isinstance(turn["audio"], str):
                 raise ValueError(f"turn {index}: audio must be a repository WAV path")
@@ -328,6 +332,8 @@ def prepare(output, env, *, name=None):
     inputs.mkdir(exist_ok=True)
     for index, turn in enumerate(turns, 1):
         if "sensor" in turn:
+            continue
+        if "text" in turn:
             continue
         if "chunks" in turn:
             for number, chunk in enumerate(turn["chunks"], 1):

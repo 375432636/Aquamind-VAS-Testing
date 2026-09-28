@@ -64,13 +64,25 @@ class Turn:
     sensor: str | None = None
     tool: str | None = None
     chunks: tuple[AudioChunk, ...] = ()
+    text: str | None = None
 
     def __post_init__(self):
         if (
-            sum((self.audio is not None, self.sensor is not None, bool(self.chunks)))
+            sum(
+                (
+                    self.audio is not None,
+                    self.sensor is not None,
+                    bool(self.chunks),
+                    self.text is not None,
+                )
+            )
             != 1
         ):
-            raise ValueError("turn requires exactly one of audio, sensor or chunks")
+            raise ValueError(
+                "turn requires exactly one of audio, sensor, chunks or text"
+            )
+        if self.text is not None and (not self.text.strip() or "\x00" in self.text):
+            raise ValueError("text input must be nonempty and contain no NUL")
         if self.sensor is not None:
             sensor_command(self.sensor)
         if not isinstance(self.expect, dict):
@@ -89,8 +101,8 @@ class InputStream:
     noise_seed: int = 0
 
     def __post_init__(self):
-        if self.mode not in {"manual", "vad"}:
-            raise ValueError("input.mode must be manual or vad")
+        if self.mode not in {"manual", "vad", "text"}:
+            raise ValueError("input.mode must be manual, vad or text")
         positive_number(self.pre_roll_seconds, "pre_roll_seconds", allow_zero=True)
         if (
             isinstance(self.noise_dbfs, bool)
@@ -126,9 +138,12 @@ class Scenario:
         for index, value in enumerate(data["turns"], 1):
             if (
                 not isinstance(value, dict)
-                or sum(key in value for key in ("audio", "sensor", "chunks")) != 1
+                or sum(key in value for key in ("audio", "sensor", "chunks", "text"))
+                != 1
             ):
-                raise ValueError("turn requires exactly one of audio or sensor")
+                raise ValueError(
+                    "turn requires exactly one of audio, sensor, chunks or text"
+                )
             sensor = sensor_command(value["sensor"]) if "sensor" in value else None
             path = (
                 (Path(base_dir) / value["audio"]).resolve()
@@ -205,8 +220,16 @@ class Scenario:
                     sensor,
                     value.get("tool"),
                     chunks,
+                    value.get("text"),
                 )
             )
+        input_stream = InputStream(**data.get("input", {}))
+        if any(turn.text is not None for turn in turns) and input_stream.mode != "text":
+            raise ValueError("text turns require input.mode: text")
+        if input_stream.mode == "text" and any(
+            turn.audio is not None or turn.chunks for turn in turns
+        ):
+            raise ValueError("text mode cannot contain audio turns")
         return cls(
             str(data.get("name", "audio-scenario")),
             tuple(turns),
@@ -216,7 +239,7 @@ class Scenario:
             positive_number(
                 data.get("settle_seconds", 0.2), "settle_seconds", allow_zero=True
             ),
-            InputStream(**data.get("input", {})),
+            input_stream,
             validate_evaluation(data["evaluation"]) if "evaluation" in data else {},
             positive_number(
                 data.get("greeting_wait_seconds", 0.5),

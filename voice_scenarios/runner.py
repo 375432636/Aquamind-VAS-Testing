@@ -364,6 +364,9 @@ async def _run_turn(
     result = {
         "id": turn.id,
         "input_text": turn.input_text,
+        "input_type": (
+            "text" if turn.text is not None else "sensor" if turn.sensor else "audio"
+        ),
         "status": "running",
         "started_at_ns": start_ns,
         "events": [],
@@ -420,6 +423,8 @@ async def _run_turn(
             sink(Event("input_started"))
             if turn.sensor:
                 data = await transport.send_sensor(turn.sensor)
+            elif turn.text is not None:
+                data = await transport.send_text(turn.text)
             elif turn.chunks:
                 uplink = prefix.with_suffix(".uplink.wav")
                 result["audio"]["uplink"] = str(uplink)

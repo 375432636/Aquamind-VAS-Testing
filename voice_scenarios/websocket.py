@@ -342,6 +342,25 @@ class WebSocketTransport:
         self.emit(Event("sensor_sent", data))
         return data
 
+    async def send_text(self, text):
+        """Use the same native text frame as Console, bypassing input ASR."""
+        if not isinstance(text, str) or not text.strip() or "\x00" in text:
+            raise ValueError("text input must be nonempty and contain no NUL")
+        await self._stop_microphone()
+        self.turn_sequence += 1
+        self.listen_sequence += 1
+        self.response_turns[self.listen_sequence] = self.turn_sequence
+        self.pending_response_turn = self.turn_sequence
+        message = {"type": "listen", "mode": "manual", "state": "detect", "text": text}
+        await self._send_json(message)
+        data = {
+            **message,
+            "listen_turn_id": self.turn_sequence,
+            "server_listen_turn_id": self.listen_sequence,
+        }
+        self.emit(Event("text_sent", data))
+        return data
+
     async def send_audio(self, path: Path, *, input_stream=None, uplink_path=None):
         if input_stream is not None and input_stream.mode == "vad":
             return await self._send_vad_audio(path, input_stream, uplink_path)
