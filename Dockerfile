@@ -38,6 +38,7 @@ RUN python -m piper.download_voices zh_CN-huayan-medium --data-dir /opt/piper \
     && chmod -R a+rX /opt/piper
 
 COPY pyproject.toml main.py .coveragerc .coveragerc-client ./
+COPY aquamind_voice_report/ ./aquamind_voice_report/
 COPY voice_scenarios/ ./voice_scenarios/
 COPY tests/ ./tests/
 COPY scripts/ ./scripts/

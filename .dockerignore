@@ -6,6 +6,8 @@
 !main.py
 !.coveragerc
 !.coveragerc-client
+!aquamind_voice_report/
+!aquamind_voice_report/**
 !voice_scenarios/
 !voice_scenarios/**
 !tests/
