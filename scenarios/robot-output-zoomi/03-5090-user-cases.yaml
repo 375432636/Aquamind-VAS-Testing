@@ -1,0 +1,28 @@
+name: Zoomi robot_output · 5090 · 用户原句与有效区域对照
+device_id: "C2:B8:56:7B:95:7C"
+environment: main
+features:
+  scene_navigation: true
+input_mode: manual
+turn_timeout_seconds: 90
+turns:
+  - id: navigation-a-zone-unknown
+    text: 带我到 A 区。
+    expect:
+      business:
+        robot_output: {called: true, navigation: true}
+  - id: product-bone-conduction
+    text: 推荐一款骨传导耳机给我。
+    expect:
+      business:
+        robot_output: {called: true, product_refs: true}
+  - id: greeting-wave
+    text: 你好可以挥挥手吗？
+    expect:
+      business:
+        robot_output: {called: true, action: true, expression: true}
+  - id: navigation-valid-zone-control
+    text: 带我到数码体验区。
+    expect:
+      business:
+        robot_output: {called: true, navigation: true}
