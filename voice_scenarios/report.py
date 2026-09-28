@@ -1173,11 +1173,86 @@ def _turn_page(report, index):
         )
     content += '<details class="inline-disclosure"><summary>查看结束事件</summary><div class="table-scroll detail-body"><table id="handoff"></table></div></details></section>'
     content += _llm_evidence_panel(turn)
+    content += _robot_output_panel(turn)
     checks = turn.get("checks", [])
     content += f'<details class="disclosure"><summary>回归断言 <span>{sum(c["passed"] for c in checks)} / {len(checks)} 通过</span></summary><div class="detail-body table-scroll"><table id="checks"></table></div></details>'
     content += '<details class="disclosure"><summary>原始诊断数据</summary><div class="detail-body"><a href="report.json" download>下载 JSON</a><pre id="raw"></pre></div></details>'
     content += f'<nav class="bottom-navigation" aria-label="轮次翻页"><a href="report.html">返回会话总览</a><div>{previous}{following}</div></nav>'
     return content
+
+
+def _robot_output_panel(turn):
+    check = next(
+        (
+            item
+            for item in turn.get("checks", [])
+            if item.get("name") == "business.robot_output"
+        ),
+        None,
+    )
+    if check is None:
+        return ""
+    actual = check["actual"]
+    labels = {
+        "called": "函数 robot_output",
+        "action": "动作 action",
+        "product_refs": "商品图片 product_refs",
+        "expression": "表情 expression",
+        "navigation": "导航 navigation",
+    }
+    names = {
+        "passed": "通过",
+        "failed": "失败",
+        "unknown": "证据不足",
+        "not_applicable": "仅记录",
+    }
+    rows = []
+    for key, label in labels.items():
+        field = actual["fields"][key]
+        expected = field["expected"]
+        observed = field["observed"]
+        expectation = (
+            "仅记录" if expected is None else "必须有" if expected else "不得有"
+        )
+        finding = "未知" if observed is None else "已观察到" if observed else "未观察到"
+        received = (
+            f" · 客户端收到 {field.get('received_count', 0)} 条"
+            if key != "called"
+            else f" · 诊断调用 {actual['call_count']} 次"
+        )
+        if key == "product_refs" and field.get("unattributed_image_count"):
+            received += (
+                f" · 另有 {field['unattributed_image_count']} 条无法归因的 image 消息"
+            )
+        if field.get("received_values"):
+            received += f" · 客户端值 {field['received_values']}"
+        requested = field.get("requested_values", [])
+        detail = f" · 工具参数 {_text(requested)}" if requested else ""
+        rows.append(
+            "<tr>"
+            f"<td>{_text(label)}</td><td>{_text(expectation)}</td>"
+            f"<td>{_text(finding)}{_text(received)}{detail}</td>"
+            f"<td>{_text(names[field['status']])}</td>"
+            f"<td>{_text(field['source'])}"
+            f" · seq {_text(field.get('diagnostic_seq', field.get('diagnostic_seqs', [])))}</td>"
+            "</tr>"
+        )
+    validation = {
+        "passed": "至少一次调用通过 VAS 校验",
+        "failed": "存在未通过 VAS 校验的调用",
+        "not_called": "未观察到函数调用",
+        "unknown": "无法确认是否调用",
+    }[actual["validation"]]
+    return (
+        '<section class="panel"><div class="section-heading"><h2>Robot output 监测</h2>'
+        f"{_badge(names[check['status']], 'danger' if check['status'] == 'failed' else 'warning' if check['status'] == 'unknown' else 'success')}"
+        "</div><p>函数调用以 VAS 结构化诊断为证；行为以本测试客户端收到的 WebSocket 控制消息为证。"
+        "收到控制消息不等于实体机器人完成动作、图片已渲染或导航已抵达。</p>"
+        f"<p>协议校验：{_text(validation)}。{_text(check['reason'])}</p>"
+        '<div class="table-scroll"><table><thead><tr><th>项目</th><th>预期</th><th>观察</th><th>结果</th><th>证据来源</th></tr></thead><tbody>'
+        + "".join(rows)
+        + "</tbody></table></div></section>"
+    )
 
 
 def _llm_evidence_panel(turn):

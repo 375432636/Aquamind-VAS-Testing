@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from aiohttp import ClientSession, WSMsgType, web
 
 from .interactive_session import InteractiveSession
+from .robot_output_monitor import validate_robot_output
 
 ENDPOINTS = {
     "dev": {
@@ -64,6 +65,11 @@ def create_app(output, endpoints=None):
             r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", config.get("device_id", "")
         ):
             raise web.HTTPBadRequest(text="请选择环境并填写有效 MAC")
+        if "robot_output" in config:
+            try:
+                validate_robot_output(config["robot_output"])
+            except ValueError as exc:
+                raise web.HTTPBadRequest(text=str(exc)) from exc
         endpoint = endpoints[config["environment"]]
         if config.get("recording", True) is False:
             return web.json_response({"ws_url": endpoint["ws_url"]})

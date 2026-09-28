@@ -7,6 +7,8 @@ async function setup(options={}){
  elements['5090-address'].value='5090-tailscale';
  const sockets=[],recorders=[],players=[],requests=[],encoded=[];
  elements.recording={checked:options.recording!==false,disabled:false};
+ elements['robot-monitor']={checked:true,disabled:false};
+ const robotFields=['called','action','product_refs','expression','navigation'].map(name=>({dataset:{robotField:name},value:name==='called'?'required':'monitor',disabled:false}));
  elements['clock-sync']={checked:false,disabled:false};
  class Socket{
   constructor(url){this.url=String(url);this.readyState=1;this.sent=[];sockets.push(this);queueMicrotask(()=>this.onopen?.());}
@@ -22,12 +24,21 @@ async function setup(options={}){
  class Player{constructor(a,b,c){players.push(this);this.onDrain=c;this.busy=false;this.chain=Promise.resolve();}async feed(){this.busy=true;}async prime(){}async format(){}async flush(turn){this.onDrain(turn);}stop(){} }
  let now=0;
  const {ClockSync} = await import('../voice_scenarios/live/clock_sync.mjs');
- const ctx={ClockSync,document:{getElementById:id=>elements[id],createElement:()=>({scrollIntoView(){}})},window:{addEventListener(name,fn){handlers[name]=fn;}},performance:{timeOrigin:1700000000000,now:()=>++now},location:{origin:'http://localhost'},localStorage:{getItem:()=> '00:00:00:00:00:21',setItem(){}},setTimeout:(fn,ms)=>setTimeout(fn,options.dropFinal&&ms>=5000?5:ms),clearTimeout,setInterval(){},WebSocket:Socket,Recorder,Player,ns:()=>++now*1000000,encodePCM:()=> {encoded.push(true);return 'AQABAA==';},Blob,URL,console,Uint8Array,Int16Array,fetch:async(url,init)=>{requests.push({url,...init});return {ok:true,json:async()=>({ws_url:'ws://local/vas',...(JSON.parse(init?.body||'{}').recording===false?{}:{record_url:'/record',id:'1'})})};}};
+ const ctx={ClockSync,document:{getElementById:id=>elements[id],querySelectorAll:selector=>selector==='[data-robot-field]'?robotFields:[],createElement:()=>({scrollIntoView(){}})},window:{addEventListener(name,fn){handlers[name]=fn;}},performance:{timeOrigin:1700000000000,now:()=>++now},location:{origin:'http://localhost'},localStorage:{getItem:()=> '00:00:00:00:00:21',setItem(){}},setTimeout:(fn,ms)=>setTimeout(fn,options.dropFinal&&ms>=5000?5:ms),clearTimeout,setInterval(){},WebSocket:Socket,Recorder,Player,ns:()=>++now*1000000,encodePCM:()=> {encoded.push(true);return 'AQABAA==';},Blob,URL,console,Uint8Array,Int16Array,fetch:async(url,init)=>{requests.push({url,...init});return {ok:true,json:async()=>({ws_url:'ws://local/vas',...(JSON.parse(init?.body||'{}').recording===false?{}:{record_url:'/record',id:'1'})})};}};
  vm.createContext(ctx);vm.runInContext(fs.readFileSync('voice_scenarios/live/app.mjs','utf8').replace(/^import .*?;\n/gm,''),ctx);
  await elements.connect.onclick();await tick();assert.equal(elements.status.textContent,'已连接',elements.error.textContent);
  const peer=sockets.find(s=>s.url.startsWith('ws://local/vas')),record=sockets.find(s=>s.url.includes('/record'));
- return {elements,handlers,recorders,players,peer,record,requests,encoded,sockets,sent:()=>peer.sent.filter(x=>typeof x==='string').map(JSON.parse)};
+ return {elements,robotFields,handlers,recorders,players,peer,record,requests,encoded,sockets,sent:()=>peer.sent.filter(x=>typeof x==='string').map(JSON.parse)};
 }
+test('robot output expectations are sent with each recorded session',async()=>{
+ const {elements,robotFields,requests}=await setup();
+ assert.deepEqual(JSON.parse(requests[0].body).robot_output,{monitor:true,called:true});
+ await elements.finish.onclick();
+ robotFields.find(field=>field.dataset.robotField==='action').value='required';
+ robotFields.find(field=>field.dataset.robotField==='navigation').value='forbidden';
+ await elements.connect.onclick();
+ assert.deepEqual(JSON.parse(requests.at(-1).body).robot_output,{monitor:true,called:true,action:true,navigation:false});
+});
 test('5090 environment exposes Tailscale and LAN endpoint selection',async()=>{
  const {elements,requests}=await setup();await elements.finish.onclick();
  elements.environment.value='5090';elements.environment.onchange();

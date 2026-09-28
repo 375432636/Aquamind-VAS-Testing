@@ -61,6 +61,10 @@ def _validate_expect(expected, diagnostics):
     for name, value in expected.items():
         if name == "business":
             validate_business_assertions(value)
+            if diagnostics == "off" and "robot_output" in value:
+                raise ValueError(
+                    "robot_output monitoring requires stage/frame diagnostics"
+                )
             continue
         metric = name.removeprefix("max_").removesuffix("_min")
         if diagnostics == "off" and metric not in {

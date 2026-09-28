@@ -55,12 +55,28 @@ function controls(on) {
     $('connect').disabled = on;
     for (const id of ['environment', '5090-address', 'mac', 'token', 'ota', 'recording'])
         $(id).disabled = on;
+    $('robot-monitor').disabled = on || !recording;
+    for (const field of document.querySelectorAll('[data-robot-field]'))
+        field.disabled = on || !recording || !$('robot-monitor').checked;
 }
 function recordingControls() {
     const enabled = $('recording').checked;
     $('connect').textContent = enabled ? '连接并开始记录' : '直接连接对话';
     $('finish').textContent = enabled ? '结束并生成报告' : '断开连接';
     $('clock-sync').disabled = !enabled;
+    $('robot-monitor').disabled = !enabled;
+    for (const field of document.querySelectorAll('[data-robot-field]'))
+        field.disabled = !enabled || !$('robot-monitor').checked;
+}
+function robotOutputExpectation() {
+    if (!$('robot-monitor').checked)
+        return null;
+    const expectation = { monitor: true };
+    for (const field of document.querySelectorAll('[data-robot-field]')) {
+        if (field.value !== 'monitor')
+            expectation[field.dataset.robotField] = field.value === 'required';
+    }
+    return expectation;
 }
 function finishInputCapture(index = turn) {
     if (!index || currentMode === 'text' || captureFinishedTurns.has(index))
@@ -443,6 +459,8 @@ async function connect() {
         const selectedEnvironment = $('environment').value;
         const environment = selectedEnvironment === '5090' ? $('5090-address').value : selectedEnvironment;
         const config = { environment, device_id: $('mac').value.trim(), recording };
+        if (recording && robotOutputExpectation())
+            config.robot_output = robotOutputExpectation();
         let token = $('token').value;
         status('正在建立连接');
         const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
@@ -590,6 +608,7 @@ async function finish(complete = true) {
     }
 }
 $('recording').onchange = recordingControls;
+$('robot-monitor').onchange = recordingControls;
 recordingControls();
 $('connect').onclick = connect;
 $('finish').onclick = () => finish().catch(error);

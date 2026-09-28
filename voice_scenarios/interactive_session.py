@@ -14,6 +14,7 @@ from .runner import save_result
 class InteractiveSession:
     def __init__(self, directory, config):
         self.directory = Path(directory)
+        self.config = config
         self.directory.mkdir(parents=True, exist_ok=True)
         self.result = dict(
             schema_version=1,
@@ -83,7 +84,15 @@ class InteractiveSession:
                     events=[],
                     audio={},
                     received_frames=0,
-                    expected={},
+                    expected=(
+                        {
+                            "business": {
+                                "robot_output": dict(self.config["robot_output"])
+                            }
+                        }
+                        if "robot_output" in self.config
+                        else {}
+                    ),
                     interruption={},
                     playback_source="browser_audio_context",
                     **(

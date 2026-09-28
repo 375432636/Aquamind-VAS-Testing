@@ -8,8 +8,9 @@ from collections import Counter
 from pathlib import Path
 
 from .reply_timing import analyze_reply_timing
+from .robot_output_monitor import evaluate_robot_output, validate_robot_output
 
-CATEGORIES = ("recognition", "tools", "reply", "audio")
+CATEGORIES = ("recognition", "tools", "reply", "audio", "robot_output")
 _COMMON = {"verified", "reason", "source"}
 
 
@@ -31,12 +32,22 @@ def _groups(value):
 def validate_business_assertions(config):
     """Reject invalid assertions before any speech synthesis or VAS connection."""
     if not isinstance(config, dict) or not config or set(config) - set(CATEGORIES):
-        raise ValueError("business requires recognition, tools, reply or audio objects")
+        raise ValueError(
+            "business requires recognition, tools, reply, audio or robot_output objects"
+        )
     fields = {
         "recognition": {"contains_all", "sensor"},
         "tools": {"required", "forbidden"},
         "reply": {"contains_all", "output_kind"},
         "audio": {"ending", "min_duration_ms"},
+        "robot_output": {
+            "monitor",
+            "called",
+            "action",
+            "product_refs",
+            "expression",
+            "navigation",
+        },
     }
     for category, spec in config.items():
         if not isinstance(spec, dict) or set(spec) - fields[category] - _COMMON:
@@ -51,6 +62,11 @@ def validate_business_assertions(config):
             # An unknown device contract may have no proposed expectations yet.
             if not (set(spec) - _COMMON):
                 continue
+        if category == "robot_output":
+            validate_robot_output(
+                {key: value for key, value in spec.items() if key not in _COMMON}
+            )
+            continue
         if category in {"recognition", "reply"}:
             if "contains_all" in spec and not _groups(spec["contains_all"]):
                 raise ValueError("contains_all must contain nonempty synonym groups")
@@ -485,6 +501,13 @@ def evaluate_business_assertions(
             check = _tools(rows, spec, diagnostics_complete)
         elif category == "reply":
             check = _reply(turn, spec)
+        elif category == "robot_output":
+            check = evaluate_robot_output(
+                turn,
+                rows,
+                {key: value for key, value in spec.items() if key not in _COMMON},
+                diagnostics_complete=diagnostics_complete,
+            )
         else:
             check = _audio(turn, spec, artifact_dir)
         checks.append(check)
