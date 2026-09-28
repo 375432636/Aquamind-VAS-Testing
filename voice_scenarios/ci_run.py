@@ -22,7 +22,7 @@ from .failure_summary import failure_reasons
 from .model import SENSOR_COMMANDS, Scenario, sensor_command
 from .runner import run_scenario, save_result
 from .speech import SPEECH_ENGINE, synthesize
-from .websocket import WebSocketTransport
+from .websocket import WebSocketTransport, normalize_hello_features
 
 ROOT = Path(__file__).resolve().parents[1]
 ENDPOINTS = {
@@ -140,6 +140,17 @@ def settings_from_env(env):
     diagnostics = env.get("VAS_DIAGNOSTICS", "frame")
     if diagnostics not in {"off", "stage", "frame"}:
         raise ValueError("VAS_DIAGNOSTICS must be off, stage or frame")
+    raw_features = env.get("VAS_HELLO_FEATURES_JSON")
+    if raw_features is None:
+        hello_features = normalize_hello_features()
+    else:
+        try:
+            parsed_features = json.loads(raw_features)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("features must be a JSON object") from exc
+        if parsed_features is None:
+            raise ValueError("features must be an object")
+        hello_features = normalize_hello_features(parsed_features)
     timeout = _number(env.get("VAS_TURN_TIMEOUT_SECONDS", "90"), "turn timeout", 5, 120)
     return {
         "environment": environment,
@@ -147,6 +158,7 @@ def settings_from_env(env):
         "device_id": device,
         "input_mode": mode,
         "diagnostics": diagnostics,
+        "hello_features": hello_features,
         "turn_timeout_seconds": timeout,
         "speech_engine": SPEECH_ENGINE,
         "greeting_wait_seconds": _number(
@@ -369,6 +381,7 @@ async def execute_prepared(output, env, settings, scenario):
         token=env.get("VAS_TOKEN") or None,
         diagnostics=settings["diagnostics"],
         clock_sync=env.get("VAS_CLOCK_SYNC", "1") != "0",
+        hello_features=settings["hello_features"],
     )
     result = await run_scenario(scenario, transport, output)
     result["run_metadata"] = settings

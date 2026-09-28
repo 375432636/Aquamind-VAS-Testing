@@ -174,6 +174,7 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
             scenario_folder,
             name,
             device_id=f"AA:BB:CC:DD:EE:{index:02d}",
+            **({"features": {"scene_navigation": True}} if index == 1 else {}),
             turns=[{"audio": "fixtures/input.wav"}, {"audio": "fixtures/input.wav"}],
         )
     output = tmp_path / "batch"
@@ -195,6 +196,7 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
                 message = json.loads(raw)
                 if message["type"] == "hello":
                     session["hello"] += 1
+                    session["features"] = message["features"]
                     await ws.send(
                         json.dumps(
                             {
@@ -247,8 +249,18 @@ def test_batch_opens_one_connection_per_session_and_continues_after_failure(
         ["failed", "passed"] if first_fails else ["passed", "passed"]
     )
     assert connections == [
-        {"hello": 1, "stop": 1 if first_fails else 2, "device_id": "AA:BB:CC:DD:EE:01"},
-        {"hello": 1, "stop": 2, "device_id": "AA:BB:CC:DD:EE:02"},
+        {
+            "hello": 1,
+            "stop": 1 if first_fails else 2,
+            "device_id": "AA:BB:CC:DD:EE:01",
+            "features": {"mcp": True, "scene_navigation": True},
+        },
+        {
+            "hello": 1,
+            "stop": 2,
+            "device_id": "AA:BB:CC:DD:EE:02",
+            "features": {"mcp": True},
+        },
     ]
     reports = [
         json.loads((output / item["directory"] / "report.json").read_text())
@@ -555,3 +567,17 @@ def test_each_saved_session_routes_to_its_own_environment_and_device(scenario_fo
         s["input_mode"] == "manual" and s["turn_timeout_seconds"] == 90
         for s in settings
     )
+
+
+@pytest.mark.parametrize(
+    "features",
+    [True, {"scene_navigation": "true"}, {"mcp": False}],
+)
+def test_saved_session_rejects_invalid_hello_features_before_connection(
+    scenario_folder, features
+):
+    from voice_scenarios.batch_run import load_sessions
+
+    write_scenario(scenario_folder, "invalid.yaml", features=features)
+    with pytest.raises(ValueError, match="features"):
+        load_sessions(scenario_folder, {})

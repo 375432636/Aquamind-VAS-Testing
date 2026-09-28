@@ -6,6 +6,8 @@
 
 首次运行用了“应用体验区”和“充电桩”作为两端共用导航目标。之后核对设备组，确认它们不在 5090 测试设备绑定的地图中，因此修正为各自地图中的有效地点并完整复跑。下表和逐轮结果均为修正后的第二次运行。
 
+**导航结论复核（旧报告限制）：**这些运行使用的 Testing 客户端 Hello 只声明 `features.mcp=true`，没有声明 `features.scene_navigation=true`。VAS 因而不会向模型提供 `navigation_zone_name` 候选；表中的导航 0/2 是当时测试链路的结果，不能据此判断 8B 或 27B 在收到真实地图候选时会不会导航。5090 场景现已声明该能力，须以新运行重新评价导航。
+
 | 运行目标 | 实际模型（十轮） | `robot_output` 调用 / VAS 校验 | 预期动作 | 预期商品图 | 预期导航 |
 | --- | --- | --- | --- | --- | --- |
 | DEV 当前入口 | `qwen3.8-max` 10/10 | 诊断不支持，均为未知 | 客户端共收到 6 条动作，不能归因于函数 | 客户端共收到 4 条图片，不能归因于函数 | 客户端 0/2 |
@@ -48,7 +50,7 @@
 1. **常规 5090 无法在当前配置下验证 27B。** 第二次十轮分类为 fast 两次、smart 八次，但实际 LLM 全是 `qwen3-8b`；首次运行的分类是 fast 三次、smart 七次，第三条简单挥手问题的档位有波动。运行中容器的 `VAS_INTENT_SMART_MODEL` 和 `VAS_INTENT_FAST_BALANCED_MODEL` 都是 `qwen3-8b`。同一容器 `/opt/xiaozhi-esp32-server/core/lumin_connection.py` 第 1931–1945 行将 `provider=LocalLLM, model=qwen3-8b` 判为 `local_eight_b_route`，并设 `robot_output_enabled = is_robot_output_enabled(self) and not local_eight_b_route`。旧运行版本没有监控事件，因此测试报告的调用状态是“未知”；代码路径与实际模型结合，证明这些直连 8B 轮次没有启用函数。
 2. **模型网关让 8B/27B 均能调用协议，但行为不稳定。** 隔离网关 8B 与强制 27B 在两次各十轮运行中均有 `robot_output_evaluated.valid=true` 且 `reason=ok`，每轮调用一次。第二次 8B 两次挥手仅成功一次，还在导航请求下发了多余动作；第一次两次挥手均成功。27B 第二次两次挥手成功。两组第二次各四次商品请求均返回 `product_refs=[]` 且没有图片 WebSocket 消息；各两次有效地点导航请求均返回 `navigation=null` 且没有导航消息。
 3. **商品图片缺少可引用数据。** 27B 的防水耳机请求确实调用 `rag-lightrag_search`，返回的 Zoomi 产品表有产品名称、规格等，但 `产品图片` 列为空；X7Air 资料中的 `图片` 也为空，仅有天猫商品详情页链接。VAS 的媒体候选需要实体与有效 HTTP 图片 URL 配对；候选为空时 `robot_output` schema 的 `product_refs.maxItems` 也为零。先补齐图片 URL 和实体媒体标记，再验证模型能选出引用并收到 `display.items kind=image`。
-4. **有效地点导航也未成功。** 5090 `C2:B8:56:7B:95:7C` 属于设备组 265，场景导航开关已开，绑定 `AquaMind-Mail` 地图；地图六个有效目标为商场主入口、中央中庭、时尚零售区、数码体验区、餐饮休息区和顾客服务台。DEV `AC:A7:04:EB:EA:48` 属于设备组 180，导航已开，绑定“六楼-原始地图”，其中有产品体验区和充电桩。修正后，5090 两个有效目标在 8B 与 27B 对照中仍均为 `navigation=null`；DEV 两个有效目标也未收到导航。隔离网关对这些轮次记录 `nav_suppressed=False`，说明不是网关安全规则清空导航。VAS 仅在设备 `features.scene_navigation=true` 且运行时场景配置包含有效区域时才把 `navigation_zone_name` 放入工具 schema；现有诊断没有记录本轮工具 schema 的区域列表，还不能区分“运行时没有候选”和“模型拿到候选却填 null”。
+4. **旧导航测试缺少客户端能力声明。** 5090 `C2:B8:56:7B:95:7C` 属于设备组 265，场景导航开关已开，绑定 `AquaMind-Mail` 地图；地图六个有效目标为商场主入口、中央中庭、时尚零售区、数码体验区、餐饮休息区和顾客服务台。DEV `AC:A7:04:EB:EA:48` 属于设备组 180，导航已开，绑定“六楼-原始地图”，其中有产品体验区和充电桩。地点名称虽有效，但 Testing 客户端当时没有在 Hello 声明 `scene_navigation`，使 VAS 的区域候选函数直接返回空列表。隔离网关的 `nav_suppressed=False` 只排除了网关清空导航，不能补足缺失的 schema 字段。需要用更新后的客户端重跑，才可评价模型的导航选择能力。
 5. **DEV 不是本地 8B/27B 对照。** 实际十轮均是 `qwen3.8-max`，运行版本没有函数监控事件。客户端累计收到动作消息六条、表情十条、图片展示四条，但不能证明它们来自 `robot_output`。DEV 有效地点导航两轮均未下发。
 
 部分型号在语音识别时被误听，如 X7Air 和 Nothing Ear 3；逐轮报告保留 ASR 原文。这个因素会影响指定商品查询，但无法解释更宽泛的防水耳机和送礼耳机请求也没有图片，以及知识库图片列为空的事实。
@@ -57,7 +59,7 @@
 
 1. **先用配置接入真实阶梯路由。** 5090 把 fast/balanced 指向网关 8B，smart 指向网关 27B，并核对 Aquamind/UMS 传给 VAS 的 `route.chat_model.mode`：smart 业务轮次必须选 smart 档。测试中仅把 smart 环境变量改成 27B，两次运行分别有七轮、八轮 smart 标签仍落在 8B；配置模式也必须核对。第三条简单挥手在两次运行中的 fast/smart 分类不同，还需调整分类训练或阈值。保持常规实例不变，先在隔离实例复跑，确认简单三轮 `llm_request_started.model=...8b`，知识库/导航七轮为 `...27b`，且逐轮有真实函数事件。
 2. **补齐商品素材。** 给目标产品写入可访问的图片 URL，并在知识库工具结果中输出 VAS 可识别的实体与图片绑定。四个商品场景应同时满足非空 `product_refs`、VAS 校验通过、客户端收到对应图片消息。商品详情页 URL 不能当作图片 URL。
-3. **定位导航候选的缺失点。** 在 DEV 和 5090 各自的 VAS 诊断中记录本轮 `robot_output` schema 的区域候选名称或数量。若候选缺失，排查 Aquamind/UMS 配置同步；若候选存在而模型仍填 null，调整模型侧工具说明/提示词并复测。若必须改 VAS 诊断，应分别更新 DEV 与 5090，不改正式 VAS 业务逻辑。两场景须同时看到非空 `navigation` 参数与客户端导航消息，且禁止导航场景不得误下发。
+3. **用完整 Hello 能力重测导航。** 5090 场景发送 `features.scene_navigation=true` 后，核对模型请求中 `robot_output.navigation_zone_name` 是否包含地图区域；再检查非空导航参数和客户端导航消息。若候选仍为空，再查 Aquamind/UMS 配置同步；若候选存在而模型仍填 null，再调整模型侧工具说明。需要修改 VAS 诊断时，DEV 与 5090 分别更新。
 4. **更新 DEV 监控运行版本并确认模型角色。** 在真实 DEV 路由可切换到 8B/27B 前，只将 DEV 结果当业务行为基线，不计入本地模型兼容率。
 
 以上均是待实施方案，不能把隔离实例 10/10 函数调用写成正式环境的成功率。每次改完以同样的十轮套件复跑，并保留报告。

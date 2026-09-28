@@ -36,6 +36,8 @@ python -m voice_scenarios.batch_run \
 
 `VAS_MAIN_URL` 可以指向常规 5090 VAS，也可以指向隔离的 8B/27B 对照实例；报告中必须记下实际目标。每次使用新的输出目录，不覆盖真实录音和诊断。`--prepare-only` 只校验配置与合成输入，不连接服务。
 
+5090 场景的 `features.scene_navigation: true` 会随 WebSocket Hello 发送。VAS 只有同时收到这个客户端能力声明、设备又启用了场景导航并配置了地图区域时，才会把 `navigation_zone_name` 放进 `robot_output` 工具 schema。未声明该能力的旧报告不能用来判断模型是否会选择地图区域。未配置 `features` 的场景仍发送原有的 `mcp: true`。
+
 输入文字由 Piper 合成为语音，通过真实 WebSocket、ASR、设备配置、意图分类和 RAG 执行。它不是在请求里直接塞入文字；因此报告中的 ASR 文本可能与原始提问不同。十轮在同一会话中顺序执行，保留 VAS 的历史上下文。
 
 ```bash

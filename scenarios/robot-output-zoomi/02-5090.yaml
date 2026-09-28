@@ -1,6 +1,8 @@
 name: Zoomi robot_output · 5090 · 10 场景
 device_id: "C2:B8:56:7B:95:7C"
 environment: main
+features:
+  scene_navigation: true
 input_mode: manual
 turn_timeout_seconds: 90
 turns:

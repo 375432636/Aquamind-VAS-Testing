@@ -59,11 +59,12 @@ def load_sessions(source, env):
                 "environment",
                 "input_mode",
                 "turn_timeout_seconds",
+                "features",
                 "turns",
                 "evaluation",
             }:
                 raise ValueError(
-                    "session supports only name, device_id, environment, input_mode, turn_timeout_seconds, evaluation and turns"
+                    "session supports only name, device_id, environment, input_mode, turn_timeout_seconds, features, evaluation and turns"
                 )
             name = data.get("name", path.stem)
             if not isinstance(name, str) or not 1 <= len(name.strip()) <= 160:
@@ -80,9 +81,14 @@ def load_sessions(source, env):
                 raise ValueError("environment is required and must be dev or main")
             session_env = dict(env)
             session_env.pop("VAS_EVALUATION_JSON", None)
+            session_env.pop("VAS_HELLO_FEATURES_JSON", None)
             if "evaluation" in data:
                 session_env["VAS_EVALUATION_JSON"] = json.dumps(
                     validate_evaluation(data["evaluation"]), ensure_ascii=False
+                )
+            if "features" in data:
+                session_env["VAS_HELLO_FEATURES_JSON"] = json.dumps(
+                    data["features"], ensure_ascii=False
                 )
             session_env["VAS_DEVICE_ID"] = device_id.upper()
             session_env["VAS_ENVIRONMENT"] = environment

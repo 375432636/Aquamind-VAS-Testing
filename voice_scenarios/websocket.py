@@ -16,6 +16,21 @@ from .model import sensor_command
 from .protocol import Event
 
 
+def normalize_hello_features(features=None):
+    if features is None:
+        return {"mcp": True}
+    if not isinstance(features, dict) or set(features) - {"mcp", "scene_navigation"}:
+        raise ValueError("features supports only mcp and scene_navigation")
+    if features.get("mcp", True) is not True:
+        raise ValueError("features.mcp must be true")
+    if (
+        "scene_navigation" in features
+        and type(features["scene_navigation"]) is not bool
+    ):
+        raise ValueError("features.scene_navigation must be a boolean")
+    return {"mcp": True, **features}
+
+
 class WebSocketTransport:
     def __init__(
         self,
@@ -27,6 +42,7 @@ class WebSocketTransport:
         connect_timeout=15,
         fake_device_tools=False,
         clock_sync=True,
+        hello_features=None,
     ):
         if diagnostics not in {"off", "stage", "frame"}:
             raise ValueError("diagnostics must be off, stage or frame")
@@ -37,6 +53,7 @@ class WebSocketTransport:
         self.diagnostics = diagnostics
         self.connect_timeout = connect_timeout
         self.fake_device_tools = fake_device_tools
+        self.hello_features = normalize_hello_features(hello_features)
         self.mcp_tasks = set()
         self.clock_pending = {}
         self.clock_task = None
@@ -88,7 +105,7 @@ class WebSocketTransport:
                 "type": "hello",
                 "version": 1,
                 "transport": "websocket",
-                "features": {"mcp": True},
+                "features": self.hello_features,
                 "audio_params": {
                     "format": "opus",
                     "sample_rate": 16000,

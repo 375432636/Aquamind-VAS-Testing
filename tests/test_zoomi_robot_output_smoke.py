@@ -16,6 +16,8 @@ def test_dev_and_5090_cover_ten_matching_intents_with_valid_local_zones():
     local = yaml.safe_load((SCENARIOS / "02-5090.yaml").read_text())
     assert len(dev["turns"]) == len(local["turns"]) == 10
     assert dev["device_id"] != local["device_id"]
+    assert local["features"] == {"scene_navigation": True}
+    assert "features" not in dev
     assert [turn["id"] for turn in dev["turns"]] == [
         turn["id"] for turn in local["turns"]
     ]
